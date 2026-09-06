@@ -1,20 +1,40 @@
 package besdk
 
-// Query 是 List 类查询的参数信封，字段留给 Task 7 实现时按需扩（时间窗口、
-// cursor、排序、过滤）。现在只钉签名，不钉字段——字段属于「横切函数的输入
-// 形状」，不属于「结构三件套」，改起来代价小得多。
+import "time"
+
+const (
+	defaultWindow = 90 * 24 * time.Hour // §11.4：List 默认最近 90 天
+	defaultLimit  = 50
+	maxLimit      = 500 // 上限——不许业务代码传天文数字把整张表读出来
+)
+
+// Query 是 List 类查询的参数信封。
+//
+// ⚠️ 刻意没有 Offset 字段——决策 53：List 契约里没有 offset，深分页在
+// 契约层面就不可表达。要往后翻页，走 Cursor，不是数字偏移量。
 type Query struct {
-	// 留空，Task 7 补
+	From   time.Time // 时间窗口起点，零值表示未指定
+	To     time.Time // 时间窗口终点，零值表示未指定
+	Cursor string    // 游标分页，空表示第一页
+	Limit  int       // 每页条数，<=0 用默认值；超过上限会被夹住
 }
 
-// ListWindow 给 List 查询自动注入时间窗口（默认最近 90 天）与 Cursor 分页
-// （§11.4）。
-//
-// ⚠️ 守的是决策 53：List 契约里没有 offset 字段，深分页在契约层面就不可
-// 表达；业务代码里永远只写 `SELECT * FROM sales_orders`，时间窗口与游标
-// 由这一层注入，不许业务代码自己拼。
-//
-// 实现放 Task 7 用 TDD 补。
+// ListWindow 给 List 查询自动注入时间窗口（默认最近 90 天）与合理的分页
+// 上限（§11.4）。业务代码里永远只写 `SELECT * FROM sales_orders`，时间
+// 窗口与游标由这一层注入，不许业务代码自己拼。
 func ListWindow(q Query) Query {
-	panic("未实现：Task 7 补")
+	now := time.Now()
+	if q.From.IsZero() {
+		q.From = now.Add(-defaultWindow)
+	}
+	if q.To.IsZero() {
+		q.To = now
+	}
+	switch {
+	case q.Limit <= 0:
+		q.Limit = defaultLimit
+	case q.Limit > maxLimit:
+		q.Limit = maxLimit
+	}
+	return q
 }
