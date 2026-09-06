@@ -1,0 +1,200 @@
+package besdk
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib" // 注册 "pgx" 驱动，§12.4：不用 lib/pq
+	"github.com/nats-io/nats.go"
+	"google.golang.org/grpc"
+)
+
+// Bootstrap 做进程级、只能有一份的那些初始化（OTel provider、日志根）。
+// 调用方（RunStandalone 或外壳）调它恰好一次；模块一律不许碰（§12.5.2）。
+//
+// ⚠️ 目前会 panic：内部调用的 InitOTel 与 NewLogger 都是 Task 7 才实现的
+// 桩函数。签名与调用顺序现在就钉死，是因为这决定了外壳启动器要怎么接——
+// 单跑与合并调的是同一个函数（§13.3 铁律七），行为补全不影响这个骨架。
+func Bootstrap(ctx context.Context, serviceName, otelBaseURL string) (shutdown func(context.Context) error, err error) {
+	otelShutdown, err := InitOTel(ctx, serviceName, otelBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("InitOTel: %w", err)
+	}
+	return otelShutdown, nil
+}
+
+// RunStandalone 是单跑形态的全部装配，也是全项目唯一允许读进程环境变量的
+// 地方（§12.5.3）。它做：Bootstrap → 填 Runtime → 调 newModule → 跑迁移
+// → Listen HTTP 与全部 extraPorts → 装信号处理器 → 优雅关停。
+//
+// 于是每个组件的 main.go 只有一行：
+//
+//	func main() { besdk.RunStandalone(module.New) }
+//
+// ⚠️ 目前调用链会在 Bootstrap（InitOTel）与 NewRegistry 处 panic——两个都
+// 是 Task 7 的桩函数。整条编排逻辑现在就写实，是因为它才是「外壳能不能
+// 把模块挂进来」的真正契约；桩函数补完后这个函数一个字都不用改。
+func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	componentID := mustGetenv("COMPONENT_ID")
+	componentVersion := mustGetenv("COMPONENT_VERSION")
+	httpPort, err := strconv.Atoi(mustGetenv("HTTP_PORT"))
+	if err != nil {
+		exitf("HTTP_PORT 不是合法端口号：%v", err)
+	}
+
+	shutdownOTel, err := Bootstrap(ctx, componentID, os.Getenv("OTEL_BASE_URL"))
+	if err != nil {
+		exitf("Bootstrap 失败：%v", err)
+	}
+	defer func() { _ = shutdownOTel(context.Background()) }()
+
+	db, err := sql.Open("pgx", mustGetenv("PG_DSN"))
+	if err != nil {
+		exitf("打开数据库连接池失败：%v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	nc, err := nats.Connect(mustGetenv("NATS_URL"))
+	if err != nil {
+		exitf("连接 NATS 失败：%v", err)
+	}
+	defer nc.Close()
+
+	rt := &Runtime{
+		ComponentID:      componentID,
+		ComponentVersion: componentVersion,
+		Config:           NewConfig(envSnapshot()),
+		DB:               db,
+		NATS:             nc,
+		Logger:           NewLogger(componentID),
+		Registry:         NewRegistry(),
+		HTTPPort:         httpPort,
+		ExtraPorts:       extraPortsFromEnv(),
+	}
+
+	mod, err := newModule(ctx, rt)
+	if err != nil {
+		exitf("组件初始化失败：%v", err)
+	}
+
+	// 迁移由外壳/RunStandalone 按拓扑顺序跑，组件自己不碰（§13.3 铁律五）。
+	// 实现放 Task 7：golang-migrate 读 mod.Migrations，目标 schema 与迁移
+	// 状态表都要显式指定（§11.2.3：默认 public 会和其它组件的迁移表打架）。
+
+	errCh := make(chan error, 1+len(rt.ExtraPorts))
+	go func() { errCh <- serveHTTP(ctx, rt.HTTPPort, mod.HTTPHandler) }()
+	for name, port := range rt.ExtraPorts {
+		name, port := name, port
+		go func() { errCh <- serveExtraPort(ctx, name, port, mod.RegisterGRPC) }()
+	}
+	if mod.Start != nil {
+		go func() {
+			if err := mod.Start(ctx); err != nil {
+				errCh <- fmt.Errorf("Start: %w", err)
+			}
+		}()
+	}
+
+	select {
+	case <-ctx.Done():
+	case err := <-errCh:
+		if err != nil {
+			rt.Logger.Error("服务异常退出", "error", err)
+		}
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if mod.Stop != nil {
+		_ = mod.Stop(shutdownCtx)
+	}
+}
+
+func serveHTTP(ctx context.Context, port int, handler http.Handler) error {
+	srv := &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: handler}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("HTTP 服务退出：%w", err)
+	}
+	return nil
+}
+
+func serveExtraPort(ctx context.Context, name string, port int, register func(*grpc.Server)) error {
+	if register == nil {
+		return nil
+	}
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return fmt.Errorf("额外端口 %s（:%d）监听失败：%w", name, port, err)
+	}
+	srv := grpc.NewServer()
+	register(srv)
+	go func() {
+		<-ctx.Done()
+		srv.GracefulStop()
+	}()
+	if err := srv.Serve(lis); err != nil {
+		return fmt.Errorf("额外端口 %s 服务退出：%w", name, err)
+	}
+	return nil
+}
+
+// mustGetenv 是 RunStandalone 内部用的——它是全项目唯一允许读进程环境变量
+// 的地方（§12.5.3），模块代码里出现 os.Getenv 就是违规。
+func mustGetenv(key string) string {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		exitf("必需的环境变量 %s 未设置", key)
+	}
+	return v
+}
+
+// envSnapshot 把当前进程环境变量拍成一份快照灌进 Config。
+//
+// ⚠️ 合并态下这个函数不会被调用——外壳启动器会给每个模块构造自己那一份
+// env map（§13.8.2），不是从共享的 os.Environ() 里读，否则就是「22 个模块
+// 的 PG_SCHEMA 互相顶掉」那条雷（§12.5.3）。
+func envSnapshot() map[string]string {
+	out := make(map[string]string, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		for i := 0; i < len(kv); i++ {
+			if kv[i] == '=' {
+				out[kv[:i]] = kv[i+1:]
+				break
+			}
+		}
+	}
+	return out
+}
+
+// extraPortsFromEnv 留空实现——额外端口的注入格式（EXTRA_PORTS_GRPC 一类
+// 变量名，还是单个 JSON）现在还没定，放 Task 7 跟迁移一起定，因为都要等
+// 第一个真实组件（mdm-customer）声明 extraPorts 之后才能核对格式对不对。
+func extraPortsFromEnv() map[string]int {
+	return map[string]int{}
+}
+
+// exitf 是 RunStandalone 内部专用的错误退出路径——它本身不算「模块
+// log.Fatal」（十八条第 18 条禁的是模块代码，不是启动器自己）：启动阶段
+// 踩到不可恢复的配置错误，本来就应该让这一个组件的进程退出，不作为
+// error 向上层传播，因为这里已经是调用链的最外层。
+func exitf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	os.Exit(1)
+}
