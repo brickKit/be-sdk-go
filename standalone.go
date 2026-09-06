@@ -12,18 +12,22 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	_ "github.com/jackc/pgx/v5/stdlib" // 注册 "pgx" 驱动，§12.4：不用 lib/pq
 	"github.com/nats-io/nats.go"
 	"google.golang.org/grpc"
 )
 
-// Bootstrap 做进程级、只能有一份的那些初始化（OTel provider、日志根）。
-// 调用方（RunStandalone 或外壳）调它恰好一次；模块一律不许碰（§12.5.2）。
-//
-// ⚠️ 目前会 panic：内部调用的 InitOTel 与 NewLogger 都是 Task 7 才实现的
-// 桩函数。签名与调用顺序现在就钉死，是因为这决定了外壳启动器要怎么接——
-// 单跑与合并调的是同一个函数（§13.3 铁律七），行为补全不影响这个骨架。
+// Bootstrap 做进程级、只能有一份的那些初始化（OTel provider、日志根、
+// Gin 的包级全局模式）。调用方（RunStandalone 或外壳）调它恰好一次；
+// 模块一律不许碰（§12.5.2）。
 func Bootstrap(ctx context.Context, serviceName, otelBaseURL string) (shutdown func(context.Context) error, err error) {
+	// ⚠️ gin.SetMode 是包级全局变量，不是某个 *gin.Engine 的字段——
+	// 一个模块调 gin.SetMode(gin.DebugMode)，另外 21 个模块的 engine 会
+	// 一起进 debug 模式，panic 堆栈直接吐给客户端（十八条第 17 条）。
+	// 只在这里设一次，NewGinEngine 不碰它。
+	gin.SetMode(gin.ReleaseMode)
+
 	otelShutdown, err := InitOTel(ctx, serviceName, otelBaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("InitOTel: %w", err)
