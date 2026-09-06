@@ -8,8 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func newTestRuntime(t *testing.T) (*Runtime, *tracetest.SpanRecorder) {
@@ -37,6 +37,24 @@ func TestNewGinEngine_挂了healthz与metrics(t *testing.T) {
 	engine.ServeHTTP(w2, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if w2.Code != http.StatusOK {
 		t.Fatalf("/metrics 期望 200，得到 %d", w2.Code)
+	}
+}
+
+// ⚠️ 实测踩坑：mdm-customer 真的用 brickkit up 起容器后一直 unhealthy，
+// 但组件日志里根本没有 panic，只有一条条 404——平台生成的健康检查是
+// `wget -q --spider http://.../healthz`，而 --spider 模式发的是 HEAD
+// 请求，不是 GET。/healthz 只注册了 engine.GET，Gin 的路由不会让 GET
+// 处理器顺带接住 HEAD（不像标准库 http.ServeMux 那样自动关联两者），
+// 于是每一次健康检查探测都落进 Gin 的 NoRoute、404。be-sdk-go 自己的
+// 测试从头到尾只发过 GET，从没模拟过真实健康检查用的 HEAD，这条路径
+// 一次都没被走到过。
+func TestNewGinEngine_healthz对HEAD请求也响应200(t *testing.T) {
+	rt, _ := newTestRuntime(t)
+	engine := NewGinEngine(rt)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, httptest.NewRequest(http.MethodHead, "/healthz", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("wget --spider 发的是 HEAD，/healthz 对 HEAD 也应该 200，得到 %d", w.Code)
 	}
 }
 

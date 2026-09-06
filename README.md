@@ -10,6 +10,10 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 | `SET LOCAL` 事务 | `tx.go` | 不带 `LOCAL` 的 `SET` 之后连接还回池，下一个借用者原样继承，悄悄读写别人的数据（十八条第 2 条） |
 | 单跑/合并统一入口 | `standalone.go`、`module.go`、`runtime.go`、`gin.go` | 每个组件各发明一个 `main`，合并那天全部重写（十八条第 18 条） |
 
+## 现状（阶段一 Task 16，`v0.1.5`）
+
+修完 `v0.1.4` 的 panic 之后，容器还是 `unhealthy`——这次日志干净，只有一条条 404。平台生成的健康检查是 `wget -q --spider .../healthz`，`--spider` 发的是 **HEAD** 请求，不是 GET；`/healthz` 只注册了 `engine.GET`，Gin 的路由不会像标准库 `http.ServeMux` 那样让 GET 处理器顺带接住 HEAD。已同时注册 `engine.HEAD("/healthz", ...)`。
+
 ## 现状（阶段一 Task 16，`v0.1.4`）
 
 `RunStandalone` 构造 `Runtime` 时一直没有把 `Tracer`/`Meter` 两个字段填进去（一直是 nil interface）——`mdm-customer` 第一次真的 `brickkit up`（不是 `--dry-run`）把容器跑起来后才暴露：`NewGinEngine` 的 `tracingMiddleware` 对每个请求都调 `rt.Tracer.Start(...)`，`/healthz` 也不例外，容器因此对任何请求都必然 panic，健康检查永远过不了。已改成 `Bootstrap` 返回后用 `otel.Tracer(componentID)`/`otel.Meter(componentID)` 取真实值赋给这两个字段。

@@ -46,8 +46,14 @@ func NewGinEngine(rt *Runtime) *gin.Engine {
 		accessLogMiddleware(rt),
 	)
 
-	// §12.3.6：/healthz 只答「进程还活着」，不做任何依赖探测
-	engine.GET("/healthz", func(c *gin.Context) { c.Status(http.StatusOK) })
+	// §12.3.6：/healthz 只答「进程还活着」，不做任何依赖探测。
+	// ⚠️ GET 与 HEAD 都要注册：平台生成的健康检查是
+	// `wget -q --spider .../healthz`，--spider 发的是 HEAD——Gin 的路由
+	// 不会像标准库 http.ServeMux 那样让 GET 处理器顺带接住 HEAD，只注册
+	// GET 会让每一次健康检查探测都落进 NoRoute、404（实测踩坑）。
+	healthz := func(c *gin.Context) { c.Status(http.StatusOK) }
+	engine.GET("/healthz", healthz)
+	engine.HEAD("/healthz", healthz)
 	engine.GET("/metrics", gin.WrapH(promhttp.HandlerFor(rt.Registry, promhttp.HandlerOpts{})))
 
 	return engine
