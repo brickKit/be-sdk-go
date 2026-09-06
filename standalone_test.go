@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -228,5 +229,62 @@ func TestRunStandalone_newModule失败时非零码退出且日志带componentID(
 	}
 	if !strings.Contains(stderr.String(), "模拟初始化失败") {
 		t.Fatalf("stderr 应该带原始错误信息，实际输出：%s", stderr.String())
+	}
+}
+
+// ⚠️ 实测踩坑：mdm-customer 第一次真的 brickkit up 起来后，/healthz 每次
+// 请求都 panic："invalid memory address or nil pointer dereference"，
+// 出处是 NewGinEngine 的 tracingMiddleware 调 rt.Tracer.Start(...)——
+// RunStandalone 构造 Runtime 时压根没有把 Tracer/Meter 填进去，两个字段
+// 一直是 nil interface。be-sdk-go 自己的 gin_test.go 从没抓到这个问题，
+// 因为它的 newTestRuntime helper 手工塞了一个真 tracer，从来没有测过
+// "RunStandalone 自己组出来的 Runtime 传给 NewGinEngine 会怎样"。
+// 这个测试真的走一遍子进程：起一个只包一层 NewGinEngine 的模块，
+// 真实 HTTP 请求 /healthz，必须是 200 而不是连接被重置或者 500。
+func TestRunStandalone_healthz真的能响应不panic(t *testing.T) {
+	if os.Getenv("BESDK_SUBPROCESS_HEALTHZ_TEST") == "1" {
+		RunStandalone(func(ctx context.Context, rt *Runtime) (*Module, error) {
+			return &Module{HTTPHandler: NewGinEngine(rt)}, nil
+		})
+		return
+	}
+
+	dir := t.TempDir()
+	port := freePortForTest(t)
+	manifest := fmt.Sprintf("deployment:\n  port: %d\n", port)
+	if err := os.WriteFile(filepath.Join(dir, "component.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	host, natsPort := natsHostPortForTest(t)
+	cmd := exec.Command(os.Args[0], "-test.run", "TestRunStandalone_healthz真的能响应不panic")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"BESDK_SUBPROCESS_HEALTHZ_TEST=1",
+		"COMPONENT_ID=test/healthz-module",
+		"COMPONENT_VERSION=0.0.1",
+		"DATABASE_HOST=localhost", "DATABASE_PORT=1",
+		"DATABASE_USER=user", "DATABASE_PASSWORD=pass", "DATABASE_NAME=doesnotmatter", // sql.Open 是懒的
+		"MQ_HOST="+host, "MQ_PORT="+natsPort,
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		_, _ = cmd.Process.Wait()
+	})
+
+	waitForListen(t, port)
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
+	if err != nil {
+		t.Fatalf("请求 /healthz 失败：%v\nstderr:\n%s", err, stderr.String())
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d\nstderr:\n%s", resp.StatusCode, stderr.String())
 	}
 }

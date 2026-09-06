@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	_ "github.com/jackc/pgx/v5/stdlib" // 注册 "pgx" 驱动，§12.4：不用 lib/pq
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
 	"google.golang.org/grpc"
 )
 
@@ -92,9 +93,19 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 		DB:               db,
 		NATS:             nc,
 		Logger:           NewLogger(componentID),
-		Registry:         NewRegistry(),
-		HTTPPort:         ports.HTTPPort,
-		ExtraPorts:       ports.ExtraPorts,
+		// ⚠️ 实测踩坑：这两行漏了的话，NewGinEngine 的 tracingMiddleware
+		// 一收到请求就 panic（rt.Tracer 是 nil interface）——包括 /healthz
+		// 本身，容器因此永远不健康。Bootstrap 已经在 InitOTel 里调用过
+		// otel.SetTracerProvider(tp)，这里用 otel.Tracer(componentID) 从
+		// 刚设好的 provider 上取一个真 tracer，不能让 Runtime 带着零值
+		// 传下去。be-sdk-go 自己的 gin_test.go 从没抓到这个问题，因为它的
+		// newTestRuntime 测试 helper 手工塞了一个真 tracer，从没测过
+		// "RunStandalone 自己组出来的 Runtime" 这条路径。
+		Tracer:     otel.Tracer(componentID),
+		Meter:      otel.Meter(componentID),
+		Registry:   NewRegistry(),
+		HTTPPort:   ports.HTTPPort,
+		ExtraPorts: ports.ExtraPorts,
 	}
 
 	mod, err := newModule(ctx, rt)

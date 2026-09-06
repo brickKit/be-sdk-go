@@ -10,6 +10,12 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 | `SET LOCAL` 事务 | `tx.go` | 不带 `LOCAL` 的 `SET` 之后连接还回池，下一个借用者原样继承，悄悄读写别人的数据（十八条第 2 条） |
 | 单跑/合并统一入口 | `standalone.go`、`module.go`、`runtime.go`、`gin.go` | 每个组件各发明一个 `main`，合并那天全部重写（十八条第 18 条） |
 
+## 现状（阶段一 Task 16，`v0.1.4`）
+
+`RunStandalone` 构造 `Runtime` 时一直没有把 `Tracer`/`Meter` 两个字段填进去（一直是 nil interface）——`mdm-customer` 第一次真的 `brickkit up`（不是 `--dry-run`）把容器跑起来后才暴露：`NewGinEngine` 的 `tracingMiddleware` 对每个请求都调 `rt.Tracer.Start(...)`，`/healthz` 也不例外，容器因此对任何请求都必然 panic，健康检查永远过不了。已改成 `Bootstrap` 返回后用 `otel.Tracer(componentID)`/`otel.Meter(componentID)` 取真实值赋给这两个字段。
+
+这个 bug 存在的原因很有代表性：`gin_test.go` 的测试 helper 一直手工塞了一个真 tracer，从没测过"`RunStandalone` 自己组出来的 `Runtime`"这条生产路径——**测试构造对象的方式和生产构造对象的方式不是同一条路径时，测试再多也测不出这类问题**。已经补了一条走真实子进程 + 真实 HTTP 请求的回归测试。
+
 ## 现状（阶段一 Task 16，`v0.1.3`）
 
 `BatchGetRouted` 原本假设每个组件都有 `{schema}_archive.{table}` 这张表——但真实情况是不少组件（比如 `mdm-customer`，主数据不分区不归档，设计计划 §7）压根不会有归档表，那个 schema 建了但里面永远没有表。
