@@ -3,7 +3,6 @@ package besdk
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -46,22 +45,26 @@ func BatchGetRouted[T any](ctx context.Context, tx *sql.Tx, schema, table string
 
 	if len(missing) > 0 {
 		archiveSchema := schema + "_archive"
-		fromArchive, err := queryByIDs(ctx, tx, archiveSchema, table, missing, scan)
+		// ⚠️ 实测踩坑（第一次修复方式是错的）：不是每个组件都归档主数据
+		// （比如 mdm-customer，设计上永远不归档——归档 schema 建了，但
+		// 那张表从来不存在）。第一版修复是"先查、报 42P01 就当空结果处理"，
+		// 但 PostgreSQL 里一条语句真的失败之后，**整个事务**会被标记成
+		// aborted——即使 Go 这层选择不把那个错误往上传，事务在数据库那侧
+		// 已经回不去了，随后的 tx.Commit() 会拿到 pgx.ErrTxCommitRollback。
+		// 必须在真的发一条会失败的语句**之前**先问一句"这张表存在吗"
+		// （to_regclass 查不到只返回 NULL，不报错，不会污染事务）。
+		exists, err := tableExists(ctx, tx, archiveSchema, table)
 		if err != nil {
-			// ⚠️ 实测踩坑：不是每个组件都归档主数据（比如 mdm-customer，
-			// 设计上永远不归档——归档 schema 建了，但那张表从来不存在）。
-			// "relation does not exist" 在这条查询路径上等价于「归档里也
-			// 没有这些 id」，不是真正的错误：这个函数自己的文档就承诺了
-			// "两处都没有的 id 静默缺席，不报错"，不能因为对方压根没有
-			// 归档表就打破这个承诺。真正的配置错误（热表本身不存在）在
-			// 上面查热表那一步就会先报出来，不会走到这里。
-			if isUndefinedTable(err) {
-				return orderedResult(byID, ids), nil
-			}
-			return nil, fmt.Errorf("查归档表 %s.%s: %w", archiveSchema, table, err)
+			return nil, fmt.Errorf("检查归档表是否存在 %s.%s: %w", archiveSchema, table, err)
 		}
-		for id, row := range fromArchive {
-			byID[id] = row
+		if exists {
+			fromArchive, err := queryByIDs(ctx, tx, archiveSchema, table, missing, scan)
+			if err != nil {
+				return nil, fmt.Errorf("查归档表 %s.%s: %w", archiveSchema, table, err)
+			}
+			for id, row := range fromArchive {
+				byID[id] = row
+			}
 		}
 	}
 
@@ -79,14 +82,14 @@ func orderedResult[T any](byID map[string]T, ids []string) []T {
 	return out
 }
 
-// isUndefinedTable 判断错误是不是"表/关系不存在"。pgx 的错误类型带
-// SQLSTATE，42P01 是 PostgreSQL 的 undefined_table。
-func isUndefinedTable(err error) bool {
-	var pgErr interface{ SQLState() string }
-	if errors.As(err, &pgErr) {
-		return pgErr.SQLState() == "42P01"
+// tableExists 用 to_regclass 判断一张表存不存在——它查不到只返回 NULL，
+// 不像直接 SELECT 一张不存在的表那样报错并让整个事务进入 aborted 状态。
+func tableExists(ctx context.Context, tx *sql.Tx, schema, table string) (bool, error) {
+	var oid sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT to_regclass($1)::text`, schema+"."+table).Scan(&oid); err != nil {
+		return false, err
 	}
-	return false
+	return oid.Valid, nil
 }
 
 // queryByIDs 按 id 列表查一张（已限定 schema 的）表，返回 id → 那一行的

@@ -10,9 +10,11 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 | `SET LOCAL` 事务 | `tx.go` | 不带 `LOCAL` 的 `SET` 之后连接还回池，下一个借用者原样继承，悄悄读写别人的数据（十八条第 2 条） |
 | 单跑/合并统一入口 | `standalone.go`、`module.go`、`runtime.go`、`gin.go` | 每个组件各发明一个 `main`，合并那天全部重写（十八条第 18 条） |
 
-## 现状（阶段一 Task 16，`v0.1.2`）
+## 现状（阶段一 Task 16，`v0.1.3`）
 
-`BatchGetRouted` 原本假设每个组件都有 `{schema}_archive.{table}` 这张表——但真实情况是不少组件（比如 `mdm-customer`，主数据不分区不归档，设计计划 §7）压根不会有归档表，那个 schema 建了但里面永远没有表。缺失的 id 触发查归档时，"relation does not exist" 原样被当成硬错误抛出，打破了这个函数自己文档写的"两处都没有的 id 静默缺席，不报错"的承诺。已改成识别 `undefined_table`（PostgreSQL SQLSTATE 42P01）并当作"归档里也没有"处理，不再要求"归档表必须存在"这个从没被写下来过的隐性前提。
+`BatchGetRouted` 原本假设每个组件都有 `{schema}_archive.{table}` 这张表——但真实情况是不少组件（比如 `mdm-customer`，主数据不分区不归档，设计计划 §7）压根不会有归档表，那个 schema 建了但里面永远没有表。
+
+第一版修复（`v0.1.2`）思路是错的：先查、报 `relation does not exist` 就在 Go 这层当空结果处理。**PostgreSQL 里一条语句真的执行失败之后，整个事务会被标记成 aborted——即使调用方选择不把这个错误向上传播，事务在数据库那一侧已经回不去了**，随后的 `COMMIT` 会拿到 `pgx.ErrTxCommitRollback`（"commit unexpectedly resulted in rollback"）。`v0.1.3` 改成用 `to_regclass` 在真正查询之前先问一句"这张表存在吗"——查不到只返回 `NULL`，不报错、不污染事务，存在才真的去查。
 
 ## 现状（阶段一 Task 16，`v0.1.1`）
 
