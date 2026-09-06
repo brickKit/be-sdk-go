@@ -43,9 +43,6 @@ func Bootstrap(ctx context.Context, serviceName, otelBaseURL string) (shutdown f
 //
 //	func main() { besdk.RunStandalone(module.New) }
 //
-// ⚠️ 目前调用链会在 Bootstrap（InitOTel）与 NewRegistry 处 panic——两个都
-// 是 Task 7 的桩函数。整条编排逻辑现在就写实，是因为它才是「外壳能不能
-// 把模块挂进来」的真正契约；桩函数补完后这个函数一个字都不用改。
 func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -54,24 +51,24 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 	componentVersion := mustGetenv("COMPONENT_VERSION")
 	httpPort, err := strconv.Atoi(mustGetenv("HTTP_PORT"))
 	if err != nil {
-		exitf("HTTP_PORT 不是合法端口号：%v", err)
+		exitf(componentID, "HTTP_PORT 不是合法端口号：%v", err)
 	}
 
 	shutdownOTel, err := Bootstrap(ctx, componentID, os.Getenv("OTEL_BASE_URL"))
 	if err != nil {
-		exitf("Bootstrap 失败：%v", err)
+		exitf(componentID, "Bootstrap 失败：%v", err)
 	}
 	defer func() { _ = shutdownOTel(context.Background()) }()
 
 	db, err := sql.Open("pgx", mustGetenv("PG_DSN"))
 	if err != nil {
-		exitf("打开数据库连接池失败：%v", err)
+		exitf(componentID, "打开数据库连接池失败：%v", err)
 	}
 	defer func() { _ = db.Close() }()
 
 	nc, err := nats.Connect(mustGetenv("NATS_URL"))
 	if err != nil {
-		exitf("连接 NATS 失败：%v", err)
+		exitf(componentID, "连接 NATS 失败：%v", err)
 	}
 	defer nc.Close()
 
@@ -89,12 +86,14 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 
 	mod, err := newModule(ctx, rt)
 	if err != nil {
-		exitf("组件初始化失败：%v", err)
+		exitf(componentID, "组件初始化失败：%v", err)
 	}
 
 	// 迁移由外壳/RunStandalone 按拓扑顺序跑，组件自己不碰（§13.3 铁律五）。
-	// 实现放 Task 7：golang-migrate 读 mod.Migrations，目标 schema 与迁移
-	// 状态表都要显式指定（§11.2.3：默认 public 会和其它组件的迁移表打架）。
+	// ⚠️ 还没实现——不在本任务的断言范围内（Task 7 只锁 Listen/优雅关停/
+	// newModule 失败退出这三条）。真正实现时用 golang-migrate 读
+	// mod.Migrations，目标 schema 与迁移状态表都要显式指定（§11.2.3：
+	// 默认 public 会和其它组件的迁移表打架）。
 
 	errCh := make(chan error, 1+len(rt.ExtraPorts))
 	go func() { errCh <- serveHTTP(ctx, rt.HTTPPort, mod.HTTPHandler) }()
@@ -161,10 +160,13 @@ func serveExtraPort(ctx context.Context, name string, port int, register func(*g
 
 // mustGetenv 是 RunStandalone 内部用的——它是全项目唯一允许读进程环境变量
 // 的地方（§12.5.3），模块代码里出现 os.Getenv 就是违规。
+//
+// ⚠️ 读 COMPONENT_ID 本身失败时还不知道是哪个组件——这是启动阶段唯一
+// 一处 exitf 的 componentID 参数必然是空的情况，属于物理限制，不是漏传。
 func mustGetenv(key string) string {
 	v, ok := os.LookupEnv(key)
 	if !ok {
-		exitf("必需的环境变量 %s 未设置", key)
+		exitf(os.Getenv("COMPONENT_ID"), "必需的环境变量 %s 未设置", key)
 	}
 	return v
 }
@@ -188,8 +190,9 @@ func envSnapshot() map[string]string {
 }
 
 // extraPortsFromEnv 留空实现——额外端口的注入格式（EXTRA_PORTS_GRPC 一类
-// 变量名，还是单个 JSON）现在还没定，放 Task 7 跟迁移一起定，因为都要等
-// 第一个真实组件（mdm-customer）声明 extraPorts 之后才能核对格式对不对。
+// 变量名，还是单个 JSON）现在还没定，不在本任务的断言范围内（Task 7 只
+// 锁 Listen/优雅关停/newModule 失败退出这三条）。等第一个真实组件
+// （mdm-customer）声明 extraPorts 之后才能核对格式对不对。
 func extraPortsFromEnv() map[string]int {
 	return map[string]int{}
 }
@@ -198,7 +201,16 @@ func extraPortsFromEnv() map[string]int {
 // log.Fatal」（十八条第 18 条禁的是模块代码，不是启动器自己）：启动阶段
 // 踩到不可恢复的配置错误，本来就应该让这一个组件的进程退出，不作为
 // error 向上层传播，因为这里已经是调用链的最外层。
-func exitf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
+//
+// ⚠️ componentID 打进日志——"进程以非零码退出且日志说清是哪个模块"
+// 是明确的断言（合并态排障时，一堆组件的日志混在一起，不带 componentID
+// 根本不知道是谁挂了）。componentID 为空时退化成不带前缀，仅见于读
+// COMPONENT_ID 本身失败那一种情况。
+func exitf(componentID, format string, args ...any) {
+	prefix := ""
+	if componentID != "" {
+		prefix = "[" + componentID + "] "
+	}
+	fmt.Fprintf(os.Stderr, prefix+format+"\n", args...)
 	os.Exit(1)
 }
