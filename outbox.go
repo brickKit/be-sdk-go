@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -39,7 +40,16 @@ const outboxPollInterval = 200 * time.Millisecond
 //
 // 发送成功立刻标记 PUBLISHED；发送失败只累加 attempts、状态留在 PENDING
 // 等下一轮重试——NATS 抖动不该让事件永久丢失，也不该让 pump 自己崩掉。
-func StartOutboxPump(ctx context.Context, db *sql.DB, schema string, nc *nats.Conn) error {
+//
+// ⚠️ 实测踩坑：pumpOnce 查询数据库失败（连接抖动/短暂不可用）曾经被当作
+// 硬错误直接向上返回——StartOutboxPump 整个循环退出，Module.Start 的
+// errCh 收到错误，RunStandalone 把整个进程带崩，Docker 重启容器又立刻
+// 撞到同一个还没恢复的连接，陷入几百毫秒一次的重启死循环，直到数据库
+// 恢复；这段时间里 HTTP/gRPC 完全没人能连，不是"降级"是整个容器反复
+// 重启。这与 partition.go 的 Start 不一致（那边失败只记日志、留到下一轮
+// 重试）。现在对齐同一套容错方式：一次 pumpOnce 失败只记日志，循环继续，
+// 只有 ctx 取消才真正返回。
+func StartOutboxPump(ctx context.Context, db *sql.DB, schema string, nc *nats.Conn, logger *slog.Logger) error {
 	if !identRe.MatchString(schema) {
 		return fmt.Errorf("非法 schema 名：%q", schema)
 	}
@@ -57,11 +67,11 @@ func StartOutboxPump(ctx context.Context, db *sql.DB, schema string, nc *nats.Co
 				// 优先选 ctx.Done()。这种情况下 pumpOnce 会带着一个已经
 				// / 即将过期的 ctx 去查库，返回 context 相关错误——这是
 				// 正常关停的一种表现形式，不是 pump 真的坏了，不能当
-				// 硬错误往上抛。
+				// 硬错误往上抛，也不用当成故障记日志。
 				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 					return nil
 				}
-				return fmt.Errorf("outbox pump: %w", err)
+				logger.Error("outbox pump 单轮失败", "error", err)
 			}
 		}
 	}

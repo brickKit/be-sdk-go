@@ -10,6 +10,10 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 | `SET LOCAL` 事务 | `tx.go` | 不带 `LOCAL` 的 `SET` 之后连接还回池，下一个借用者原样继承，悄悄读写别人的数据（十八条第 2 条） |
 | 单跑/合并统一入口 | `standalone.go`、`module.go`、`runtime.go`、`gin.go` | 每个组件各发明一个 `main`，合并那天全部重写（十八条第 18 条） |
 
+## 现状（阶段一 Task 16，`v0.1.6`）
+
+验证验收标准 5（"停 PostgreSQL，`/healthz` 仍应 200"）时，真的 `docker stop` 了 postgres——结果不是健康检查失败，而是**整个容器进入几百毫秒一次的重启死循环**。根因：`StartOutboxPump` 的 `pumpOnce` 查询失败被当成硬错误直接 `return`，这个 error 顺着 `Module.Start` 的 `errCh` 一路传到 `RunStandalone` 顶层，被当成"服务异常退出"，进程退出，Docker 重启策略又把它拉起来，立刻重连又立刻失败，如此循环——这段时间里 HTTP/gRPC 完全没人能连，是一条完全独立于"`/healthz` 不查依赖"设计之外的故障传播路径。同一个 `Module.Start` 里的 `partition.Start` 从一开始就没有这个问题（失败只记日志、留到下一轮重试），`StartOutboxPump` 没有对齐这套容错方式。已给 `StartOutboxPump` 加 `logger *slog.Logger` 参数，`pumpOnce` 失败（非 ctx 取消）只记日志、循环继续。**这条对任何用 Outbox 的组件都成立**，不是 mdm-customer 专属。
+
 ## 现状（阶段一 Task 16，`v0.1.5`）
 
 修完 `v0.1.4` 的 panic 之后，容器还是 `unhealthy`——这次日志干净，只有一条条 404。平台生成的健康检查是 `wget -q --spider .../healthz`，`--spider` 发的是 **HEAD** 请求，不是 GET；`/healthz` 只注册了 `engine.GET`，Gin 的路由不会像标准库 `http.ServeMux` 那样让 GET 处理器顺带接住 HEAD。已同时注册 `engine.HEAD("/healthz", ...)`。

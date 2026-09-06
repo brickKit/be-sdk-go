@@ -157,7 +157,7 @@ func TestStartOutboxPump_发送成功后标记为PUBLISHED(t *testing.T) {
 	pumpCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	pumpDone := make(chan error, 1)
-	go func() { pumpDone <- StartOutboxPump(pumpCtx, db, "besdk_outbox_probe", nc) }()
+	go func() { pumpDone <- StartOutboxPump(pumpCtx, db, "besdk_outbox_probe", nc, discardLoggerForTest()) }()
 
 	if _, err := sub.NextMsg(2 * time.Second); err != nil {
 		t.Fatalf("pump 应该把事件发到 NATS，等消息超时：%v", err)
@@ -182,6 +182,48 @@ func TestStartOutboxPump_发送成功后标记为PUBLISHED(t *testing.T) {
 	}
 	if status != "PUBLISHED" {
 		t.Fatalf("发送成功后状态应为 PUBLISHED，得到 %q（attempts=%d）", status, attempts)
+	}
+}
+
+// ⚠️ 实测踩坑：mdm-customer 真的停掉 postgres 后，pumpOnce 查询失败被当作
+// 硬错误往上抛，StartOutboxPump 整个循环退出 → Module.Start 的 errCh 收到
+// 错误 → RunStandalone 把整个进程带崩 → Docker 又把容器拉起来 → 拉起来立刻
+// 重新连接又立刻失败——容器陷入几百毫秒一次的重启死循环，直到 postgres
+// 恢复，且这段时间内 HTTP/gRPC 也完全没人能连（不是"降级"，是整个容器
+// 反复重启)。这与 partition.go 的 Start 形成对照——分区维护失败只记日志
+// 不退出循环，outbox pump 这里当时没有对齐同一套容错方式。
+func TestStartOutboxPump_数据库查询失败不让循环退出(t *testing.T) {
+	db := setupOutboxProbeDB(t)
+
+	nc, err := nats.Connect(natsURLForTest(t))
+	if err != nil {
+		t.Fatalf("连接 NATS 失败：%v", err)
+	}
+	defer nc.Close()
+
+	// schema 名格式合法但实际不存在——每一次 pumpOnce 都会查询失败，
+	// 模拟"数据库连不上/表不存在"这类瞬时故障，且不会自愈。
+	pumpCtx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+	defer cancel()
+	pumpDone := make(chan error, 1)
+	go func() {
+		pumpDone <- StartOutboxPump(pumpCtx, db, "besdk_outbox_probe_missing_schema", nc, discardLoggerForTest())
+	}()
+
+	select {
+	case err := <-pumpDone:
+		t.Fatalf("查询持续失败不该让 pump 提前退出（应该只记日志、等下一轮 ticker），得到：%v", err)
+	case <-time.After(500 * time.Millisecond):
+		// 500ms > 2 个 outboxPollInterval（200ms），扛住了至少两次失败的 tick。
+	}
+
+	select {
+	case err := <-pumpDone:
+		if err != nil {
+			t.Fatalf("ctx 到期后应该干净返回 nil（不是把查询错误当成关停错误），得到：%v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pump 在 ctx 到期后没有及时返回")
 	}
 }
 
