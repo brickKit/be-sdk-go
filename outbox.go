@@ -71,20 +71,27 @@ func StartOutboxPump(ctx context.Context, db *sql.DB, schema string, nc *nats.Co
 // 整批——一条坏数据不该卡住同一批里的其他事件。
 func pumpOnce(ctx context.Context, db *sql.DB, schema string, nc *nats.Conn) error {
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT id, subject, payload FROM %s.event_outbox
+		SELECT id, subject, aggregate_id, version, trace_id, causation_id, hop_count, payload
+		FROM %s.event_outbox
 		WHERE status = 'PENDING' ORDER BY id LIMIT 100`, schema))
 	if err != nil {
 		return err
 	}
 	type pending struct {
-		id      int64
-		subject string
-		payload []byte
+		id          int64
+		subject     string
+		aggregateID string
+		version     int64
+		traceID     string
+		causationID string
+		hopCount    int
+		payload     []byte
 	}
 	var batch []pending
 	for rows.Next() {
 		var p pending
-		if err := rows.Scan(&p.id, &p.subject, &p.payload); err != nil {
+		if err := rows.Scan(&p.id, &p.subject, &p.aggregateID, &p.version,
+			&p.traceID, &p.causationID, &p.hopCount, &p.payload); err != nil {
 			rows.Close()
 			return err
 		}
@@ -96,7 +103,22 @@ func pumpOnce(ctx context.Context, db *sql.DB, schema string, nc *nats.Conn) err
 	}
 
 	for _, p := range batch {
-		if err := nc.Publish(p.subject, p.payload); err != nil {
+		// ⚠️ trace_id/causation_id/hop_count 走 NATS Header，不折进
+		// payload——消费侧的因果链防环靠的就是这几个 Header（§3.10、
+		// 决策 42），折进 payload 就等于让每个消费者自己去解析信封，
+		// 违背"业务代码只关心业务字段"这条。
+		msg := &nats.Msg{
+			Subject: p.subject,
+			Data:    p.payload,
+			Header:  nats.Header{},
+		}
+		msg.Header.Set(headerAggregateID, p.aggregateID)
+		msg.Header.Set(headerVersion, fmt.Sprint(p.version))
+		msg.Header.Set(headerTraceID, p.traceID)
+		msg.Header.Set(headerCausationID, p.causationID)
+		msg.Header.Set(headerHopCount, fmt.Sprint(p.hopCount))
+
+		if err := nc.PublishMsg(msg); err != nil {
 			if _, uerr := db.ExecContext(ctx, fmt.Sprintf(
 				`UPDATE %s.event_outbox SET attempts = attempts + 1, updated_at = now() WHERE id = $1`, schema),
 				p.id); uerr != nil {
