@@ -3,6 +3,7 @@ package besdk
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -47,6 +48,16 @@ func BatchGetRouted[T any](ctx context.Context, tx *sql.Tx, schema, table string
 		archiveSchema := schema + "_archive"
 		fromArchive, err := queryByIDs(ctx, tx, archiveSchema, table, missing, scan)
 		if err != nil {
+			// ⚠️ 实测踩坑：不是每个组件都归档主数据（比如 mdm-customer，
+			// 设计上永远不归档——归档 schema 建了，但那张表从来不存在）。
+			// "relation does not exist" 在这条查询路径上等价于「归档里也
+			// 没有这些 id」，不是真正的错误：这个函数自己的文档就承诺了
+			// "两处都没有的 id 静默缺席，不报错"，不能因为对方压根没有
+			// 归档表就打破这个承诺。真正的配置错误（热表本身不存在）在
+			// 上面查热表那一步就会先报出来，不会走到这里。
+			if isUndefinedTable(err) {
+				return orderedResult(byID, ids), nil
+			}
 			return nil, fmt.Errorf("查归档表 %s.%s: %w", archiveSchema, table, err)
 		}
 		for id, row := range fromArchive {
@@ -54,14 +65,28 @@ func BatchGetRouted[T any](ctx context.Context, tx *sql.Tx, schema, table string
 		}
 	}
 
-	// 按传入 ids 的顺序返回，两处都没有的 id 静默缺席
+	return orderedResult(byID, ids), nil
+}
+
+// orderedResult 按传入 ids 的顺序展开结果，两处都没有的 id 静默缺席。
+func orderedResult[T any](byID map[string]T, ids []string) []T {
 	out := make([]T, 0, len(byID))
 	for _, id := range ids {
 		if row, ok := byID[id]; ok {
 			out = append(out, row)
 		}
 	}
-	return out, nil
+	return out
+}
+
+// isUndefinedTable 判断错误是不是"表/关系不存在"。pgx 的错误类型带
+// SQLSTATE，42P01 是 PostgreSQL 的 undefined_table。
+func isUndefinedTable(err error) bool {
+	var pgErr interface{ SQLState() string }
+	if errors.As(err, &pgErr) {
+		return pgErr.SQLState() == "42P01"
+	}
+	return false
 }
 
 // queryByIDs 按 id 列表查一张（已限定 schema 的）表，返回 id → 那一行的

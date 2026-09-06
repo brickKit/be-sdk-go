@@ -81,6 +81,38 @@ func TestBatchGetRouted_热表命中_归档缺失都覆盖(t *testing.T) {
 	// missing-1 两处都没有——不报错，静默从结果里缺席
 }
 
+// ⚠️ 实测踩坑：mdm-customer 用真实 PostgreSQL 跑 BatchGet 时，一个真的
+// 缺失的 id（热表没有）会让 BatchGetRouted 去查 {schema}_archive.{table}，
+// 而 mdm-customer 设计上永远不归档主数据（设计计划 §7）——那个 schema
+// 建了，但从来不会有任何表在里面。上一条测试只覆盖了"热表全命中、归档表
+// 不存在也不报错"（间接证明不强制查归档），没覆盖"热表有缺失、归档表
+// 不存在"这条更常见的路径——BatchGetRouted 原样把 "relation does not
+// exist" 抛出来了，而"两处都没有的 id 静默缺席，不报错"是这个函数自己
+// 文档注释写的承诺（archive.go 顶部）。
+func TestBatchGetRouted_归档表整个不存在时缺失id也不报错(t *testing.T) {
+	db := setupArchiveProbeDB(t)
+	ctx := context.Background()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DROP TABLE besdk_archive_probe_archive.items`); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := BatchGetRouted(ctx, tx, "besdk_archive_probe", "items",
+		[]string{"hot-1", "missing-1"}, scanProbeRow)
+	if err != nil {
+		t.Fatalf("归档表不存在时，缺失的 id 也不该报错（只是查不到归档而已）：%v", err)
+	}
+	if len(got) != 1 || got[0].ID != "hot-1" {
+		t.Fatalf("期望恰好 1 条 hot-1，得到 %+v", got)
+	}
+}
+
 func TestBatchGetRouted_热表全命中不查归档(t *testing.T) {
 	db := setupArchiveProbeDB(t)
 	ctx := context.Background()

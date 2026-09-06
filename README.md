@@ -10,6 +10,10 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 | `SET LOCAL` 事务 | `tx.go` | 不带 `LOCAL` 的 `SET` 之后连接还回池，下一个借用者原样继承，悄悄读写别人的数据（十八条第 2 条） |
 | 单跑/合并统一入口 | `standalone.go`、`module.go`、`runtime.go`、`gin.go` | 每个组件各发明一个 `main`，合并那天全部重写（十八条第 18 条） |
 
+## 现状（阶段一 Task 16，`v0.1.2`）
+
+`BatchGetRouted` 原本假设每个组件都有 `{schema}_archive.{table}` 这张表——但真实情况是不少组件（比如 `mdm-customer`，主数据不分区不归档，设计计划 §7）压根不会有归档表，那个 schema 建了但里面永远没有表。缺失的 id 触发查归档时，"relation does not exist" 原样被当成硬错误抛出，打破了这个函数自己文档写的"两处都没有的 id 静默缺席，不报错"的承诺。已改成识别 `undefined_table`（PostgreSQL SQLSTATE 42P01）并当作"归档里也没有"处理，不再要求"归档表必须存在"这个从没被写下来过的隐性前提。
+
 ## 现状（阶段一 Task 16，`v0.1.1`）
 
 `v0.1.0` 的 `RunStandalone` 里有三处是"等第一个真实组件出现才能核对"的占位：`HTTP_PORT`/`PG_DSN`/`NATS_URL` 三个环境变量从来没有被平台真正注入过。`mdm-customer` 第一次真的 `brickkit up --dry-run` 之后核对出实际契约并修复：
