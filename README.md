@@ -10,6 +10,18 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 | `SET LOCAL` 事务 | `tx.go` | 不带 `LOCAL` 的 `SET` 之后连接还回池，下一个借用者原样继承，悄悄读写别人的数据（十八条第 2 条） |
 | 单跑/合并统一入口 | `standalone.go`、`module.go`、`runtime.go`、`gin.go` | 每个组件各发明一个 `main`，合并那天全部重写（十八条第 18 条） |
 
+## 现状（阶段一 Task 16，`v0.1.1`）
+
+`v0.1.0` 的 `RunStandalone` 里有三处是"等第一个真实组件出现才能核对"的占位：`HTTP_PORT`/`PG_DSN`/`NATS_URL` 三个环境变量从来没有被平台真正注入过。`mdm-customer` 第一次真的 `brickkit up --dry-run` 之后核对出实际契约并修复：
+
+| 占位时的假设 | 实际契约 | 改成什么 |
+|---|---|---|
+| 读整段 `HTTP_PORT` 环境变量 | 平台不注入"我该监听哪个端口"（§13.8.1），端口只在组件自己的 `component.yaml` 里 | 新增 `manifest.go` 的 `loadOwnPorts`，读 `component.yaml` 的 `deployment.port`/`extraPorts` |
+| 读整段 `PG_DSN` 环境变量 | 平台注入的是分开的 `DATABASE_HOST/PORT/USER/PASSWORD/NAME` | `buildPGDSN()` 从五片拼 |
+| 读整段 `NATS_URL` 环境变量 | 平台注入的是分开的 `MQ_HOST/PORT`（+ 可选 `MQ_USER/MQ_PASSWORD`） | `buildNATSURL()` 从这几片拼，兼容无认证的情形 |
+
+顺带用 `-race -count=20` 复测抓到一个真实（非误报）的数据竞争：`serveExtraPort` 内部先 `net.Listen` 再 `register(srv)`，测试用裸 `bool` 记录 `register` 有没有跑过、靠 `waitForListen`（只探测 TCP 连通性）去读，两者之间没有同步——已改成 `chan struct{}` + `select` 等待。
+
 ## 现状（阶段一 Task 7 完成，`v0.1.0`）
 
 SOP-L 十四项能力 + 结构三件套全部是真实实现，测试用真 PG（`besdk_*_probe` schema）+ 真 NATS 验证，不是 mock：

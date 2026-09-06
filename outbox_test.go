@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -190,4 +191,16 @@ func natsURLForTest(t *testing.T) string {
 		return u
 	}
 	return nats.DefaultURL
+}
+
+// natsHostPortForTest 把 natsURLForTest 拆成 MQ_HOST/MQ_PORT 两片——平台
+// 注入的从来是分开的两个变量，不是一个完整 URL（§标准化环境变量约定同
+// buildNATSURL）。
+func natsHostPortForTest(t *testing.T) (host, port string) {
+	t.Helper()
+	u, err := url.Parse(natsURLForTest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.Hostname(), u.Port()
 }

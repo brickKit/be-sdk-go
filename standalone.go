@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -42,16 +41,21 @@ func Bootstrap(ctx context.Context, serviceName, otelBaseURL string) (shutdown f
 // 于是每个组件的 main.go 只有一行：
 //
 //	func main() { besdk.RunStandalone(module.New) }
-//
 func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
 	componentID := mustGetenv("COMPONENT_ID")
 	componentVersion := mustGetenv("COMPONENT_VERSION")
-	httpPort, err := strconv.Atoi(mustGetenv("HTTP_PORT"))
+
+	// ⚠️ 端口不是平台注入的（§13.8.1）：环境变量表里只有"别人在哪"
+	// （*_ENDPOINT），没有"我该监听哪"。全拆态下唯一权威来源是组件自己的
+	// component.yaml——镜像里必须把它跟二进制放在一起（Dockerfile 的
+	// WORKDIR，与 migrations/ 同级）。v0.1.0 曾经等一个从来不存在的
+	// HTTP_PORT 环境变量，mdm-customer 第一次真的 up 起来才核对出这个坑。
+	ports, err := loadOwnPorts("component.yaml")
 	if err != nil {
-		exitf(componentID, "HTTP_PORT 不是合法端口号：%v", err)
+		exitf(componentID, "读自己的 component.yaml 失败：%v", err)
 	}
 
 	shutdownOTel, err := Bootstrap(ctx, componentID, os.Getenv("OTEL_BASE_URL"))
@@ -60,13 +64,22 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 	}
 	defer func() { _ = shutdownOTel(context.Background()) }()
 
-	db, err := sql.Open("pgx", mustGetenv("PG_DSN"))
+	// ⚠️ 平台注入的是分开的 DATABASE_HOST/PORT/USER/PASSWORD/NAME
+	// （006 §4.4 的 5 层表），没有单个 PG_DSN——同样是 v0.1.0 等一个从来
+	// 不存在的变量。DSN 由 buildPGDSN 从这几片拼。
+	pgDSN, err := buildPGDSN()
+	if err != nil {
+		exitf(componentID, "拼数据库连接串失败：%v", err)
+	}
+	db, err := sql.Open("pgx", pgDSN)
 	if err != nil {
 		exitf(componentID, "打开数据库连接池失败：%v", err)
 	}
 	defer func() { _ = db.Close() }()
 
-	nc, err := nats.Connect(mustGetenv("NATS_URL"))
+	// 同理，NATS 的连接信息是 MQ_HOST/MQ_PORT（+ 可选 MQ_USER/MQ_PASSWORD），
+	// 不是单个 NATS_URL。
+	nc, err := nats.Connect(buildNATSURL())
 	if err != nil {
 		exitf(componentID, "连接 NATS 失败：%v", err)
 	}
@@ -80,8 +93,8 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 		NATS:             nc,
 		Logger:           NewLogger(componentID),
 		Registry:         NewRegistry(),
-		HTTPPort:         httpPort,
-		ExtraPorts:       extraPortsFromEnv(),
+		HTTPPort:         ports.HTTPPort,
+		ExtraPorts:       ports.ExtraPorts,
 	}
 
 	mod, err := newModule(ctx, rt)
@@ -89,11 +102,10 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 		exitf(componentID, "组件初始化失败：%v", err)
 	}
 
-	// 迁移由外壳/RunStandalone 按拓扑顺序跑，组件自己不碰（§13.3 铁律五）。
-	// ⚠️ 还没实现——不在本任务的断言范围内（Task 7 只锁 Listen/优雅关停/
-	// newModule 失败退出这三条）。真正实现时用 golang-migrate 读
-	// mod.Migrations，目标 schema 与迁移状态表都要显式指定（§11.2.3：
-	// 默认 public 会和其它组件的迁移表打架）。
+	// ⚠️ 全拆态迁移不在这里跑：平台为每个组件单独生成一次性迁移容器
+	// （入口是各组件自己的 backend/cmd/migrate，见 mdm-customer Task 14），
+	// RunStandalone 服务的是应用进程本身，不重复跑一遍迁移。mod.Migrations
+	// 这个 fs.FS 只被合并态的外壳启动器消费（§13.3 铁律五，阶段四）。
 
 	errCh := make(chan error, 1+len(rt.ExtraPorts))
 	go func() { errCh <- serveHTTP(ctx, rt.HTTPPort, mod.HTTPHandler) }()
@@ -189,12 +201,51 @@ func envSnapshot() map[string]string {
 	return out
 }
 
-// extraPortsFromEnv 留空实现——额外端口的注入格式（EXTRA_PORTS_GRPC 一类
-// 变量名，还是单个 JSON）现在还没定，不在本任务的断言范围内（Task 7 只
-// 锁 Listen/优雅关停/newModule 失败退出这三条）。等第一个真实组件
-// （mdm-customer）声明 extraPorts 之后才能核对格式对不对。
-func extraPortsFromEnv() map[string]int {
-	return map[string]int{}
+// buildPGDSN 从平台注入的 DATABASE_* 前缀变量拼出一个 pgx 认得的 DSN。
+//
+// ⚠️ 没有单个 PG_DSN 这种东西——`006` §4.4 的资源注入是分开的五个变量
+// （HOST/PORT/USER/PASSWORD/NAME），brickkit up --dry-run 生成的 compose
+// 环境变量表可以直接核对。sslmode=disable 是本地/内网部署的默认值，
+// TLS 需求留给未来客户按需求提，不在这一批范围内。
+func buildPGDSN() (string, error) {
+	host, ok := os.LookupEnv("DATABASE_HOST")
+	if !ok {
+		return "", fmt.Errorf("DATABASE_HOST 未设置")
+	}
+	port, ok := os.LookupEnv("DATABASE_PORT")
+	if !ok {
+		return "", fmt.Errorf("DATABASE_PORT 未设置")
+	}
+	user, ok := os.LookupEnv("DATABASE_USER")
+	if !ok {
+		return "", fmt.Errorf("DATABASE_USER 未设置")
+	}
+	password, ok := os.LookupEnv("DATABASE_PASSWORD")
+	if !ok {
+		return "", fmt.Errorf("DATABASE_PASSWORD 未设置")
+	}
+	name, ok := os.LookupEnv("DATABASE_NAME")
+	if !ok {
+		return "", fmt.Errorf("DATABASE_NAME 未设置")
+	}
+	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
+		user, password, host, port, name), nil
+}
+
+// buildNATSURL 从 MQ_* 前缀变量拼出 nats.Connect 认得的 URL。
+//
+// ⚠️ 同样没有单个 NATS_URL。MQ_USER/MQ_PASSWORD 是否存在取决于这个部署的
+// nats 资源有没有配认证——本项目的 nats-shared 没配，所以要支持两种形态，
+// 不能假设一定有认证信息。
+func buildNATSURL() string {
+	host := os.Getenv("MQ_HOST")
+	port := os.Getenv("MQ_PORT")
+	user, hasUser := os.LookupEnv("MQ_USER")
+	password := os.Getenv("MQ_PASSWORD")
+	if hasUser && user != "" {
+		return fmt.Sprintf("nats://%s:%s@%s:%s", user, password, host, port)
+	}
+	return fmt.Sprintf("nats://%s:%s", host, port)
 }
 
 // exitf 是 RunStandalone 内部专用的错误退出路径——它本身不算「模块

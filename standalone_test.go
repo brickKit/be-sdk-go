@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -65,18 +66,26 @@ func TestServeHTTP_真的Listen且ctx_cancel后优雅关停(t *testing.T) {
 
 func TestServeExtraPort_真的Listen且ctx_cancel后优雅关停(t *testing.T) {
 	port := freePortForTest(t)
-	var registered bool
+	// ⚠️ 实测踩坑（-race 抓到，且是真的会发生，不只是内存可见性问题）：
+	// serveExtraPort 内部先 net.Listen 再 register(srv)——TCP 层的监听
+	// backlog 在 register 跑之前就已经能接受连接了，waitForListen 只探测
+	// 裸 TCP 连通性，不能保证 register 回调已经执行完。用一个专门的
+	// channel 等 register 真的跑完，而不是靠一个没有同步原语保护的裸
+	// bool 变量去猜"端口能连了 register 应该也跑完了"。
+	registered := make(chan struct{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- serveExtraPort(ctx, "grpc", port, func(s *grpc.Server) { registered = true })
+		done <- serveExtraPort(ctx, "grpc", port, func(s *grpc.Server) { close(registered) })
 	}()
 
-	waitForListen(t, port)
-	if !registered {
-		t.Fatal("RegisterGRPC 回调应该已经被调用")
+	select {
+	case <-registered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RegisterGRPC 回调 2 秒内没有被调用")
 	}
+	waitForListen(t, port)
 
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
@@ -92,6 +101,55 @@ func TestServeExtraPort_真的Listen且ctx_cancel后优雅关停(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("serveExtraPort 在 ctx cancel 后没有及时返回（GracefulStop 超时）")
+	}
+}
+
+// ⚠️ v0.1.0 读的是单个 PG_DSN 环境变量，但平台实际注入的是分开的
+// DATABASE_HOST/PORT/USER/PASSWORD/NAME（mdm-customer 第一次真的
+// brickkit up --dry-run 之后才核对出来的落差，PG_DSN 从来不存在）。
+func TestBuildPGDSN_从DATABASE前缀变量拼出DSN(t *testing.T) {
+	t.Setenv("DATABASE_HOST", "host.docker.internal")
+	t.Setenv("DATABASE_PORT", "5432")
+	t.Setenv("DATABASE_USER", "postgres")
+	t.Setenv("DATABASE_PASSWORD", "s3cret")
+	t.Setenv("DATABASE_NAME", "brickkit_db")
+
+	dsn, err := buildPGDSN()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "postgres://postgres:s3cret@host.docker.internal:5432/brickkit_db?sslmode=disable"
+	if dsn != want {
+		t.Fatalf("期望 %q，得到 %q", want, dsn)
+	}
+}
+
+// 同理，NATS_URL 也从来不存在——平台注入的是 MQ_HOST/MQ_PORT（本项目的
+// nats-shared 资源没配 username/password，所以 MQ_USER/MQ_PASSWORD 不会
+// 被注入；这里两种情况都要对）。
+func TestBuildNATSURL_无认证(t *testing.T) {
+	t.Setenv("MQ_HOST", "host.docker.internal")
+	t.Setenv("MQ_PORT", "4222")
+	os.Unsetenv("MQ_USER")
+	os.Unsetenv("MQ_PASSWORD")
+
+	got := buildNATSURL()
+	want := "nats://host.docker.internal:4222"
+	if got != want {
+		t.Fatalf("期望 %q，得到 %q", want, got)
+	}
+}
+
+func TestBuildNATSURL_带认证(t *testing.T) {
+	t.Setenv("MQ_HOST", "host.docker.internal")
+	t.Setenv("MQ_PORT", "4222")
+	t.Setenv("MQ_USER", "brickkit")
+	t.Setenv("MQ_PASSWORD", "s3cret")
+
+	got := buildNATSURL()
+	want := "nats://brickkit:s3cret@host.docker.internal:4222"
+	if got != want {
+		t.Fatalf("期望 %q，得到 %q", want, got)
 	}
 }
 
@@ -128,16 +186,31 @@ func TestRunStandalone_newModule失败时非零码退出且日志带componentID(
 	if os.Getenv("BESDK_SUBPROCESS_EXIT_TEST") == "1" {
 		os.Setenv("COMPONENT_ID", "test/failing-module")
 		os.Setenv("COMPONENT_VERSION", "0.0.1")
-		os.Setenv("HTTP_PORT", "0")
-		os.Setenv("PG_DSN", "postgres://user:pass@localhost:1/doesnotmatter") // sql.Open 是懒的，不会真连
-		os.Setenv("NATS_URL", natsURLForTest(t))                             // nats.Connect 是急的，必须真能连上
+		// HTTP_PORT/PG_DSN/NATS_URL 都不是平台真的会注入的变量（§13.8.1、
+		// 006 §4.4）——端口从 component.yaml 读（cmd.Dir 指向的临时目录，
+		// 见下方父进程），数据库/NATS 走分开的 DATABASE_*/MQ_* 变量。
+		os.Setenv("DATABASE_HOST", "localhost")
+		os.Setenv("DATABASE_PORT", "1")
+		os.Setenv("DATABASE_USER", "user")
+		os.Setenv("DATABASE_PASSWORD", "pass") // sql.Open 是懒的，不会真连
+		os.Setenv("DATABASE_NAME", "doesnotmatter")
+		host, port := natsHostPortForTest(t) // nats.Connect 是急的，必须真能连上
+		os.Setenv("MQ_HOST", host)
+		os.Setenv("MQ_PORT", port)
 		RunStandalone(func(context.Context, *Runtime) (*Module, error) {
 			return nil, errors.New("模拟初始化失败")
 		})
 		return // 走不到这里——RunStandalone 应该已经 os.Exit(1) 了
 	}
 
+	dir := t.TempDir()
+	manifest := "deployment:\n  port: 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "component.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	cmd := exec.Command(os.Args[0], "-test.run", "TestRunStandalone_newModule失败时非零码退出且日志带componentID")
+	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "BESDK_SUBPROCESS_EXIT_TEST=1")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
