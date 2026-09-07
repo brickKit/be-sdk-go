@@ -14,6 +14,10 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 
 下面六条各自的根因都不一样，但读完会发现一条更值钱的共性：**六条里有五条（除了 `v0.1.3` 那条纯 SQL 语义问题）的根本原因都是"测试构造被测对象的路径，和生产环境构造它的路径不是同一条"**——`v0.1.4` 的注释里已经点破过一次，这里提到顶部是因为它不只是那一条 bug 的教训，是这整个基础库的测试**该怎么写**的判据：**能走真实的 `RunStandalone`/子进程/真实端口，就不要在测试里手工拼一个"看起来等价"的对象去代替它**。下一个语言的 `be-sdk-python`/`be-sdk-ts` 写测试时，先确认这一条。
 
+## 现状（阶段二 Task 10，`v0.1.8`）
+
+`erp-inventory` 是阶段二第一个真的调用 `Consume` 的组件（阶段一只有 SDK 自己的测试验过它）——一用就压出一个 bug：`handleOne` 只 `db.BeginTx` 过，没有像 `WithTx` 那样 `SET LOCAL ROLE` + `SET LOCAL search_path`。业务代码在 `fn` 里按 `WithTx` 的约定写"不带 schema 前缀"的 SQL（如 `INSERT INTO product_tracking_snapshots ...`），在 `Consume` 给的 `tx` 上会直接报 `relation does not exist`——两个入口给业务代码的假设不一致。`Consume` 签名加了 `role` 参数，`handleOne` 内部现在做和 `WithTx` 完全一样的两条 `SET LOCAL`。因为在这之前没有任何组件真的调用过 `Consume`（阶段一到阶段二 Task 10 之前，唯一的调用方是 SDK 自己的测试），改签名不影响任何真实调用方，走的是同一套"形状还没定型就趁早改对"的判据（同 Task 1 的三处签名）。新增回归测试 `TestConsume_fn拿到的tx已经切好schema`：断言 `fn` 里不带 schema 前缀也能查到表，手动回退过一次验证它在没有这个修复时真的会红（报 `42P01 relation does not exist`）。
+
 ## 现状（阶段一 Task 16，`v0.1.6`）
 
 验证验收标准 5（"停 PostgreSQL，`/healthz` 仍应 200"）时，真的 `docker stop` 了 postgres——结果不是健康检查失败，而是**整个容器进入几百毫秒一次的重启死循环**。根因：`StartOutboxPump` 的 `pumpOnce` 查询失败被当成硬错误直接 `return`，这个 error 顺着 `Module.Start` 的 `errCh` 一路传到 `RunStandalone` 顶层，被当成"服务异常退出"，进程退出，Docker 重启策略又把它拉起来，立刻重连又立刻失败，如此循环——这段时间里 HTTP/gRPC 完全没人能连，是一条完全独立于"`/healthz` 不查依赖"设计之外的故障传播路径。同一个 `Module.Start` 里的 `partition.Start` 从一开始就没有这个问题（失败只记日志、留到下一轮重试），`StartOutboxPump` 没有对齐这套容错方式。已给 `StartOutboxPump` 加 `logger *slog.Logger` 参数，`pumpOnce` 失败（非 ctx 取消）只记日志、循环继续。**这条对任何用 Outbox 的组件都成立**，不是 mdm-customer 专属。

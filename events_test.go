@@ -74,7 +74,7 @@ func TestConsume_hop_count超过5丢弃进DLQ(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	go func() {
-		_ = Consume(ctx, nc, db, "besdk_events_probe", "test.events.hopcount.v1",
+		_ = Consume(ctx, nc, db, "postgres", "besdk_events_probe", "test.events.hopcount.v1",
 			func(context.Context, *sql.Tx, Event) error {
 				called.Store(true)
 				return nil
@@ -105,7 +105,7 @@ func TestConsume_消费幂等_同idempotency投两次只落一次(t *testing.T) 
 	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		_ = Consume(ctx, nc, db, "besdk_events_probe", "test.events.idem.v1",
+		_ = Consume(ctx, nc, db, "postgres", "besdk_events_probe", "test.events.idem.v1",
 			func(context.Context, *sql.Tx, Event) error {
 				callCount.Add(1)
 				return nil
@@ -126,6 +126,48 @@ func TestConsume_消费幂等_同idempotency投两次只落一次(t *testing.T) 
 	}
 }
 
+// TestConsume_fn拿到的tx已经切好schema 是 erp-inventory 实现消费者时压出
+// 的真实 bug：早期签名下 fn 拿到的 tx 只 BeginTx 过，没有 SET LOCAL
+// search_path——业务代码按 WithTx 的约定写"不带 schema 前缀"的 SQL
+// （如 `INSERT INTO product_tracking_snapshots ...`）在这种 tx 上会直接
+// 报"relation does not exist"。这条测试断言 fn 收到的 tx 能不带前缀地
+// 查到 event_inbox 表，证明 search_path 已经切到位。
+func TestConsume_fn拿到的tx已经切好schema(t *testing.T) {
+	db := setupEventsProbeDB(t)
+	nc, err := nats.Connect(natsURLForTest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+
+	var queryErr error
+	var count int
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		_ = Consume(ctx, nc, db, "postgres", "besdk_events_probe", "test.events.schema.v1",
+			func(_ context.Context, tx *sql.Tx, _ Event) error {
+				// ⚠️ 故意不写 schema 前缀——这正是业务代码（同 WithTx 里
+				// 的 fn）会写的形式，也是早期签名下会报错的地方。
+				queryErr = tx.QueryRow(`SELECT count(*) FROM event_inbox`).Scan(&count)
+				return nil
+			})
+		close(done)
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	publishTestEvent(t, nc, "test.events.schema.v1", "agg-schema", 1, 0)
+	nc.Flush()
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	<-done
+
+	if queryErr != nil {
+		t.Fatalf("fn 里不带 schema 前缀查表应该能查到——search_path 应该已经切好，实际报错：%v", queryErr)
+	}
+}
+
 func TestConsume_version不大于本地当前值时跳过(t *testing.T) {
 	db := setupEventsProbeDB(t)
 	nc, err := nats.Connect(natsURLForTest(t))
@@ -139,7 +181,7 @@ func TestConsume_version不大于本地当前值时跳过(t *testing.T) {
 	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		_ = Consume(ctx, nc, db, "besdk_events_probe", "test.events.version.v1",
+		_ = Consume(ctx, nc, db, "postgres", "besdk_events_probe", "test.events.version.v1",
 			func(_ context.Context, _ *sql.Tx, ev Event) error {
 				applied = append(applied, ev.Version)
 				return nil
