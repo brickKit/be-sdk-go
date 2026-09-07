@@ -10,6 +10,10 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 | `SET LOCAL` 事务 | `tx.go` | 不带 `LOCAL` 的 `SET` 之后连接还回池，下一个借用者原样继承，悄悄读写别人的数据（十八条第 2 条） |
 | 单跑/合并统一入口 | `standalone.go`、`module.go`、`runtime.go`、`gin.go` | 每个组件各发明一个 `main`，合并那天全部重写（十八条第 18 条） |
 
+## 从 `v0.1.1` 到 `v0.1.6` 修的六个 bug，五个是同一类问题
+
+下面六条各自的根因都不一样，但读完会发现一条更值钱的共性：**六条里有五条（除了 `v0.1.3` 那条纯 SQL 语义问题）的根本原因都是"测试构造被测对象的路径，和生产环境构造它的路径不是同一条"**——`v0.1.4` 的注释里已经点破过一次，这里提到顶部是因为它不只是那一条 bug 的教训，是这整个基础库的测试**该怎么写**的判据：**能走真实的 `RunStandalone`/子进程/真实端口，就不要在测试里手工拼一个"看起来等价"的对象去代替它**。下一个语言的 `be-sdk-python`/`be-sdk-ts` 写测试时，先确认这一条。
+
 ## 现状（阶段一 Task 16，`v0.1.6`）
 
 验证验收标准 5（"停 PostgreSQL，`/healthz` 仍应 200"）时，真的 `docker stop` 了 postgres——结果不是健康检查失败，而是**整个容器进入几百毫秒一次的重启死循环**。根因：`StartOutboxPump` 的 `pumpOnce` 查询失败被当成硬错误直接 `return`，这个 error 顺着 `Module.Start` 的 `errCh` 一路传到 `RunStandalone` 顶层，被当成"服务异常退出"，进程退出，Docker 重启策略又把它拉起来，立刻重连又立刻失败，如此循环——这段时间里 HTTP/gRPC 完全没人能连，是一条完全独立于"`/healthz` 不查依赖"设计之外的故障传播路径。同一个 `Module.Start` 里的 `partition.Start` 从一开始就没有这个问题（失败只记日志、留到下一轮重试），`StartOutboxPump` 没有对齐这套容错方式。已给 `StartOutboxPump` 加 `logger *slog.Logger` 参数，`pumpOnce` 失败（非 ctx 取消）只记日志、循环继续。**这条对任何用 Outbox 的组件都成立**，不是 mdm-customer 专属。
