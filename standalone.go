@@ -108,6 +108,14 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 		ExtraPorts: ports.ExtraPorts,
 	}
 
+	// ⚠️ 权限判定的进程级状态在这里装配一次，同 Tracer/Meter 那一类
+	// "只能有一份、模块不许自己碰"的东西（§12.5.2）。iamJwksUrl/
+	// authzBundleUrl 任一没配都保持阶段二的 fail-closed stub 行为——
+	// Task 6 之前，全部已发布组件的路由都还标着 besdk.Public，这里的
+	// 真实判定逻辑对它们是休眠的，不会有任何行为变化。
+	verifier, bundle := setupAuthzRuntime(ctx, rt.Config, rt.Logger)
+	setAuthzRuntime(verifier, bundle)
+
 	mod, err := newModule(ctx, rt)
 	if err != nil {
 		exitf(componentID, "组件初始化失败：%v", err)

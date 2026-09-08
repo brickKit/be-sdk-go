@@ -10,6 +10,17 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 | `SET LOCAL` 事务 | `tx.go` | 不带 `LOCAL` 的 `SET` 之后连接还回池，下一个借用者原样继承，悄悄读写别人的数据（十八条第 2 条） |
 | 单跑/合并统一入口 | `standalone.go`、`module.go`、`runtime.go`、`gin.go` | 每个组件各发明一个 `main`，合并那天全部重写（十八条第 18 条） |
 
+## 现状（阶段三 Task 5，权限判定真正上线）
+
+`RequirePermission`/`ScopeOf` 从阶段二的 fail-closed stub 换成真实判定——这是三个 `be-sdk-*` 共用的机制，`infra-authz` 建成之后才有真实数据可以对着测。
+
+- **JWT 本地验签**：`iamJwksUrl` 指向的 JWKS 端点，用 [`MicahParks/keyfunc`](https://github.com/MicahParks/keyfunc)（自带 JWK Set 后台刷新，不用自己写缓存）配 [`golang-jwt/jwt/v5`](https://github.com/golang-jwt/jwt)，只认 `RS256`。`infra-iam-casdoor` 要到阶段三 Task 7 才建仓库，暂时没有真实签发方——测试自己起一对 RSA 密钥 + 一个 `httptest.Server` 当 JWKS 端点，加密运算是真的，只是身份是测试夹具。
+- **bundle 轮询**：15 秒条件 GET `authzBundleUrl`（`If-None-Match`，未变化 304 不重新解析），进程级单例，模块代码看不见（§14.1.4）。有一条测试真等 15 秒验证"改角色分配不重启组件也能生效"，不是 mock 时钟。
+- **`Authenticated` 新哨兵值**：阶段三 Task 4 写 `infra-authz` 时发现的真实缺口——`Public`/具体权限键两档之间缺"已登录即可，不需要权限键"这一档（`GET /api/me/permissions` 这类端点）。仍然验签、仍然查 `stale_since`，只是跳过权限键查找。
+- **降级语义按 §14.1.9 精确区分三种状态**：`iamJwksUrl` 没配 → 阶段二遗留行为，非 Public 一律 403；配了但 bundle 从没连上过 → 503（不是 403，语义更准）；连上过但角色没这条权限 → 403。
+- **`ScopeOf` 是纯函数**（§14.2.4）：`Prefix`/`Exact`/`Owner` 三个字段永远从同一份 JWT 的 `dept_path`/`sub` 填，"这次查询该用哪一档"是调用方某条 `.sql` 的静态选择，不是 `ScopeOf` 自己判断。⚠️ **一处容易反方向的细节**：`ctx` 里取不到 Claims 时不能返回零值 `ScopeFilter{}`——§14.2.4 的 SQL 约定"空字符串表示不限"，零值会被下游解读成放行一切，是 fail-open 不是 fail-closed。这里改成 `panic`，让编程错误（在 `Start()`/事件 handler 里误用）在联调阶段就现形。
+- 真机验证：起了本地 `infra-authz` 容器，`be-sdk-go` 的轮询客户端直接打它真实的 `GET /authz/bundle`，确认认得出自举种子数据 `authz_admin`/`infra.authz.admin`——两边是分开写的，这条测试专门抓"字段名各写各的"这类耦合裂缝。
+
 ## 从 `v0.1.1` 到 `v0.1.6` 修的六个 bug，五个是同一类问题
 
 下面六条各自的根因都不一样，但读完会发现一条更值钱的共性：**六条里有五条（除了 `v0.1.3` 那条纯 SQL 语义问题）的根本原因都是"测试构造被测对象的路径，和生产环境构造它的路径不是同一条"**——`v0.1.4` 的注释里已经点破过一次，这里提到顶部是因为它不只是那一条 bug 的教训，是这整个基础库的测试**该怎么写**的判据：**能走真实的 `RunStandalone`/子进程/真实端口，就不要在测试里手工拼一个"看起来等价"的对象去代替它**。下一个语言的 `be-sdk-python`/`be-sdk-ts` 写测试时，先确认这一条。
@@ -88,4 +99,4 @@ func main() { besdk.RunStandalone(module.New) }
 
 ## 依赖
 
-`gin` / `pgx`（不用 `lib/pq`）/ `nats.go` / `go.opentelemetry.io/otel` / `google.golang.org/grpc` / `prometheus/client_golang`。版本精确锁定（`go.mod` 里没有 `latest`），`go 1.25`——理由见 `docs/dev/实测踩坑记录.md` 类别 D0。
+`gin` / `pgx`（不用 `lib/pq`）/ `nats.go` / `go.opentelemetry.io/otel` / `google.golang.org/grpc` / `prometheus/client_golang` / `golang-jwt/jwt/v5` / `MicahParks/keyfunc`（+ 间接依赖 `MicahParks/jwkset`）。版本精确锁定（`go.mod` 里没有 `latest`），`go 1.25`——理由见 `docs/dev/实测踩坑记录.md` 类别 D0。
