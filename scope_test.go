@@ -53,3 +53,24 @@ func TestScopeOf_ctx里没有Claims时panic(t *testing.T) {
 	}()
 	ScopeOf(context.Background())
 }
+
+// TestContextWithClaims_供业务组件单元测试构造ctx 是阶段三 Task 6 写
+// erp-inventory 的 service 层测试时发现的真实缺口的直接测试：claimsCtxKey
+// 是包内私有类型，在此之前业务组件的 _test.go 没有任何公开 API 能构造出
+// ScopeOf 认得的 ctx。ContextWithClaims 就是补的这条口子——断言它产出的
+// ctx 喂给 ScopeOf 得到的结果，与包内私有的 ctxWithClaims 完全一致
+// （两条路径必须是同一件事，不能有第二套"稍微不一样"的语义）。
+func TestContextWithClaims_供业务组件单元测试构造ctx(t *testing.T) {
+	claims := Claims{Sub: "u_lisi", DeptPath: "/root/china/south"}
+	ctx := ContextWithClaims(context.Background(), claims)
+
+	f := ScopeOf(ctx)
+	want := ScopeOf(ctxWithClaims(&claims))
+	if f.All != want.All || f.Prefix != want.Prefix || f.Exact != want.Exact || f.Owner != want.Owner {
+		t.Fatalf("ContextWithClaims 产出的 ctx 喂给 ScopeOf 应该与包内 ctxWithClaims 结果一致，"+
+			"实际 %+v，期望 %+v", f, want)
+	}
+	if f.Owner != "u_lisi" || f.Prefix != "/root/china/south" {
+		t.Fatalf("ScopeOf(ContextWithClaims(...)) 应该真的按 Claims 字段填，实际 %+v", f)
+	}
+}

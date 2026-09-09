@@ -111,6 +111,20 @@ func claimsFromContext(ctx context.Context) (*Claims, bool) {
 	return claims, ok
 }
 
+// ContextWithClaims 把一份 Claims 塞进 ctx，供业务组件自己的单元测试
+// 构造"已经过 RequirePermission 验签"的 ctx 用——阶段三 Task 6 写
+// erp-inventory 的 service 层测试时发现的真实缺口：claimsCtxKey 是包内
+// 私有类型，在此之前业务组件没有任何办法构造出 ScopeOf 认得的 ctx，
+// 只能要么整条测试改跑真实签名的 JWT（成本过高，"service 层单元测试"
+// 这一层测的就不该是验签本身），要么退化成不测这一层。
+//
+// ⚠️ 只应出现在 _test.go 里——生产代码路径上的 Claims 只能来自
+// RequirePermission 的真实验签，这条口子存在的唯一理由是"业务组件的
+// 单元测试没有别的路能构造这个 ctx"，不是给生产代码抄近路用的。
+func ContextWithClaims(ctx context.Context, claims Claims) context.Context {
+	return context.WithValue(ctx, claimsCtxKey{}, &claims)
+}
+
 // RequirePermission 是判定本体。判定链（设计书 §14.1.6 第 3 步、§14.1.9）：
 //  1. Public：直接放行，不验签——/healthz 这类必须匿名可达的端点靠这条。
 //  2. 验签 JWT（本地，JWKS 从 iamJwksUrl 来）；没配 iamJwksUrl（authzRuntime.verifier
