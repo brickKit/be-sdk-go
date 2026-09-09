@@ -10,6 +10,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func newTestRuntime(t *testing.T) (*Runtime, *tracetest.SpanRecorder) {
@@ -86,6 +88,41 @@ func TestNewGinEngine_每个请求产生一个span与一条RED指标(t *testing.
 	engine.ServeHTTP(mw, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if !strings.Contains(mw.Body.String(), "http_requests_total") {
 		t.Fatalf("/metrics 输出里应该有 http_requests_total，实际：%s", mw.Body.String())
+	}
+}
+
+// TestNewGinEngine_RED指标与访问日志记录真实状态码而不是200 是真机部署
+// infra-iam-casdoor 时发现的真实 bug 的回归测试：业务 handler 用
+// c.Error(status.Error(...)) 上报错误（不是自己 c.JSON 显式设状态码）
+// 时，Gin 的默认状态码在 recoveryAndErrorMappingMiddleware 把它改写成
+// 真实值之前一直是 200——如果 RED 指标/访问日志所在的中间件排在
+// recoveryAndErrorMappingMiddleware **前面**（Gin 中间件 after-Next 代码
+// 按注册顺序倒序执行，越早注册的越晚才读到"最终"状态），它们会读到
+// 还没被改写的默认值，把一个真实的 403 记成 200。真实响应本身是对的
+// （客户端拿到的确实是 403），只有指标/日志记录不对——这是最容易被
+// 忽略的一类症状，因为端到端功能测试全部会通过，只有专门去看
+// Prometheus/日志才会发现。
+func TestNewGinEngine_RED指标与访问日志记录真实状态码而不是200(t *testing.T) {
+	rt, _ := newTestRuntime(t)
+	engine := NewGinEngine(rt)
+	engine.GET("/denied", func(c *gin.Context) {
+		_ = c.Error(status.Error(codes.PermissionDenied, "无权限"))
+	})
+
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/denied", nil))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("真实响应应该是 403，实际 %d", w.Code)
+	}
+
+	mw := httptest.NewRecorder()
+	engine.ServeHTTP(mw, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := mw.Body.String()
+	if strings.Contains(body, `route="/denied",status="OK"} 1`) {
+		t.Fatalf("RED 指标把一个真实的 403 记成了 200：\n%s", body)
+	}
+	if !strings.Contains(body, `route="/denied",status="Forbidden"} 1`) {
+		t.Fatalf("RED 指标应该记录真实状态码 403（Forbidden），实际：\n%s", body)
 	}
 }
 

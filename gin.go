@@ -38,12 +38,28 @@ func NewGinEngine(rt *Runtime) *gin.Engine {
 
 	engine := gin.New()
 
+	// ⚠️ recoveryAndErrorMappingMiddleware 必须排在 redMetricsMiddleware/
+	// accessLogMiddleware 之后（真机测试踩出来的真实 bug，见
+	// docs/authz-protocol.md 同一批实测记录，或直接对照下面的例子）：
+	// Gin 中间件 c.Next() 之后的代码按注册顺序**倒序**执行，
+	// recoveryAndErrorMappingMiddleware 是"业务 handler 调
+	// c.Error(status.Error(...))、这里事后翻译成真实 HTTP 状态码"的
+	// 那一层——它排在 redMetrics/accessLog **前面**时，这两个中间件的
+	// after-Next 代码会先跑、读到的是 Gin 还没被改写过的默认状态码
+	// （200），而不是稍后才被 recoveryAndErrorMappingMiddleware 改写
+	// 出来的真实状态码；等 recoveryAndErrorMappingMiddleware 自己的
+	// after-Next 代码跑到、调 c.JSON(403, ...) 时，RED 指标与访问日志
+	// 早就已经记完"200"了——症状是：真实响应确实是 403（客户端收到的
+	// 没问题），但 Prometheus 的 http_requests_total 与访问日志里这条
+	// 请求永远显示 200，Grafana 的错误率面板因此对所有走 c.Error(...)
+	// 路径的失败视而不见。现在排在最后，它的 after-Next 代码在倒序里
+	// 最先执行，把状态码改对之后，RED 指标与访问日志才读到真实值。
 	engine.Use(
 		requestIDMiddleware(),
 		tracingMiddleware(rt),
-		recoveryAndErrorMappingMiddleware(rt),
 		redMetricsMiddleware(reqTotal, reqDuration),
 		accessLogMiddleware(rt),
+		recoveryAndErrorMappingMiddleware(rt),
 	)
 
 	// §12.3.6：/healthz 只答「进程还活着」，不做任何依赖探测。
