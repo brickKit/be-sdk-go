@@ -12,7 +12,7 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 
 ## 现状（阶段三 Task 5，权限判定真正上线）
 
-`RequirePermission`/`ScopeOf` 从阶段二的 fail-closed stub 换成真实判定——这是三个 `be-sdk-*` 共用的机制，`infra-authz` 建成之后才有真实数据可以对着测。
+`RequirePermission`/`ScopeOf` 从阶段二的 fail-closed stub 换成真实判定——这是三个 `be-sdk-*` 共用的机制，`infra-authz` 建成之后才有真实数据可以对着测。⚠️ **这套机制本身的协议描述（JWT claims 约定、bundle 的 wire format、判定链、ScopeFilter 语义）见 [`docs/authz-protocol.md`](docs/authz-protocol.md)**——独立写的，不假设读者知道 brickKit 是什么，换一个签发方/策略服务实现也能对着它接。
 
 - **JWT 本地验签**：`iamJwksUrl` 指向的 JWKS 端点，用 [`MicahParks/keyfunc`](https://github.com/MicahParks/keyfunc)（自带 JWK Set 后台刷新，不用自己写缓存）配 [`golang-jwt/jwt/v5`](https://github.com/golang-jwt/jwt)，只认 `RS256`。`infra-iam-casdoor` 要到阶段三 Task 7 才建仓库，暂时没有真实签发方——测试自己起一对 RSA 密钥 + 一个 `httptest.Server` 当 JWKS 端点，加密运算是真的，只是身份是测试夹具。
 - **bundle 轮询**：15 秒条件 GET `authzBundleUrl`（`If-None-Match`，未变化 304 不重新解析），进程级单例，模块代码看不见（§14.1.4）。有一条测试真等 15 秒验证"改角色分配不重启组件也能生效"，不是 mock 时钟。
