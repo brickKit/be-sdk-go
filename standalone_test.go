@@ -5,19 +5,45 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
+
+// syncBuffer 是并发安全的 bytes.Buffer 包装——测试里的 logger 会从
+// serveExtraPort 的 goroutine 里写，主 goroutine 同时读，裸 bytes.Buffer
+// 在 -race 下会报数据竞争。
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // 十八条第 17 条：gin.SetMode 是包级全局，必须在 Bootstrap 里设一次，
 // 不能让它停在默认的 DebugMode（panic 堆栈会直接吐给客户端）。
@@ -78,7 +104,7 @@ func TestServeExtraPort_真的Listen且ctx_cancel后优雅关停(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- serveExtraPort(ctx, "grpc", port, func(s *grpc.Server) { close(registered) })
+		done <- serveExtraPort(ctx, "grpc", port, func(s *grpc.Server) { close(registered) }, NewLogger("test"))
 	}()
 
 	select {
@@ -102,6 +128,113 @@ func TestServeExtraPort_真的Listen且ctx_cancel后优雅关停(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("serveExtraPort 在 ctx cancel 后没有及时返回（GracefulStop 超时）")
+	}
+}
+
+// panicServiceDesc 是一个手写的最小 gRPC 服务描述，不需要专门写一份
+// .proto——唯一一个方法的 handler 直接 panic，供下面的测试验证
+// grpcRecoveryInterceptor 真的兜住了它（同 client_test.go 的
+// startTestGRPCServer 判据：借用/手搭一个真实服务比为一条测试写.proto
+// 更直接）。请求/响应都用 emptypb.Empty——内容不重要，只是要一个真实
+// 的 proto.Message 类型满足 grpc-go 的编解码。
+var panicServiceDesc = grpc.ServiceDesc{
+	ServiceName: "besdktest.PanicService",
+	HandlerType: (*any)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Panic",
+			Handler: func(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
+				in := new(emptypb.Empty)
+				if err := dec(in); err != nil {
+					return nil, err
+				}
+				handler := func(ctx context.Context, req any) (any, error) {
+					panic("boom：模拟一个未处理的 panic")
+				}
+				if interceptor == nil {
+					return handler(ctx, in)
+				}
+				info := &grpc.UnaryServerInfo{FullMethod: "/besdktest.PanicService/Panic"}
+				return interceptor(ctx, in, info, handler)
+			},
+		},
+	},
+	Streams: []grpc.StreamDesc{},
+}
+
+// TestServeExtraPort_handler里panic不崩进程返回Internal错误 是
+// docs/dev/实测踩坑记录.md C11 的直接回归测试：erp-inventory 的
+// Receive 等方法在 ctx 没有 Claims 时调 besdk.ScopeOf 会 panic，而裸
+// grpc.NewServer() 对此没有任何防护，一路把整个容器进程带崩
+// （真机复现：RestartCount 从 0 涨到 3）。这条测试真起一个
+// serveExtraPort 服务、真拨号、真调一个会 panic 的方法，断言：①客户端
+// 收到干净的 codes.Internal（不是连接被重置/EOF）；②服务进程本身活着
+// ——用同一条连接紧接着再调一次证明 grpc.Server 没有被这一次 panic
+// 拖垮（这正是"以前会崩容器"和"现在只是这一个 RPC 报错"的区别）。
+func TestServeExtraPort_handler里panic不崩进程返回Internal错误(t *testing.T) {
+	port := freePortForTest(t)
+	var loggedPanic bool
+	logBuf := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- serveExtraPort(ctx, "grpc", port, func(s *grpc.Server) {
+			s.RegisterService(&panicServiceDesc, nil)
+		}, logger)
+	}()
+	waitForListen(t, port)
+
+	cc, err := grpc.NewClient(fmt.Sprintf("127.0.0.1:%d", port), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+
+	callPanic := func() error {
+		return cc.Invoke(context.Background(), "/besdktest.PanicService/Panic", &emptypb.Empty{}, &emptypb.Empty{})
+	}
+
+	err = callPanic()
+	if err == nil {
+		t.Fatal("期望 panic 的方法返回 error，实际 nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("期望一个 gRPC status 错误（服务端干净返回，不是连接被重置），实际 %v", err)
+	}
+	if st.Code() != codes.Internal {
+		t.Fatalf("期望 codes.Internal，实际 %v（%s）", st.Code(), st.Message())
+	}
+	if strings.Contains(st.Message(), "boom") {
+		t.Fatalf("panic 的原始内容不该回传给客户端，实际响应里带了：%q", st.Message())
+	}
+
+	// ⚠️ 核心断言：进程/server 本身没有被这次 panic 拖垮，同一条连接立刻
+	// 能再调一次（哪怕还是同一个会 panic 的方法，只要能收到第二次干净的
+	// Internal 而不是连接失败，就证明 grpc.Server 挺过了第一次 panic）。
+	if err := callPanic(); err != nil {
+		if st, ok := status.FromError(err); !ok || st.Code() != codes.Internal {
+			t.Fatalf("panic 之后 server 应该继续正常服务，第二次调用期望还是干净的 codes.Internal，实际 %v", err)
+		}
+	} else {
+		t.Fatal("第二次调用也该报错（handler 本身还是 panic），但至少证明了连接没死")
+	}
+
+	if strings.Contains(logBuf.String(), "gRPC 处理 panic") {
+		loggedPanic = true
+	}
+	if !loggedPanic {
+		t.Fatalf("期望日志里记一条 \"gRPC 处理 panic\"，实际日志：%s", logBuf.String())
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serveExtraPort 在 ctx cancel 后没有及时返回")
 	}
 }
 

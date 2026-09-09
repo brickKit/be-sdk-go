@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -16,6 +17,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Bootstrap 做进程级、只能有一份的那些初始化（OTel provider、日志根、
@@ -130,7 +133,7 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 	go func() { errCh <- serveHTTP(ctx, rt.HTTPPort, mod.HTTPHandler) }()
 	for name, port := range rt.ExtraPorts {
 		name, port := name, port
-		go func() { errCh <- serveExtraPort(ctx, name, port, mod.RegisterGRPC) }()
+		go func() { errCh <- serveExtraPort(ctx, name, port, mod.RegisterGRPC, rt.Logger) }()
 	}
 	if mod.Start != nil {
 		go func() {
@@ -169,7 +172,7 @@ func serveHTTP(ctx context.Context, port int, handler http.Handler) error {
 	return nil
 }
 
-func serveExtraPort(ctx context.Context, name string, port int, register func(*grpc.Server)) error {
+func serveExtraPort(ctx context.Context, name string, port int, register func(*grpc.Server), logger *slog.Logger) error {
 	if register == nil {
 		return nil
 	}
@@ -177,7 +180,14 @@ func serveExtraPort(ctx context.Context, name string, port int, register func(*g
 	if err != nil {
 		return fmt.Errorf("额外端口 %s（:%d）监听失败：%w", name, port, err)
 	}
-	srv := grpc.NewServer()
+	// ⚠️ grpcRecoveryInterceptor 不能省——同 gin.go 的
+	// recoveryAndErrorMappingMiddleware 是同一个判据，只是这条防线在
+	// gRPC 侧从 v0.1.0 起一直缺失，直到 erp-inventory 真机测试触发一个
+	// handler 内部 panic（ctx 里没有 Claims 时调 besdk.ScopeOf）把整个
+	// 容器进程带崩才发现（be-assembly-standard 的
+	// docs/dev/实测踩坑记录.md C11）。裸 grpc.NewServer() 对 panic 没有
+	// 任何防护，一路冲出 grpc-go 自己的 handleStream。
+	srv := grpc.NewServer(grpc.UnaryInterceptor(grpcRecoveryInterceptor(logger)))
 	register(srv)
 	go func() {
 		<-ctx.Done()
@@ -187,6 +197,27 @@ func serveExtraPort(ctx context.Context, name string, port int, register func(*g
 		return fmt.Errorf("额外端口 %s 服务退出：%w", name, err)
 	}
 	return nil
+}
+
+// grpcRecoveryInterceptor 兜住 gRPC handler 里的 panic，转成
+// codes.Internal 返回给调用方，不让它一路冲出 grpc-go 崩掉整个进程——
+// HTTP 侧一直有对应的 recoveryAndErrorMappingMiddleware（gin.go），gRPC
+// 侧从这个包写下第一行起就没有对应物，这是补齐这条缺口。
+//
+// ⚠️ 不把 recover() 到的原始内容回传给客户端——同 HTTP 侧"internal
+// server error"的既有判据，panic 携带的值可能带着不该出现在响应里的
+// 内部细节（一条 SQL、一段路径），只在服务端日志里记全，客户端只收到
+// 一个不透露任何信息的通用错误。
+func grpcRecoveryInterceptor(logger *slog.Logger) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("gRPC 处理 panic", "recovered", r, "method", info.FullMethod)
+				err = status.Error(codes.Internal, "internal server error")
+			}
+		}()
+		return handler(ctx, req)
+	}
 }
 
 // mustGetenv 是 RunStandalone 内部用的——它是全项目唯一允许读进程环境变量

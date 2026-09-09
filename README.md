@@ -9,6 +9,15 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 | 组件地址剥 scheme | `endpoint.go` | `grpc.Dial("http://host:9094")` 连不上，报错指向名称解析（十八条第 1 条） |
 | `SET LOCAL` 事务 | `tx.go` | 不带 `LOCAL` 的 `SET` 之后连接还回池，下一个借用者原样继承，悄悄读写别人的数据（十八条第 2 条） |
 | 单跑/合并统一入口 | `standalone.go`、`module.go`、`runtime.go`、`gin.go` | 每个组件各发明一个 `main`，合并那天全部重写（十八条第 18 条） |
+| gRPC panic 恢复 | `standalone.go` 的 `grpcRecoveryInterceptor` | handler 里一个未处理的 panic（比如 ctx 没有 Claims 时误调 `ScopeOf`）不受任何东西保护，会一路冲出 grpc-go 崩掉整个进程——HTTP 侧一直有 `recoveryAndErrorMappingMiddleware`，gRPC 侧直到 `v0.2.4` 才补上对应物 |
+
+## 现状（阶段三 Task 8，`v0.2.4`）
+
+`erp-inventory` 真机测试时崩了三次（`RestartCount` 0→3）：`Receive`/`Adjust`/`GetBalance`/`ListMovements` 四个方法自阶段三 Task 6 起会在 `service` 层调 `besdk.ScopeOf(ctx)`，这四个方法本来只该走 REST（有 `RequirePermission` 中间件保证 ctx 里有 Claims），但它们同时也在 gRPC 服务定义里——被直接用 gRPC 调用时（本仓库自己的测试代码图省事这么调过）ctx 里没有 Claims，`ScopeOf` 按设计 panic（fail-loud 是刻意的，见 `scope.go`），而 `serveExtraPort` 的 `grpc.NewServer()` 从 `v0.1.0` 起就是裸的、零拦截器——panic 没有任何防护，一路把整个容器进程带崩，不是"这一个 RPC 报错"。
+
+这不是 `erp-inventory` 一个组件的问题：**任何**组件的**任何** gRPC handler 未来出现类似疏漏都会是同样的后果（`Bootstrap`/`gin.go` 早就有的教训——十八条第 18 条"一个模块不许把整组拖下水"，但那条规则此前只在 HTTP 侧被真正兜住）。修法：`serveExtraPort` 的 `grpc.NewServer()` 加一个 `grpc.UnaryInterceptor(grpcRecoveryInterceptor(logger))`，同 `gin.go` 的 `recoveryAndErrorMappingMiddleware` 是同一个判据——`recover()` 到内容只记日志（`rt.Logger.Error`），不回传给客户端（同 HTTP 侧不泄露内部细节的既有判据），返回一个干净的 `codes.Internal`。新增回归测试 `TestServeExtraPort_handler里panic不崩进程返回Internal错误`：手写一个最小 `grpc.ServiceDesc`（不需要专门写 `.proto`）注册一个必然 panic 的方法，真拨号真调用，断言客户端收到干净的 `codes.Internal`（不是连接被重置/EOF）、panic 原始内容没有回传、且同一条连接紧接着能再调一次证明 server 本身没有被拖垮。
+
+详细的真机复现过程（`docker logs`/`RestartCount` 实证）记在 `be-assembly-standard` 仓库的 `docs/dev/实测踩坑记录.md` C11——那份文档追的是装配仓库真机部署时的坑，这里只记 SDK 自身改了什么。
 
 ## 现状（阶段三 Task 5，权限判定真正上线）
 
