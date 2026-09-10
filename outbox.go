@@ -33,13 +33,19 @@ func PublishOutbox(tx *sql.Tx, schema string, ev Event) error {
 
 const outboxPollInterval = 200 * time.Millisecond
 
+// outboxClaimTimeout：一行认领成 SENDING 之后卡在这个状态超过这个时长，
+// 下一轮当作认领它的那个实例已经不在了（进程崩溃/被杀），重新可被认领。
+// 见 pumpOnce 顶部注释。
+const outboxClaimTimeout = 30 * time.Second
+
 // StartOutboxPump 起后台推送线程，轮询 outbox 发往 NATS。
 //
 // ⚠️ 这是 Module.Start 的典型用法——必须接 ctx，cancel 时返回，不许自己装
 // 信号处理器（§13.3 铁律七）。
 //
-// 发送成功立刻标记 PUBLISHED；发送失败只累加 attempts、状态留在 PENDING
-// 等下一轮重试——NATS 抖动不该让事件永久丢失，也不该让 pump 自己崩掉。
+// 每一批先原子认领（转 SENDING，见 pumpOnce）再逐条发布：发送成功立刻
+// 标记 PUBLISHED；发送失败转回 PENDING、累加 attempts，等下一轮重试——
+// NATS 抖动不该让事件永久丢失，也不该让 pump 自己崩掉。
 //
 // ⚠️ 实测踩坑：pumpOnce 查询数据库失败（连接抖动/短暂不可用）曾经被当作
 // 硬错误直接向上返回——StartOutboxPump 整个循环退出，Module.Start 的
@@ -77,13 +83,43 @@ func StartOutboxPump(ctx context.Context, db *sql.DB, schema string, nc *nats.Co
 	}
 }
 
-// pumpOnce 处理一批 PENDING 事件。失败的那一条只累加 attempts，不中断
-// 整批——一条坏数据不该卡住同一批里的其他事件。
+// pumpOnce 原子认领一批事件并发布。失败的那一条只累加 attempts、转回
+// PENDING，不中断整批——一条坏数据不该卡住同一批里的其他事件。
+//
+// ⚠️ 实测踩坑：早期版本这里是一条裸 SELECT ... WHERE status='PENDING'，
+// 读到就直接发，读和"认领"之间没有任何互斥手段。只要同一张 event_outbox
+// 物理表在某个时间窗口内被两个 pump 实例同时轮询到——K8s 滚动重启新旧
+// 两个副本重叠、或者同一个组件将来被扩到多副本——两边会读到同一批
+// PENDING 行，各自真的调一次 nc.PublishMsg，把同一个事件真实发布两遍到
+// NATS：这一步双方都不会报错，等两边各自把状态改成 PUBLISHED 时 SQL 层
+// 面同样不会报任何约束冲突，是完全静默的重复投递。这颗雷在测试套件全部
+// 串行跑、每个组件永远只有一个 pump 实例的现状下从未被真正触发过，是在
+// 评估"给测试开 t.Parallel()"是否安全时顺带查出来的。
+//
+// 现在改成 UPDATE ... FOR UPDATE SKIP LOCKED 的原子认领：子查询里锁住这
+// 一批行，另一个并发实例对同一行的 FOR UPDATE 会直接跳过去抢下一行，不
+// 会等锁也不会抢到重复的行。认领成功先转 SENDING 而不是直接发布完才改
+// 状态，是为了让"认领"这个动作本身在数据库侧一次性原子完成。
+//
+// 认领之后、发布完成之前如果进程崩溃（例如认领的那个实例被杀），这一批
+// 会卡在 SENDING——所以认领条件里同时接纳"超过 outboxClaimTimeout 还没
+// 结束的 SENDING"，靠这个超时兜底重新认领，不会让事件永久卡住（Outbox
+// 的核心承诺是至少一次投递，卡住等于悄悄丢事件，比重复投递更违背这个
+// 承诺）。
 func pumpOnce(ctx context.Context, db *sql.DB, schema string, nc *nats.Conn) error {
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT id, subject, aggregate_id, version, trace_id, causation_id, hop_count, payload
-		FROM %s.event_outbox
-		WHERE status = 'PENDING' ORDER BY id LIMIT 100`, schema))
+		UPDATE %[1]s.event_outbox
+		SET status = 'SENDING', updated_at = now()
+		WHERE id IN (
+			SELECT id FROM %[1]s.event_outbox
+			WHERE status = 'PENDING'
+			   OR (status = 'SENDING' AND updated_at < now() - interval '%[2]d seconds')
+			ORDER BY id
+			LIMIT 100
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING id, subject, aggregate_id, version, trace_id, causation_id, hop_count, payload`,
+		schema, int(outboxClaimTimeout.Seconds())))
 	if err != nil {
 		return err
 	}
@@ -129,8 +165,11 @@ func pumpOnce(ctx context.Context, db *sql.DB, schema string, nc *nats.Conn) err
 		msg.Header.Set(headerHopCount, fmt.Sprint(p.hopCount))
 
 		if err := nc.PublishMsg(msg); err != nil {
+			// 转回 PENDING，不是留在 SENDING——已经认领过一轮，留在
+			// SENDING 只能靠 outboxClaimTimeout 超时才能重新被认领，
+			// 白白多等一轮；发布失败是已知结果，没有理由不立刻还回去。
 			if _, uerr := db.ExecContext(ctx, fmt.Sprintf(
-				`UPDATE %s.event_outbox SET attempts = attempts + 1, updated_at = now() WHERE id = $1`, schema),
+				`UPDATE %s.event_outbox SET status = 'PENDING', attempts = attempts + 1, updated_at = now() WHERE id = $1`, schema),
 				p.id); uerr != nil {
 				return uerr
 			}

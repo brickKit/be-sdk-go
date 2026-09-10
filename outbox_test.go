@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -224,6 +226,183 @@ func TestStartOutboxPump_数据库查询失败不让循环退出(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("pump 在 ctx 到期后没有及时返回")
+	}
+}
+
+// ⚠️ 实测踩坑：这是给"要不要给测试套件开 t.Parallel()"做可行性评估时，
+// 顺带查出来的一个真实生产级 bug——早期的 pumpOnce 是裸 SELECT，读和
+// "认领"之间没有互斥手段，两个 pump 实例（K8s 滚动重启新旧副本重叠、或
+// 同一组件将来被扩到多副本）同时轮询同一张表会各自把同一批事件真实发布
+// 一遍，静默重复投递。这条测试就是这个 bug 的回归用例：真的起两个
+// goroutine 并发调用 pumpOnce，抢的是同一张物理表，断言每条事件只会被
+// NATS 收到恰好一次。
+func TestPumpOnce_两个实例并发认领同一批事件_每条只发一次(t *testing.T) {
+	db := setupOutboxProbeDB(t)
+	ctx := context.Background()
+
+	const n = 40
+	subject := "test.probe.concurrent.v1"
+	for i := 0; i < n; i++ {
+		aggID := fmt.Sprintf("concurrent-%d", i)
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO besdk_outbox_probe.event_outbox
+				(subject, aggregate_id, version, payload)
+			VALUES ($1, $2, 1, '{}')`, subject, aggID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	nc, err := nats.Connect(natsURLForTest(t))
+	if err != nil {
+		t.Fatalf("连接 NATS 失败：%v", err)
+	}
+	defer nc.Close()
+
+	var mu sync.Mutex
+	seen := map[string]int{}
+	sub, err := nc.Subscribe(subject, func(m *nats.Msg) {
+		aggID := m.Header.Get(headerAggregateID)
+		mu.Lock()
+		seen[aggID]++
+		mu.Unlock()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Unsubscribe()
+
+	// 两个 goroutine 卡在同一个 channel 上，尽量让两次 pumpOnce 真的在
+	// 同一个时间窗口里去抢同一批行，而不是先后错开各拿各的。
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- pumpOnce(ctx, db, "besdk_outbox_probe", nc)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("pumpOnce 不该报错：%v", err)
+		}
+	}
+
+	// NATS 投递是异步的，给回调一点时间落地。
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		total := 0
+		for _, c := range seen {
+			total += c
+		}
+		mu.Unlock()
+		if total >= n || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != n {
+		t.Fatalf("应该收到 %d 个不同的 aggregate_id，实际收到 %d 个", n, len(seen))
+	}
+	for aggID, count := range seen {
+		if count != 1 {
+			t.Fatalf("aggregate_id=%s 被投递了 %d 次，应该恰好 1 次——两个 pump 实例抢到了同一行", aggID, count)
+		}
+	}
+
+	var stillClaimable int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM besdk_outbox_probe.event_outbox
+		WHERE subject = $1 AND status != 'PUBLISHED'`, subject).Scan(&stillClaimable); err != nil {
+		t.Fatal(err)
+	}
+	if stillClaimable != 0 {
+		t.Fatalf("两次 pumpOnce 加起来应该认领完全部 %d 条，还剩 %d 条没转成 PUBLISHED", n, stillClaimable)
+	}
+}
+
+func TestPumpOnce_认领超时的SENDING行会被重新认领(t *testing.T) {
+	db := setupOutboxProbeDB(t)
+	ctx := context.Background()
+
+	subject := "test.probe.stuck.v1"
+	staleSeconds := int(outboxClaimTimeout.Seconds()) + 5
+	if _, err := db.ExecContext(ctx, fmt.Sprintf(`
+		INSERT INTO besdk_outbox_probe.event_outbox
+			(subject, aggregate_id, version, payload, status, updated_at)
+		VALUES ($1, 'stuck-1', 1, '{}', 'SENDING', now() - interval '%d seconds')`, staleSeconds),
+		subject); err != nil {
+		t.Fatal(err)
+	}
+
+	nc, err := nats.Connect(natsURLForTest(t))
+	if err != nil {
+		t.Fatalf("连接 NATS 失败：%v", err)
+	}
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Unsubscribe()
+
+	if err := pumpOnce(ctx, db, "besdk_outbox_probe", nc); err != nil {
+		t.Fatalf("pumpOnce 不该报错：%v", err)
+	}
+
+	if _, err := sub.NextMsg(2 * time.Second); err != nil {
+		t.Fatalf("卡住超时的 SENDING 行应该被重新认领并发出去，等消息超时：%v", err)
+	}
+
+	var status string
+	if err := db.QueryRowContext(ctx,
+		`SELECT status FROM besdk_outbox_probe.event_outbox WHERE aggregate_id = 'stuck-1'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "PUBLISHED" {
+		t.Fatalf("重新认领并发布成功后应该是 PUBLISHED，得到 %q", status)
+	}
+}
+
+func TestPumpOnce_未超时的SENDING行不会被重新认领(t *testing.T) {
+	db := setupOutboxProbeDB(t)
+	ctx := context.Background()
+
+	subject := "test.probe.inflight.v1"
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO besdk_outbox_probe.event_outbox
+			(subject, aggregate_id, version, payload, status)
+		VALUES ($1, 'inflight-1', 1, '{}', 'SENDING')`, subject); err != nil {
+		t.Fatal(err)
+	}
+
+	nc, err := nats.Connect(natsURLForTest(t))
+	if err != nil {
+		t.Fatalf("连接 NATS 失败：%v", err)
+	}
+	defer nc.Close()
+
+	if err := pumpOnce(ctx, db, "besdk_outbox_probe", nc); err != nil {
+		t.Fatalf("pumpOnce 不该报错：%v", err)
+	}
+
+	var status string
+	if err := db.QueryRowContext(ctx,
+		`SELECT status FROM besdk_outbox_probe.event_outbox WHERE aggregate_id = 'inflight-1'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "SENDING" {
+		t.Fatalf("刚认领不久（未超时）的 SENDING 行不该被别的实例重新认领，状态应仍是 SENDING，得到 %q", status)
 	}
 }
 
