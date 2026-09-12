@@ -90,3 +90,20 @@ func ServeHTTP(ctx context.Context, port int, handler http.Handler) error {
 func ServeExtraPort(ctx context.Context, name string, port int, register func(*grpc.Server), logger *slog.Logger) error {
 	return serveExtraPort(ctx, name, port, register, logger)
 }
+
+// BuildPGDSN 与 BuildNATSURL 是 buildPGDSN/buildNATSURL 的导出别名。
+//
+// 与 ShellModuleConfig 的字段不同，这两个不是"每模块各一份"——一个外壳
+// 只有一个共享登录角色、一条共享连接串（设计书 §13.3："brickkit.yaml
+// 里只有 5 个外壳登录角色"），这份 DATABASE_*/MQ_* 是外壳进程级的，
+// 从外壳自己的 os.Environ() 读一次就够，不属于"一个进程一份 environ
+// 会互相顶掉"那类风险（那条风险专指每模块各自的 config，不是整个外壳
+// 共享的连接信息）。导出这两个纯粹是为了不让外壳重新拼一遍同样的
+// DSN 格式化逻辑。
+func BuildPGDSN() (string, error) {
+	return buildPGDSN()
+}
+
+func BuildNATSURL() string {
+	return buildNATSURL()
+}

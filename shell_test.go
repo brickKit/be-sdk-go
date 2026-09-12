@@ -126,3 +126,36 @@ func TestServeExtraPort导出别名_行为与私有实现一致(t *testing.T) {
 		t.Fatal("ServeExtraPort 在 ctx 取消后没有及时退出")
 	}
 }
+
+// TestBuildPGDSN导出别名_行为与私有实现一致 与 TestBuildNATSURL导出别名
+// 同理，只验证导出别名真的转发到了 buildPGDSN/buildNATSURL——完整的
+// 拼接规则断言已经在 TestBuildPGDSN_从DATABASE前缀变量拼出DSN /
+// TestBuildNATSURL_* 里覆盖过，这里不重复。
+func TestBuildPGDSN导出别名_行为与私有实现一致(t *testing.T) {
+	t.Setenv("DATABASE_HOST", "host.docker.internal")
+	t.Setenv("DATABASE_PORT", "5432")
+	t.Setenv("DATABASE_USER", "postgres")
+	t.Setenv("DATABASE_PASSWORD", "s3cret")
+	t.Setenv("DATABASE_NAME", "brickkit_db")
+
+	got, err := BuildPGDSN()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := buildPGDSN()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("期望导出别名与私有实现一致，got=%q want=%q", got, want)
+	}
+}
+
+func TestBuildNATSURL导出别名_行为与私有实现一致(t *testing.T) {
+	t.Setenv("MQ_HOST", "host.docker.internal")
+	t.Setenv("MQ_PORT", "4222")
+
+	if got, want := BuildNATSURL(), buildNATSURL(); got != want {
+		t.Fatalf("期望导出别名与私有实现一致，got=%q want=%q", got, want)
+	}
+}
