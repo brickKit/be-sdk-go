@@ -72,9 +72,14 @@ type builtModule struct {
 // 成员迁移不在这里跑：v1 由 brickKit 在外壳启动前用每个成员自己的镜像和配置跑完。
 //
 // 启动阶段（任何一步、包括任一成员的构造函数）失败即中止并返回错误，返回前关掉共享池与
-// NATS 连接。启动之后，单个成员的失败（Start panic、Start 返回错误、它自己的端口退出）
-// 只记日志、不牵连其余成员：Run 只在 ctx 取消（返回 nil）或外壳自己的 /healthz 服务
-// 失败（返回该错误）时结束。
+// NATS 连接。启动之后分两类：
+//   - 任何端口的监听/服务失败（外壳 /healthz，或任一成员的 HTTP/额外端口，包括绑定失败和
+//     服务协程意外返回）→ Run 返回错误，外壳以非零码退出。成员端口死了而外壳 /healthz
+//     还是绿的，就是一次平台探测不到的静默故障，必须闹大；
+//   - 成员 Start() 的失败（panic 或返回错误）→ 隔离：记一条带 module_component_id 的
+//     ERROR 日志，其余成员照常服务，外壳继续运行。
+//
+// ctx 取消时全部优雅退出，返回 nil。
 func Run(ctx context.Context, cfg Config, members []ServedMember, registry Registry, logger *slog.Logger) error {
 	if cfg.HTTPPort <= 0 {
 		return fmt.Errorf("外壳 %s 的 HTTP 端口未设置（component.yaml 的 deployment.port）", cfg.ShellName)
@@ -125,42 +130,37 @@ func Run(ctx context.Context, cfg Config, members []ServedMember, registry Regis
 
 	// 外壳自己的 /healthz 是整个容器唯一的 probe（§13.6）。判据同每个模块自己的
 	// /healthz：只答"外壳进程活着"，不查任何成员、不查任何依赖（导读第 7 条）。
-	// 它是 errgroup 里唯一会把错误交回去的服务：它挂了，平台就再也探不到这个容器，
-	// 整个外壳退出交给重启策略。
+	// 它挂了，平台就再也探不到这个容器，整个外壳退出交给重启策略。
 	g.Go(func() error {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
-		err := besdk.ServeHTTP(gctx, cfg.HTTPPort, mux)
-		if err != nil {
-			logger.Error("外壳自己的健康检查端口退出", "error", err)
-		}
-		return err
+		return serveResult(gctx, logger, "", "/healthz", besdk.ServeHTTP(gctx, cfg.HTTPPort, mux))
 	})
 
-	// ⚠️ 成员的 goroutine 一律只记日志、返回 nil，绝不把错误流回 errgroup：
-	// errgroup.WithContext 收到第一个错误就取消 gctx，而 gctx 是全部成员的 HTTP/额外端口/
-	// Start 共用的同一个 ctx——一个成员出事等于把其余 N-1 个健康成员一起带下线，合并部署
-	// 就白白放弃了独立部署本来就有的故障隔离（阶段四 Task 11 真机复现过的缺口）。
-	// 代价：出事的那个成员从此停在故障状态，直到整个外壳下一次重启——这是有意接受的降级，
-	// 日志带 module_component_id 指出是谁。
+	// 成员的端口与外壳 /healthz 同一判据：任一失败都把错误交回 errgroup，取消 gctx，
+	// 全部成员优雅退出，Run 返回错误——外壳 /healthz 只代表"进程活着"，成员端口死了它
+	// 照样答 200，不闹大就没有任何东西会发现。
 	for _, b := range built {
 		b := b
 		g.Go(func() error {
-			if err := besdk.ServeHTTP(gctx, b.rt.HTTPPort, b.mod.HTTPHandler); err != nil {
-				logger.Error("模块 HTTP 服务退出（已隔离，不影响外壳内其余模块）", "module_component_id", b.id, "error", err)
-			}
-			return nil
+			return serveResult(gctx, logger, b.id, "HTTP", besdk.ServeHTTP(gctx, b.rt.HTTPPort, b.mod.HTTPHandler))
 		})
-		for name, port := range b.rt.ExtraPorts {
-			name, port := name, port
-			g.Go(func() error {
-				if err := besdk.ServeExtraPort(gctx, name, port, b.mod.RegisterGRPC, b.rt.Logger); err != nil {
-					logger.Error("模块额外端口服务退出（已隔离，不影响外壳内其余模块）", "module_component_id", b.id, "port_name", name, "error", err)
-				}
-				return nil
-			})
+		// 没有 RegisterGRPC 时不起额外端口，与 RunStandalone 的 serveExtraPort 行为一致。
+		if b.mod.RegisterGRPC != nil {
+			for name, port := range b.rt.ExtraPorts {
+				name, port := name, port
+				g.Go(func() error {
+					return serveResult(gctx, logger, b.id, "额外端口 "+name,
+						besdk.ServeExtraPort(gctx, name, port, b.mod.RegisterGRPC, b.rt.Logger))
+				})
+			}
 		}
 		if b.mod.Start != nil {
+			// ⚠️ Start 的失败（panic 或返回错误）一律只记日志、返回 nil，绝不流回 errgroup：
+			// gctx 是全部成员共用的，一个成员的后台循环出事就取消它，等于把其余 N-1 个健康
+			// 成员一起带下线，合并部署就白白放弃了独立部署本来就有的故障隔离（阶段四 Task 11
+			// 真机复现过的缺口）。代价：这个成员的后台循环从此停着，直到外壳下次重启——
+			// 有意接受的降级，ERROR 日志带 module_component_id 指出是谁。
 			g.Go(func() error {
 				// Go 的 panic 不会被 errgroup 或别的 goroutine 拦住，不在这里 recover
 				// 就会直接终止整个外壳进程。RunStandalone 不需要这层：单模块进程里
@@ -191,6 +191,25 @@ func Run(ctx context.Context, cfg Config, members []ServedMember, registry Regis
 	}
 
 	return runErr
+}
+
+// serveResult 把一个服务协程的结束归一成 errgroup 的返回值：ctx 已取消时的正常关停返回 nil；
+// 出错，或在 ctx 未取消时意外返回 nil，都记 ERROR 并返回点名了归属的错误。
+// memberID 为空表示外壳自己的端口。日志键用 module_component_id：外壳 logger 的
+// component_id 已经是外壳自己的名字。
+func serveResult(ctx context.Context, logger *slog.Logger, memberID, what string, err error) error {
+	if err == nil && ctx.Err() != nil {
+		return nil
+	}
+	if err == nil {
+		err = errors.New("服务协程意外返回")
+	}
+	if memberID == "" {
+		logger.Error("外壳自己的端口服务退出，外壳整体退出", "port", what, "error", err)
+		return fmt.Errorf("外壳 %s 服务失败：%w", what, err)
+	}
+	logger.Error("成员端口服务退出，外壳整体退出", "module_component_id", memberID, "port", what, "error", err)
+	return fmt.Errorf("成员 %s 的 %s 服务失败：%w", memberID, what, err)
 }
 
 // buildModules 为每个成员构造 Runtime（Env 用成员 JSON 里的 Config，绝不用外壳进程环境）并调用构造函数。

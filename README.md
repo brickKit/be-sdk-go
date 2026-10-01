@@ -9,7 +9,7 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 | 依赖地址剥 scheme | `endpoint.go` 的 `cfg.Endpoint` | `grpc.Dial("http://host:9094")` 连不上，报错指向名称解析（十八条第 1 条） |
 | `SET LOCAL` 事务 | `tx.go` | 不带 `LOCAL` 的 `SET` 之后连接还回池，下一个借用者原样继承，悄悄读写别人的数据（十八条第 2 条） |
 | 单跑/合并统一入口 | `standalone.go`、`module.go`、`runtime.go`、`gin.go` | 每个组件各发明一个 `main`，合并那天全部重写（十八条第 18 条） |
-| 外壳装配 | `shell/` | 每个外壳各写一遍 N 模块装配；一个模块的 panic 或端口故障把整个外壳拖下线；成员配置从外壳共享的进程环境里读、互相顶掉 |
+| 外壳装配 | `shell/` | 每个外壳各写一遍 N 模块装配；一个模块的后台循环出错就把整个外壳拖下线；成员端口死了外壳 `/healthz` 却还是绿的；成员配置从外壳共享的进程环境里读、互相顶掉 |
 | gRPC panic 恢复 | `standalone.go` 的 `grpcRecoveryInterceptor` | handler 里一个未处理的 panic（比如 ctx 没有 Claims 时误调 `ScopeOf`）不受任何东西保护，会一路冲出 grpc-go 崩掉整个进程——HTTP 侧一直有 `recoveryAndErrorMappingMiddleware`，gRPC 侧直到 `v0.2.4` 才补上对应物 |
 
 ## 配置（v0.3.0 起，brickKit v1 契约）
@@ -53,7 +53,11 @@ func main() {
   - 空字符串：平台从不这样给，当作数据损坏，报错退出。
 - **外壳自己的配置**：`PG_*`、`NATS_URL`、`OTEL_BASE_URL`、`AUTHZ_BUNDLE_URL`、`IAM_JWKS_URL` 写在外壳自己的 `configSchema` 里。`Run` 用它们开**一个**共享连接池和**一条** NATS 连接给全部成员，`InitShellAuthz` 只调一次。外壳自己 `component.yaml` 的 `deployment.port` 只答 `/healthz`，不查任何成员或依赖。
 - **迁移由 brickKit 负责**：v1 在外壳启动前用每个成员自己的镜像和配置跑迁移，`shell` 包不碰 `Module.Migrations`。
-- **故障隔离**：启动阶段任何一步失败（包括某个成员的构造函数返回错误）都会中止启动，返回前关掉共享池与 NATS 连接。启动之后，单个成员的失败（`Start` panic、`Start` 返回错误、它自己的 HTTP/额外端口退出）只记一条带 `module_component_id` 的日志，不影响其余成员；`Run` 只在收到 SIGTERM/SIGINT 或外壳自己的 `/healthz` 服务失败时结束。出事的成员会停在故障状态，直到外壳下次重启。
+- **失败处理**（三类，处理方式不同）：
+  - **启动阶段失败**（任何一步，包括某个成员的构造函数返回错误、`Registry` 里找不到成员、构造函数返回 nil `Module`/`HTTPHandler`、外壳端口为 0）：中止启动，先关掉共享池与 NATS 连接，再返回错误，外壳以非零码退出。
+  - **端口失败**（外壳自己的 `/healthz`，或任一成员的 HTTP/额外端口；包括端口绑定失败，以及服务协程在没有收到关停信号时意外返回）：`Run` 返回点名该成员的错误，其余成员优雅退出（`Stop` 会被调用），外壳以非零码退出。这样做是为了把故障暴露出来：外壳 `/healthz` 只代表进程活着，成员端口死了它照样答 200，平台的 probe 看不到。
+  - **成员 `Start()` 失败**（panic 或返回错误）：隔离。记一条 ERROR 日志（带 `module_component_id`），其余成员照常服务，外壳继续运行。这个成员的后台循环会一直停着，直到外壳下次重启；它自己的 HTTP/额外端口不受影响。
+  - 收到 SIGTERM/SIGINT 时全部优雅退出，`Run` 返回 nil。
 
 ## 现状（阶段三 Task 8，`v0.2.4`）
 

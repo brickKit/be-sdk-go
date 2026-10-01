@@ -16,6 +16,7 @@ import (
 	"time"
 
 	besdk "github.com/brickKit/be-sdk-go"
+	"google.golang.org/grpc"
 )
 
 // syncLogBuf 是一个并发安全、且在写入内容命中某个标记时对外发出信号的日志缓冲区——
@@ -56,6 +57,7 @@ func (s *syncLogBuf) String() string {
 type fakeModule struct {
 	startFn func(context.Context) error
 	stopped chan struct{}
+	grpc    bool // 为 true 时返回非 nil 的 RegisterGRPC，让额外端口真的去监听
 	mu      sync.Mutex
 	rt      *besdk.Runtime
 }
@@ -68,7 +70,8 @@ func (f *fakeModule) new(_ context.Context, rt *besdk.Runtime) (*besdk.Module, e
 		HTTPHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}),
-		Start: f.startFn,
+		RegisterGRPC: f.registerGRPC(),
+		Start:        f.startFn,
 		Stop: func(context.Context) error {
 			if f.stopped != nil {
 				close(f.stopped)
@@ -76,6 +79,13 @@ func (f *fakeModule) new(_ context.Context, rt *besdk.Runtime) (*besdk.Module, e
 			return nil
 		},
 	}, nil
+}
+
+func (f *fakeModule) registerGRPC() func(*grpc.Server) {
+	if !f.grpc {
+		return nil
+	}
+	return func(*grpc.Server) {}
 }
 
 func (f *fakeModule) runtime() *besdk.Runtime {
@@ -279,8 +289,8 @@ func TestRunPanicInOneMemberDoesNotStopOthers(t *testing.T) {
 	waitHealthy(t, shellPort)
 	waitHealthy(t, pOK)
 	waitHealthy(t, pPanic)
-	if !strings.Contains(logBuf.String(), "test/panics") {
-		t.Fatalf("日志里应点名出事的成员，实际：%s", logBuf.String())
+	if out := logBuf.String(); !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "module_component_id=test/panics") {
+		t.Fatalf("应记一条点名出事成员的 ERROR 日志，实际：%s", out)
 	}
 	select {
 	case err := <-done:
@@ -294,7 +304,8 @@ func TestRunPanicInOneMemberDoesNotStopOthers(t *testing.T) {
 	}
 }
 
-// 单个成员 Start 主动返回错误：同样只隔离在它自己身上。
+// 单个成员 Start 主动返回错误：与 panic 同样只隔离在它自己身上——它自己的 HTTP、其余成员、
+// 外壳 /healthz 照常服务，Run 不返回。
 func TestRunStartErrorInOneMemberDoesNotStopOthers(t *testing.T) {
 	shellPort, pBad, pOK := freePort(t), freePort(t), freePort(t)
 	cfg := testShellConfig(t, shellPort)
@@ -315,8 +326,14 @@ func TestRunStartErrorInOneMemberDoesNotStopOthers(t *testing.T) {
 	}
 	waitHealthy(t, shellPort)
 	waitHealthy(t, pOK)
-	if !strings.Contains(logBuf.String(), "test/fails") {
-		t.Fatalf("日志里应点名出事的成员，实际：%s", logBuf.String())
+	waitHealthy(t, pBad)
+	if out := logBuf.String(); !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "module_component_id=test/fails") {
+		t.Fatalf("应记一条点名出事成员的 ERROR 日志，实际：%s", out)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Start 返回错误不应让 Run 返回，实际返回 %v", err)
+	default:
 	}
 
 	cancel()
@@ -378,39 +395,44 @@ func TestRunShellHealthFailureEndsRun(t *testing.T) {
 	}
 }
 
-// 单个成员自己的端口失败（这里用端口被占模拟）：同样只隔离在它自己身上，
-// 外壳 /healthz 与其余成员照常服务，Run 不返回。
-func TestRunPortFailureInOneMemberDoesNotStopOthers(t *testing.T) {
-	occupied, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer occupied.Close()
-	shellPort, pOK := freePort(t), freePort(t)
-	cfg := testShellConfig(t, shellPort)
-	logBuf := newSyncLogBuf("test/blocked")
-	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+// 任一成员的端口失败（这里用端口被占模拟，HTTP 与额外端口各一例）：Run 必须带着点名该成员
+// 的错误返回，外壳以非零码退出；其余成员随之优雅退出、Stop 被调到。成员端口死了而外壳
+// /healthz 还是绿的，是平台探测不到的静默故障，所以这里必须闹大。
+func TestRunMemberPortFailureEndsRun(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		extra bool
+	}{{"HTTP端口", false}, {"额外端口", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			occupied, err := net.Listen("tcp", ":0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer occupied.Close()
+			busy := occupied.Addr().(*net.TCPAddr).Port
+			cfg := testShellConfig(t, freePort(t))
 
-	cancel, done := startRun(cfg, []ServedMember{
-		{ComponentID: "test/blocked", HTTPPort: occupied.Addr().(*net.TCPAddr).Port},
-		{ComponentID: "test/healthy", HTTPPort: pOK},
-	}, Registry{"test/blocked": (&fakeModule{}).new, "test/healthy": (&fakeModule{}).new}, logger)
+			blockedMember := ServedMember{ComponentID: "test/blocked", HTTPPort: busy}
+			blocked := &fakeModule{}
+			if tc.extra {
+				blockedMember = ServedMember{ComponentID: "test/blocked", HTTPPort: freePort(t),
+					ExtraPorts: []ExtraPort{{Name: "grpc", Port: busy}}}
+				blocked.grpc = true
+			}
+			healthy := &fakeModule{stopped: make(chan struct{})}
 
-	select {
-	case <-logBuf.matched:
-	case <-time.After(5 * time.Second):
-		t.Fatal("5 秒内没有等到成员端口失败那条日志")
-	}
-	waitHealthy(t, shellPort)
-	waitHealthy(t, pOK)
-	select {
-	case err := <-done:
-		t.Fatalf("成员端口失败不应让 Run 返回，实际返回 %v", err)
-	default:
-	}
+			_, done := startRun(cfg, []ServedMember{blockedMember, {ComponentID: "test/healthy", HTTPPort: freePort(t)}},
+				Registry{"test/blocked": blocked.new, "test/healthy": healthy.new}, besdk.NewLogger("test-shell"))
 
-	cancel()
-	if err := waitRunReturn(t, done); err != nil {
-		t.Fatalf("期望优雅关闭无错误，实际 %v", err)
+			err = waitRunReturn(t, done)
+			if err == nil || !strings.Contains(err.Error(), "test/blocked") {
+				t.Fatalf("成员端口失败时 Run 应返回点名该成员的错误，实际 %v", err)
+			}
+			select {
+			case <-healthy.stopped:
+			default:
+				t.Error("外壳退出时其余成员的 Stop 应被调用")
+			}
+		})
 	}
 }
