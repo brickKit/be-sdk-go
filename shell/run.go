@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -84,6 +85,9 @@ type builtModule struct {
 func Run(ctx context.Context, cfg Config, members []ServedMember, registry Registry, logger *slog.Logger) error {
 	if cfg.HTTPPort <= 0 {
 		return fmt.Errorf("外壳 %s 的 HTTP 端口未设置（component.yaml 的 deployment.port）", cfg.ShellName)
+	}
+	if err := requireShellAuthzURLs(cfg); err != nil {
+		return err
 	}
 
 	// runCtx 在 Run 返回时一定被取消：InitShellAuthz 起的 bundle 轮询等后台协程挂在它上面，
@@ -166,7 +170,7 @@ func Run(ctx context.Context, cfg Config, members []ServedMember, registry Regis
 				// panic 让进程退出就是正确行为（爆炸半径 = 1 个组件）。
 				defer func() {
 					if r := recover(); r != nil {
-						logger.Error("模块后台循环 panic（已隔离，不影响外壳内其余模块）", "module_component_id", b.id, "recovered", r)
+						logger.Error("模块后台循环 panic（已隔离，不影响外壳内其余模块）", "module_component_id", b.id, "recovered", r, "stack", string(debug.Stack()))
 					}
 				}()
 				if err := b.mod.Start(gctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -190,6 +194,23 @@ func Run(ctx context.Context, cfg Config, members []ServedMember, registry Regis
 	}
 
 	return runErr
+}
+
+// requireShellAuthzURLs：外壳自己的 AUTHZ_BUNDLE_URL / IAM_JWKS_URL 缺任一（或为空白）就
+// 启动即失败，点名缺的键。单跑组件缺这两个键是 fail-closed（每条受保护路由 403/503），
+// 外壳里同样的缺失会让全部成员一起 fail-closed，而日志里只有一条 Info——与 Python 外壳的
+// must_string 同一判据，在连库之前查。
+func requireShellAuthzURLs(cfg Config) error {
+	var missing []string
+	for _, k := range []string{"AUTHZ_BUNDLE_URL", "IAM_JWKS_URL"} {
+		if v, ok := cfg.ShellConfig.String(k); !ok || strings.TrimSpace(v) == "" {
+			missing = append(missing, k)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("外壳 %s 缺少权限地址配置：%s（外壳自己的 configSchema，见 config/vars.yaml）", cfg.ShellName, strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // serveResult 把一个服务协程的结束归一成 errgroup 的返回值：ctx 已取消之后，不论带着什么

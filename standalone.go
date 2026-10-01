@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -124,6 +126,11 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 	if err != nil {
 		exitf(componentID, "组件初始化失败：%v", err)
 	}
+	// 声明了额外端口却没有 RegisterGRPC：serveExtraPort 对 nil register 直接返回，那个端口
+	// 没人监听，进程却会以 0 退出——同外壳 buildModules 的规矩，启动即失败并点名端口。
+	if err := checkExtraPortsServed(rt.ExtraPorts, mod.RegisterGRPC); err != nil {
+		exitf(componentID, "%v", err)
+	}
 
 	// ⚠️ 迁移不在这里跑：平台为每个组件单独生成一次性迁移容器（入口是各组件
 	// 自己的 backend/cmd/migrate），RunStandalone 服务的是应用进程本身。
@@ -157,6 +164,24 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 	if mod.Stop != nil {
 		_ = mod.Stop(shutdownCtx)
 	}
+}
+
+// checkExtraPortsServed：component.yaml 声明了 extraPorts 而模块没有返回 RegisterGRPC 时返回
+// 点名全部端口的错误。
+func checkExtraPortsServed(extra map[string]int, register func(*grpc.Server)) error {
+	if register != nil || len(extra) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(extra))
+	for name := range extra {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	ports := make([]string, 0, len(names))
+	for _, name := range names {
+		ports = append(ports, fmt.Sprintf("%s(:%d)", name, extra[name]))
+	}
+	return fmt.Errorf("component.yaml 声明了额外端口 %s，但模块没有返回 RegisterGRPC——这个端口没人监听", strings.Join(ports, ", "))
 }
 
 func serveHTTP(ctx context.Context, port int, handler http.Handler) error {

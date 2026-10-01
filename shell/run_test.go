@@ -135,6 +135,9 @@ func testShellConfig(t *testing.T, port int) Config {
 	return Config{ShellName: "test-shell", HTTPPort: port, ShellConfig: besdk.NewConfig(map[string]string{
 		"PG_HOST": u.Hostname(), "PG_PORT": u.Port(), "PG_DATABASE": strings.TrimPrefix(u.Path, "/"),
 		"PG_USER": u.User.Username(), "PG_PASSWORD": pw, "NATS_URL": nurl,
+		// 外壳启动要求这两个键非空（requireShellAuthzURLs）；测试里指向一个不监听的端口，
+		// 轮询失败只记日志，不影响本包测的装配/隔离行为。
+		"AUTHZ_BUNDLE_URL": "http://127.0.0.1:1/authz/bundle", "IAM_JWKS_URL": "http://127.0.0.1:1/.well-known/jwks.json",
 	})}
 }
 
@@ -291,6 +294,11 @@ func TestRunPanicInOneMemberDoesNotStopOthers(t *testing.T) {
 	waitHealthy(t, pPanic)
 	if out := logBuf.String(); !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "module_component_id=test/panics") {
 		t.Fatalf("应记一条点名出事成员的 ERROR 日志，实际：%s", out)
+	}
+	// 只有 recovered 值没有堆栈，排查成员 panic 只能靠猜：日志必须带 stack，
+	// 且堆栈里能看到真正 panic 的那一帧（本测试文件里的 startFn）。
+	if out := logBuf.String(); !strings.Contains(out, "stack=") || !strings.Contains(out, "run_test.go") {
+		t.Fatalf("panic 日志应带堆栈（stack=…，含 panic 发生处 run_test.go），实际：%s", out)
 	}
 	select {
 	case err := <-done:
@@ -489,5 +497,34 @@ func TestRunRejectsExtraPortWithoutRegisterGRPC(t *testing.T) {
 		ExtraPorts: []ExtraPort{{Name: "grpc", Port: 9101}}}}, Registry{"test/a": (&fakeModule{}).new})
 	if err == nil || !strings.Contains(err.Error(), "test/a") || !strings.Contains(err.Error(), "grpc") {
 		t.Fatalf("声明了额外端口却没有 RegisterGRPC 应报错并点名成员与端口：%v", err)
+	}
+}
+
+// 外壳自己的 AUTHZ_BUNDLE_URL / IAM_JWKS_URL 缺任一（或为空）：启动即失败并点名缺的键——
+// 不然每个成员的受保护路由都答 403/503，日志里只有一条 Info，与 Python 外壳的
+// must_string 同一判据。检查在连库之前，所以本测试不需要 TEST_PG_DSN。
+func TestRunRequiresShellAuthzURLs(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     map[string]string
+		missing []string
+	}{
+		{"两个都没配", map[string]string{}, []string{"AUTHZ_BUNDLE_URL", "IAM_JWKS_URL"}},
+		{"缺 IAM_JWKS_URL", map[string]string{"AUTHZ_BUNDLE_URL": "http://a:1/authz/bundle"}, []string{"IAM_JWKS_URL"}},
+		{"AUTHZ_BUNDLE_URL 为空", map[string]string{"AUTHZ_BUNDLE_URL": " ", "IAM_JWKS_URL": "http://i:1/jwks"}, []string{"AUTHZ_BUNDLE_URL"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := Config{ShellName: "test-shell", HTTPPort: freePort(t), ShellConfig: besdk.NewConfig(c.env)}
+			err := Run(context.Background(), cfg, []ServedMember{}, Registry{}, besdk.NewLogger("test-shell"))
+			if err == nil {
+				t.Fatal("缺权限地址时 Run 应在启动前报错")
+			}
+			for _, k := range c.missing {
+				if !strings.Contains(err.Error(), k) {
+					t.Fatalf("错误应点名缺的键 %s：%v", k, err)
+				}
+			}
+		})
 	}
 }

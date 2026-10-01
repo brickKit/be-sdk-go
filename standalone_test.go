@@ -368,3 +368,56 @@ func TestRunStandalone_healthz真的能响应不panic(t *testing.T) {
 		t.Fatalf("期望 200，得到 %d\nstderr:\n%s", resp.StatusCode, stderr.String())
 	}
 }
+
+// 声明了额外端口却没有 RegisterGRPC：那个端口没人监听，调用方连不上——与外壳（shell 包
+// buildModules）同一条规矩，单跑形态也必须以非零码退出并点名端口，不能静默退出 0。
+// 走子进程：exitf 会真的 os.Exit(1)。
+func TestRunStandalone_声明额外端口却无RegisterGRPC时非零码退出并点名端口(t *testing.T) {
+	if os.Getenv("BESDK_SUBPROCESS_EXTRA_PORT_TEST") == "1" {
+		RunStandalone(func(ctx context.Context, rt *Runtime) (*Module, error) {
+			return &Module{HTTPHandler: NewGinEngine(rt)}, nil // 故意不给 RegisterGRPC
+		})
+		return
+	}
+
+	dir := t.TempDir()
+	manifest := fmt.Sprintf("deployment:\n  port: %d\n  extraPorts:\n    - name: grpc\n      port: %d\n",
+		freePortForTest(t), freePortForTest(t))
+	if err := os.WriteFile(filepath.Join(dir, "component.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run", "TestRunStandalone_声明额外端口却无RegisterGRPC时非零码退出并点名端口")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"BESDK_SUBPROCESS_EXTRA_PORT_TEST=1",
+		"COMPONENT_ID=test/no-grpc-module",
+		"COMPONENT_VERSION=0.0.1",
+		"PG_HOST=localhost", "PG_PORT=1",
+		"PG_USER=user", "PG_PASSWORD=pass", "PG_DATABASE=doesnotmatter", // sql.Open 是懒的
+		"NATS_URL="+natsURLForTest(t),
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	done := make(chan error, 1)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() { done <- cmd.Wait() }()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatalf("子进程 10 秒内没有退出——声明了额外端口却无 RegisterGRPC 应该启动即失败\nstderr:\n%s", stderr.String())
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("期望子进程以退出码 1 结束，实际 err=%v\nstderr:\n%s", err, stderr.String())
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "test/no-grpc-module") || !strings.Contains(out, "grpc") || !strings.Contains(out, "RegisterGRPC") {
+		t.Fatalf("stderr 应点名组件、端口名并说明缺 RegisterGRPC，实际：%s", out)
+	}
+}
