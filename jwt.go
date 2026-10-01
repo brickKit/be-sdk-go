@@ -34,7 +34,7 @@ type jwtVerifier struct {
 	kf keyfunc.Keyfunc
 }
 
-// newJWTVerifier 对接 iamJwksUrl。ctx 用于结束 keyfunc 内部的刷新协程
+// newJWTVerifier 对接 IAM_JWKS_URL。ctx 用于结束 keyfunc 内部的刷新协程
 // （传 RunStandalone 收到 SIGTERM/SIGINT 时会取消的那个 ctx）。
 func newJWTVerifier(ctx context.Context, jwksURL string) (*jwtVerifier, error) {
 	kf, err := keyfunc.NewDefaultCtx(ctx, []string{jwksURL})

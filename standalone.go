@@ -113,8 +113,8 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 	}
 
 	// ⚠️ 权限判定的进程级状态在这里装配一次，同 Tracer/Meter 那一类
-	// "只能有一份、模块不许自己碰"的东西（§12.5.2）。iamJwksUrl/
-	// authzBundleUrl 任一没配都保持阶段二的 fail-closed stub 行为——
+	// "只能有一份、模块不许自己碰"的东西（§12.5.2）。IAM_JWKS_URL/
+	// AUTHZ_BUNDLE_URL 任一没配都保持阶段二的 fail-closed stub 行为——
 	// Task 6 之前，全部已发布组件的路由都还标着 besdk.Public，这里的
 	// 真实判定逻辑对它们是休眠的，不会有任何行为变化。
 	verifier, bundle := setupAuthzRuntime(ctx, rt.Config, rt.Logger)
@@ -125,10 +125,10 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 		exitf(componentID, "组件初始化失败：%v", err)
 	}
 
-	// ⚠️ 全拆态迁移不在这里跑：平台为每个组件单独生成一次性迁移容器
-	// （入口是各组件自己的 backend/cmd/migrate，见 mdm-customer Task 14），
-	// RunStandalone 服务的是应用进程本身，不重复跑一遍迁移。mod.Migrations
-	// 这个 fs.FS 只被合并态的外壳启动器消费（§13.3 铁律五，阶段四）。
+	// ⚠️ 迁移不在这里跑：平台为每个组件单独生成一次性迁移容器（入口是各组件
+	// 自己的 backend/cmd/migrate），RunStandalone 服务的是应用进程本身。
+	// v1 起合并态也一样——brickKit 在外壳启动前用每个成员自己的镜像和配置
+	// 跑完迁移，shell 包不再消费 mod.Migrations。
 
 	errCh := make(chan error, 1+len(rt.ExtraPorts))
 	go func() { errCh <- serveHTTP(ctx, rt.HTTPPort, mod.HTTPHandler) }()

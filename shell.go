@@ -13,11 +13,11 @@ import (
 
 // ShellModuleConfig 是外壳装配单个模块 *Runtime 所需的全部输入——
 // RunStandalone 从进程环境变量 + 自己的 component.yaml 推导出这些值，
-// 外壳不能这样做：一个进程只有一份 environ，11 个模块各自的
-// DATABASE_*/COMPONENT_ID/config 项互相顶掉，不报错，模块按别人的
-// schema 建表写数据（§12.5.3、决策 110）。每个字段都必须来自 `be-ops`
-// 产出 4/7（合并清单 + 每外壳环境变量表，设计书 §13.8.2），不能从
-// 外壳进程自己的 os.Environ() 读。
+// 外壳不能这样做：一个进程只有一份 environ，N 个模块各自的
+// PG_SCHEMA/COMPONENT_ID/*_ENDPOINT/业务配置互相顶掉，不报错，模块按别人的
+// schema 建表写数据（§12.5.3、决策 110）。每个字段都必须来自平台注入的
+// BRICKKIT_SERVED_MEMBERS_CONFIG 里这个成员自己的那一项（shell 包负责解析），
+// 不能从外壳进程自己的 os.Environ() 读。
 type ShellModuleConfig struct {
 	ComponentID      string
 	ComponentVersion string
@@ -64,11 +64,11 @@ func NewShellRuntime(cfg ShellModuleConfig, db *sql.DB, nc *nats.Conn) *Runtime 
 // 的 RequirePermission 判定全部读的是最后一个模块的配置），且前 10 次
 // 启动的 bundle 轮询 goroutine 从此没人再持有引用、没人能停下来
 // ——这正是导读第 17 条"最后一个 init 的赢"那类问题在权限判定状态上的
-// 翻版。本项目目前全部业务组件的 iamJwksUrl/authzBundleUrl 都指向同一个
-// infra-iam-casdoor/infra-authz 实例（见 docs/design/_调研记录/
-// 04-阶段四.md），所以外壳只需要用任意一个模块的 Config 调一次本函数
-// 即可对齐全部模块的判定行为——调用时机：Bootstrap 之后、任何模块的
-// HTTP/gRPC server 开始接请求之前。
+// 翻版。本项目全部业务组件的 IAM_JWKS_URL/AUTHZ_BUNDLE_URL 都指向同一个
+// infra-iam-casdoor/infra-authz 实例，所以外壳用它**自己的** Config
+// （外壳 configSchema 里的这两个键）调一次本函数即可对齐全部模块的判定
+// 行为——调用时机：Bootstrap 之后、任何模块的 HTTP/gRPC server 开始接
+// 请求之前（shell.Run 就是这样调的）。
 func InitShellAuthz(ctx context.Context, cfg Config, logger *slog.Logger) {
 	verifier, bundle := setupAuthzRuntime(ctx, cfg, logger)
 	setAuthzRuntime(verifier, bundle)
