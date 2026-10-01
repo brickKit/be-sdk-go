@@ -62,16 +62,15 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 		exitf(componentID, "读自己的 component.yaml 失败：%v", err)
 	}
 
-	shutdownOTel, err := Bootstrap(ctx, componentID, os.Getenv("OTEL_BASE_URL"))
+	cfg := NewConfig(envSnapshot())
+
+	shutdownOTel, err := Bootstrap(ctx, componentID, cfg.StringOr("OTEL_BASE_URL", ""))
 	if err != nil {
 		exitf(componentID, "Bootstrap 失败：%v", err)
 	}
 	defer func() { _ = shutdownOTel(context.Background()) }()
 
-	// ⚠️ 平台注入的是分开的 DATABASE_HOST/PORT/USER/PASSWORD/NAME
-	// （006 §4.4 的 5 层表），没有单个 PG_DSN——同样是 v0.1.0 等一个从来
-	// 不存在的变量。DSN 由 buildPGDSN 从这几片拼。
-	pgDSN, err := buildPGDSN()
+	pgDSN, err := PGDSN(cfg)
 	if err != nil {
 		exitf(componentID, "拼数据库连接串失败：%v", err)
 	}
@@ -81,9 +80,11 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// 同理，NATS 的连接信息是 MQ_HOST/MQ_PORT（+ 可选 MQ_USER/MQ_PASSWORD），
-	// 不是单个 NATS_URL。
-	nc, err := nats.Connect(buildNATSURL())
+	natsURL, err := NATSURL(cfg)
+	if err != nil {
+		exitf(componentID, "%v", err)
+	}
+	nc, err := nats.Connect(natsURL)
 	if err != nil {
 		exitf(componentID, "连接 NATS 失败：%v", err)
 	}
@@ -92,7 +93,7 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 	rt := &Runtime{
 		ComponentID:      componentID,
 		ComponentVersion: componentVersion,
-		Config:           NewConfig(envSnapshot()),
+		Config:           cfg,
 		DB:               db,
 		NATS:             nc,
 		Logger:           NewLogger(componentID),
@@ -249,53 +250,6 @@ func envSnapshot() map[string]string {
 		}
 	}
 	return out
-}
-
-// buildPGDSN 从平台注入的 DATABASE_* 前缀变量拼出一个 pgx 认得的 DSN。
-//
-// ⚠️ 没有单个 PG_DSN 这种东西——`006` §4.4 的资源注入是分开的五个变量
-// （HOST/PORT/USER/PASSWORD/NAME），brickkit up --dry-run 生成的 compose
-// 环境变量表可以直接核对。sslmode=disable 是本地/内网部署的默认值，
-// TLS 需求留给未来客户按需求提，不在这一批范围内。
-func buildPGDSN() (string, error) {
-	host, ok := os.LookupEnv("DATABASE_HOST")
-	if !ok {
-		return "", fmt.Errorf("DATABASE_HOST 未设置")
-	}
-	port, ok := os.LookupEnv("DATABASE_PORT")
-	if !ok {
-		return "", fmt.Errorf("DATABASE_PORT 未设置")
-	}
-	user, ok := os.LookupEnv("DATABASE_USER")
-	if !ok {
-		return "", fmt.Errorf("DATABASE_USER 未设置")
-	}
-	password, ok := os.LookupEnv("DATABASE_PASSWORD")
-	if !ok {
-		return "", fmt.Errorf("DATABASE_PASSWORD 未设置")
-	}
-	name, ok := os.LookupEnv("DATABASE_NAME")
-	if !ok {
-		return "", fmt.Errorf("DATABASE_NAME 未设置")
-	}
-	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
-		user, password, host, port, name), nil
-}
-
-// buildNATSURL 从 MQ_* 前缀变量拼出 nats.Connect 认得的 URL。
-//
-// ⚠️ 同样没有单个 NATS_URL。MQ_USER/MQ_PASSWORD 是否存在取决于这个部署的
-// nats 资源有没有配认证——本项目的 nats-shared 没配，所以要支持两种形态，
-// 不能假设一定有认证信息。
-func buildNATSURL() string {
-	host := os.Getenv("MQ_HOST")
-	port := os.Getenv("MQ_PORT")
-	user, hasUser := os.LookupEnv("MQ_USER")
-	password := os.Getenv("MQ_PASSWORD")
-	if hasUser && user != "" {
-		return fmt.Sprintf("nats://%s:%s@%s:%s", user, password, host, port)
-	}
-	return fmt.Sprintf("nats://%s:%s", host, port)
 }
 
 // exitf 是 RunStandalone 内部专用的错误退出路径——它本身不算「模块

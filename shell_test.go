@@ -49,8 +49,8 @@ func TestNewShellRuntime_多模块共享DB与NATS但各自持有独立字段(t *
 		t.Fatalf("期望 ExtraPorts 各自独立，实际 rt1=%v rt2=%v", rt1.ExtraPorts, rt2.ExtraPorts)
 	}
 
-	v1, ok1 := rt1.Config.String("fooBar")
-	v2, ok2 := rt2.Config.String("fooBar")
+	v1, ok1 := rt1.Config.String("FOO_BAR")
+	v2, ok2 := rt2.Config.String("FOO_BAR")
 	if !ok1 || !ok2 || v1 != "customer-value" || v2 != "sales-value" {
 		t.Fatalf("期望每个模块的 Config 只读到自己那份 env map，实际 rt1=(%q,%v) rt2=(%q,%v)", v1, ok1, v2, ok2)
 	}
@@ -124,38 +124,5 @@ func TestServeExtraPort导出别名_行为与私有实现一致(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("ServeExtraPort 在 ctx 取消后没有及时退出")
-	}
-}
-
-// TestBuildPGDSN导出别名_行为与私有实现一致 与 TestBuildNATSURL导出别名
-// 同理，只验证导出别名真的转发到了 buildPGDSN/buildNATSURL——完整的
-// 拼接规则断言已经在 TestBuildPGDSN_从DATABASE前缀变量拼出DSN /
-// TestBuildNATSURL_* 里覆盖过，这里不重复。
-func TestBuildPGDSN导出别名_行为与私有实现一致(t *testing.T) {
-	t.Setenv("DATABASE_HOST", "host.docker.internal")
-	t.Setenv("DATABASE_PORT", "5432")
-	t.Setenv("DATABASE_USER", "postgres")
-	t.Setenv("DATABASE_PASSWORD", "s3cret")
-	t.Setenv("DATABASE_NAME", "brickkit_db")
-
-	got, err := BuildPGDSN()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := buildPGDSN()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != want {
-		t.Fatalf("期望导出别名与私有实现一致，got=%q want=%q", got, want)
-	}
-}
-
-func TestBuildNATSURL导出别名_行为与私有实现一致(t *testing.T) {
-	t.Setenv("MQ_HOST", "host.docker.internal")
-	t.Setenv("MQ_PORT", "4222")
-
-	if got, want := BuildNATSURL(), buildNATSURL(); got != want {
-		t.Fatalf("期望导出别名与私有实现一致，got=%q want=%q", got, want)
 	}
 }

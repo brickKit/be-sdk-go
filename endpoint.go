@@ -1,9 +1,6 @@
 package besdk
 
-import (
-	"os"
-	"strings"
-)
+import "strings"
 
 // envName 把组件 ID 推导成平台注入的变量名前缀。
 //
@@ -25,16 +22,16 @@ func envName(dep, extra string) string {
 	return p + "_" + strings.ToUpper(extra) + "_ENDPOINT"
 }
 
-// Endpoint 读 *_ENDPOINT 并剥掉 scheme。
+// Endpoint 从 Config 读 <ID>[_<PORT>]_ENDPOINT 并剥掉 scheme。
 //
-// ⚠️ 平台注入的值恒为 http:// 开头，额外端口也一样——没有 grpc:// 这种东西。
-// grpc.Dial("http://host:9094") 连不上，而报错信息指向名称解析，
-// 非常难联想到是这里。所以剥 scheme 这件事全项目只写在这一个函数里（§2.1）。
+// ⚠️ 读 Config 而不是进程环境：外壳里每个成员的依赖地址只存在于
+// BRICKKIT_SERVED_MEMBERS_CONFIG 里它自己那一项的 config 中，进程环境属于外壳本身。
+// 单跑时 RunStandalone 把进程环境整份灌进 Config，所以两种形态走的是同一个入口。
 //
-// ⚠️ 必须用 os.LookupEnv 而不是 os.Getenv 后判空：弱依赖缺失时那个变量
-// 根本不存在，不是空字符串——这是平台刻意的设计（§3.6）。
-func Endpoint(dep, extra string) (string, bool) {
-	v, ok := os.LookupEnv(envName(dep, extra))
+// ⚠️ 平台注入的值恒为 http:// 开头，额外端口也一样；grpc 拨号前必须剥掉。
+// 可选依赖缺失时键不存在（不是空字符串）；空字符串同样当作缺失。
+func (c Config) Endpoint(dep, extra string) (string, bool) {
+	v, ok := c.String(envName(dep, extra))
 	if !ok || v == "" {
 		return "", false
 	}
@@ -44,27 +41,20 @@ func Endpoint(dep, extra string) (string, bool) {
 }
 
 // MustEndpoint 用于强依赖：缺失即 panic（强依赖缺失时平台本来就会阻断启动）。
-func MustEndpoint(dep, extra string) string {
-	v, ok := Endpoint(dep, extra)
+func (c Config) MustEndpoint(dep, extra string) string {
+	v, ok := c.Endpoint(dep, extra)
 	if !ok {
 		panic("强依赖 " + dep + " 的 " + envName(dep, extra) + " 未注入")
 	}
 	return v
 }
 
-// StorageEndpoint 读 STORAGE_ENDPOINT 并加上 scheme，返回完整 URL。
-//
-// ⚠️ 与 Endpoint 方向相反。STORAGE_ENDPOINT 是平台注入的资源变量，值是裸
-// host:port；而 S3 SDK 要一个完整 URL。两个函数必须分开——共用一个必然
-// 有一边错（十八条第 12 条）。
-func StorageEndpoint(secure bool) (string, bool) {
-	v, ok := os.LookupEnv("STORAGE_ENDPOINT")
+// S3URL 读 S3_URL（完整 URL，原样返回）。v1 起 STORAGE_ENDPOINT 不再由平台注入，
+// 而且 *_ENDPOINT 后缀是保留名，不能作为配置键。
+func (c Config) S3URL() (string, bool) {
+	v, ok := c.String("S3_URL")
 	if !ok || v == "" {
 		return "", false
 	}
-	scheme := "http://"
-	if secure {
-		scheme = "https://"
-	}
-	return scheme + v, true
+	return v, true
 }

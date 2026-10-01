@@ -92,7 +92,7 @@ func requestIDMiddleware() gin.HandlerFunc {
 }
 
 // tracingMiddleware 给每个请求开一个 span。用的是 rt.Tracer——它已经由
-// Bootstrap/InitOTel 填好（otelBaseUrl 为空时是 Blackhole Exporter），
+// Bootstrap/InitOTel 填好（OTEL_BASE_URL 为空时是 Blackhole Exporter），
 // 这里不重复判断有没有配置好，那是 InitOTel 的职责边界。
 func tracingMiddleware(rt *Runtime) gin.HandlerFunc {
 	return func(c *gin.Context) {

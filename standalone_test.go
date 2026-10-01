@@ -238,55 +238,6 @@ func TestServeExtraPort_handler里panic不崩进程返回Internal错误(t *testi
 	}
 }
 
-// ⚠️ v0.1.0 读的是单个 PG_DSN 环境变量，但平台实际注入的是分开的
-// DATABASE_HOST/PORT/USER/PASSWORD/NAME（mdm-customer 第一次真的
-// brickkit up --dry-run 之后才核对出来的落差，PG_DSN 从来不存在）。
-func TestBuildPGDSN_从DATABASE前缀变量拼出DSN(t *testing.T) {
-	t.Setenv("DATABASE_HOST", "host.docker.internal")
-	t.Setenv("DATABASE_PORT", "5432")
-	t.Setenv("DATABASE_USER", "postgres")
-	t.Setenv("DATABASE_PASSWORD", "s3cret")
-	t.Setenv("DATABASE_NAME", "brickkit_db")
-
-	dsn, err := buildPGDSN()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "postgres://postgres:s3cret@host.docker.internal:5432/brickkit_db?sslmode=disable"
-	if dsn != want {
-		t.Fatalf("期望 %q，得到 %q", want, dsn)
-	}
-}
-
-// 同理，NATS_URL 也从来不存在——平台注入的是 MQ_HOST/MQ_PORT（本项目的
-// nats-shared 资源没配 username/password，所以 MQ_USER/MQ_PASSWORD 不会
-// 被注入；这里两种情况都要对）。
-func TestBuildNATSURL_无认证(t *testing.T) {
-	t.Setenv("MQ_HOST", "host.docker.internal")
-	t.Setenv("MQ_PORT", "4222")
-	os.Unsetenv("MQ_USER")
-	os.Unsetenv("MQ_PASSWORD")
-
-	got := buildNATSURL()
-	want := "nats://host.docker.internal:4222"
-	if got != want {
-		t.Fatalf("期望 %q，得到 %q", want, got)
-	}
-}
-
-func TestBuildNATSURL_带认证(t *testing.T) {
-	t.Setenv("MQ_HOST", "host.docker.internal")
-	t.Setenv("MQ_PORT", "4222")
-	t.Setenv("MQ_USER", "brickkit")
-	t.Setenv("MQ_PASSWORD", "s3cret")
-
-	got := buildNATSURL()
-	want := "nats://brickkit:s3cret@host.docker.internal:4222"
-	if got != want {
-		t.Fatalf("期望 %q，得到 %q", want, got)
-	}
-}
-
 func freePortForTest(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -320,17 +271,14 @@ func TestRunStandalone_newModule失败时非零码退出且日志带componentID(
 	if os.Getenv("BESDK_SUBPROCESS_EXIT_TEST") == "1" {
 		os.Setenv("COMPONENT_ID", "test/failing-module")
 		os.Setenv("COMPONENT_VERSION", "0.0.1")
-		// HTTP_PORT/PG_DSN/NATS_URL 都不是平台真的会注入的变量（§13.8.1、
-		// 006 §4.4）——端口从 component.yaml 读（cmd.Dir 指向的临时目录，
-		// 见下方父进程），数据库/NATS 走分开的 DATABASE_*/MQ_* 变量。
-		os.Setenv("DATABASE_HOST", "localhost")
-		os.Setenv("DATABASE_PORT", "1")
-		os.Setenv("DATABASE_USER", "user")
-		os.Setenv("DATABASE_PASSWORD", "pass") // sql.Open 是懒的，不会真连
-		os.Setenv("DATABASE_NAME", "doesnotmatter")
-		host, port := natsHostPortForTest(t) // nats.Connect 是急的，必须真能连上
-		os.Setenv("MQ_HOST", host)
-		os.Setenv("MQ_PORT", port)
+		// 端口从 component.yaml 读（cmd.Dir 指向的临时目录，见下方父进程）；
+		// 数据库/NATS 走 v1 统一连接键 PG_*/NATS_URL。
+		os.Setenv("PG_HOST", "localhost")
+		os.Setenv("PG_PORT", "1")
+		os.Setenv("PG_USER", "user")
+		os.Setenv("PG_PASSWORD", "pass") // sql.Open 是懒的，不会真连
+		os.Setenv("PG_DATABASE", "doesnotmatter")
+		os.Setenv("NATS_URL", natsURLForTest(t)) // nats.Connect 是急的，必须真能连上
 		RunStandalone(func(context.Context, *Runtime) (*Module, error) {
 			return nil, errors.New("模拟初始化失败")
 		})
@@ -389,16 +337,15 @@ func TestRunStandalone_healthz真的能响应不panic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	host, natsPort := natsHostPortForTest(t)
 	cmd := exec.Command(os.Args[0], "-test.run", "TestRunStandalone_healthz真的能响应不panic")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"BESDK_SUBPROCESS_HEALTHZ_TEST=1",
 		"COMPONENT_ID=test/healthz-module",
 		"COMPONENT_VERSION=0.0.1",
-		"DATABASE_HOST=localhost", "DATABASE_PORT=1",
-		"DATABASE_USER=user", "DATABASE_PASSWORD=pass", "DATABASE_NAME=doesnotmatter", // sql.Open 是懒的
-		"MQ_HOST="+host, "MQ_PORT="+natsPort,
+		"PG_HOST=localhost", "PG_PORT=1",
+		"PG_USER=user", "PG_PASSWORD=pass", "PG_DATABASE=doesnotmatter", // sql.Open 是懒的
+		"NATS_URL="+natsURLForTest(t),
 	)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

@@ -52,11 +52,11 @@ func callHealth(t *testing.T, cc *grpc.ClientConn) {
 // 这是「悄悄读到别人数据」的第三条路径，名字区别就是安全边界）。
 func TestUserClient_透传JWT而SystemClient不透传(t *testing.T) {
 	addr, got := startTestGRPCServer(t)
-	t.Setenv("TEST_DEP_ENDPOINT", "http://"+addr)
+	cfg := NewConfig(map[string]string{"TEST_DEP_ENDPOINT": "http://" + addr})
 
 	incomingCtx := metadata.NewIncomingContext(context.Background(),
 		metadata.Pairs("authorization", "Bearer user-token"))
-	uc, err := UserClient(incomingCtx, "test/dep", "")
+	uc, err := UserClient(incomingCtx, cfg, "test/dep", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestUserClient_透传JWT而SystemClient不透传(t *testing.T) {
 		t.Fatalf("UserClient 应该透传 Authorization，实际收到 %q", auth)
 	}
 
-	sc, err := SystemClient("test/dep", "")
+	sc, err := SystemClient(cfg, "test/dep", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,20 +78,20 @@ func TestUserClient_透传JWT而SystemClient不透传(t *testing.T) {
 }
 
 func TestUserClient_弱依赖缺失时返回错误而不panic(t *testing.T) {
-	if _, err := UserClient(context.Background(), "no/such-dep", ""); err == nil {
+	if _, err := UserClient(context.Background(), NewConfig(nil), "no/such-dep", ""); err == nil {
 		t.Fatal("依赖地址未注入时应该返回 error")
 	}
 }
 
 func TestUserClient_剥掉scheme(t *testing.T) {
 	addr, _ := startTestGRPCServer(t)
-	t.Setenv("TEST_DEP2_ENDPOINT", "http://"+addr)
+	cfg := NewConfig(map[string]string{"TEST_DEP2_ENDPOINT": "http://" + addr})
 
 	// 直接验证 UserClient 内部真的把 http:// 剥掉了——用同一个 target
 	// 连一次没有 scheme 前缀的裸地址必须能连上（Endpoint 已经在别处测过
 	// 剥 scheme 本身，这里测的是 UserClient 真的调用了它，不是自己拼了
 	// 一套平行逻辑，参照 mdm-customer repo_test.go 的同类测试注释）。
-	cc, err := UserClient(context.Background(), "test/dep2", "")
+	cc, err := UserClient(context.Background(), cfg, "test/dep2", "")
 	if err != nil {
 		t.Fatalf("剥掉 scheme 后应该能正常拨号：%v", err)
 	}
@@ -102,9 +102,9 @@ func TestUserClient_剥掉scheme(t *testing.T) {
 // 占位：确认 SystemClient 也走同一条 Endpoint() 剥 scheme 的路径。
 func TestSystemClient_剥掉scheme(t *testing.T) {
 	addr, _ := startTestGRPCServer(t)
-	t.Setenv("TEST_DEP3_ENDPOINT", "http://"+addr)
+	cfg := NewConfig(map[string]string{"TEST_DEP3_ENDPOINT": "http://" + addr})
 
-	cc, err := SystemClient("test/dep3", "")
+	cc, err := SystemClient(cfg, "test/dep3", "")
 	if err != nil {
 		t.Fatalf("剥掉 scheme 后应该能正常拨号：%v", err)
 	}

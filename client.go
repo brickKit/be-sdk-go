@@ -20,8 +20,8 @@ const authHeaderKey = "authorization"
 // 一律用 SystemClient——这两个名字的区别就是安全边界（导读第 21 条：
 // 这是「悄悄读到别人数据」的第三条路径，用错了不报错，返回的数据只是
 // 「多了一些」）。
-func UserClient(ctx context.Context, dep, extra string) (*grpc.ClientConn, error) {
-	target, ok := Endpoint(dep, extra)
+func UserClient(ctx context.Context, cfg Config, dep, extra string) (*grpc.ClientConn, error) {
+	target, ok := cfg.Endpoint(dep, extra)
 	if !ok {
 		return nil, fmt.Errorf("besdk.UserClient: 依赖 %s 的地址未注入", dep)
 	}
@@ -41,8 +41,8 @@ func UserClient(ctx context.Context, dep, extra string) (*grpc.ClientConn, error
 // 会把它当成组件自身发起的调用，数据权限被绕过（设计书 §14.2.6）。
 // 只许出现在 Start() 与事件 handler 里，make gates 扫用户请求路径上的
 // 误用。
-func SystemClient(dep, extra string) (*grpc.ClientConn, error) {
-	target, ok := Endpoint(dep, extra)
+func SystemClient(cfg Config, dep, extra string) (*grpc.ClientConn, error) {
+	target, ok := cfg.Endpoint(dep, extra)
 	if !ok {
 		return nil, fmt.Errorf("besdk.SystemClient: 依赖 %s 的地址未注入", dep)
 	}

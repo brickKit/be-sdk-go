@@ -57,7 +57,7 @@ func DELETE(r gin.IRoutes, path string, perm PermKey, h gin.HandlerFunc) gin.IRo
 // authzRuntime 是 RequirePermission/ScopeOf 用的进程级状态——由
 // RunStandalone 在启动时装配一次（同 otel.SetTracerProvider 那一类
 // "只能有一份"的东西，§12.5.2）。为 nil 或字段为 nil 都代表"这个组件
-// 没有配 iamJwksUrl/authzBundleUrl"，此时任何非 Public 权限键一律
+// 没有配 IAM_JWKS_URL/AUTHZ_BUNDLE_URL"，此时任何非 Public 权限键一律
 // fail-closed 403——这是阶段二遗留的默认状态，阶段三给这两项配置赋值
 // 之前，行为不变。
 var authzRuntime struct {
@@ -71,14 +71,14 @@ func setAuthzRuntime(verifier *jwtVerifier, bundle *bundleCache) {
 	authzRuntime.bundle = bundle
 }
 
-// setupAuthzRuntime 从 rt.Config 读 iamJwksUrl/authzBundleUrl，装配
+// setupAuthzRuntime 从 rt.Config 读 IAM_JWKS_URL/AUTHZ_BUNDLE_URL，装配
 // JWT 验签器与 bundle 轮询——RunStandalone 专用，模块代码不调用。
 // 两项配置任一缺失都返回 nil，调用方（RequirePermission）据此退化成
 // fail-closed stub，不阻断组件启动（§14.1.9：authz 不可达不该拖累
 // 组件本身）。
 func setupAuthzRuntime(ctx context.Context, cfg Config, logger *slog.Logger) (*jwtVerifier, *bundleCache) {
 	var verifier *jwtVerifier
-	if jwksURL, ok := cfg.String("iamJwksUrl"); ok && jwksURL != "" {
+	if jwksURL, ok := cfg.String("IAM_JWKS_URL"); ok && jwksURL != "" {
 		v, err := newJWTVerifier(ctx, jwksURL)
 		if err != nil {
 			// ⚠️ 不 exitf：JWKS 端点暂时不可达（iam 适配层还没起来）不该
@@ -89,14 +89,14 @@ func setupAuthzRuntime(ctx context.Context, cfg Config, logger *slog.Logger) (*j
 			verifier = v
 		}
 	} else {
-		logger.Info("未配置 iamJwksUrl，非 Public/Authenticated 权限键将 fail-closed（阶段二遗留行为）")
+		logger.Info("未配置 IAM_JWKS_URL，非 Public/Authenticated 权限键将 fail-closed（阶段二遗留行为）")
 	}
 
 	var bundle *bundleCache
-	if bundleURL, ok := cfg.String("authzBundleUrl"); ok && bundleURL != "" {
+	if bundleURL, ok := cfg.String("AUTHZ_BUNDLE_URL"); ok && bundleURL != "" {
 		bundle = startBundlePoller(ctx, bundleURL, logger)
 	} else {
-		logger.Info("未配置 authzBundleUrl，具体权限键判定将始终 503")
+		logger.Info("未配置 AUTHZ_BUNDLE_URL，具体权限键判定将始终 503")
 	}
 
 	return verifier, bundle
@@ -127,7 +127,7 @@ func ContextWithClaims(ctx context.Context, claims Claims) context.Context {
 
 // RequirePermission 是判定本体。判定链（设计书 §14.1.6 第 3 步、§14.1.9）：
 //  1. Public：直接放行，不验签——/healthz 这类必须匿名可达的端点靠这条。
-//  2. 验签 JWT（本地，JWKS 从 iamJwksUrl 来）；没配 iamJwksUrl（authzRuntime.verifier
+//  2. 验签 JWT（本地，JWKS 从 IAM_JWKS_URL 来）；没配 IAM_JWKS_URL（authzRuntime.verifier
 //     为 nil）时退化成阶段二的 fail-closed stub：非 Public 一律 403，
 //     行为对已经写好、还没升级 configSchema 的组件保持不变。
 //  3. jwt.iat < stale_since[sub] → 401 token_stale（有界列表，§14.1.6）。
@@ -146,7 +146,7 @@ func RequirePermission(perm PermKey) gin.HandlerFunc {
 			// 阶段二遗留的 fail-closed stub：没有真实判定能力时，非
 			// Public 一律拒绝——安全机制的默认值只能 fail-closed。
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "权限判定尚未配置（iamJwksUrl 未注入）",
+				"error": "权限判定尚未配置（IAM_JWKS_URL 未注入）",
 			})
 			return
 		}

@@ -15,7 +15,7 @@ import (
 // Runtime.Meter，实现同理，SOP-L 表里指标那半靠 metrics.go 的 Registry
 // 单独覆盖，这里不重复）。
 //
-// ⚠️ otelBaseUrl 为空时装 Blackhole Exporter，不是报错、不是阻塞业务线程
+// ⚠️ OTEL_BASE_URL 为空时装 Blackhole Exporter，不是报错、不是阻塞业务线程
 // （设计书 §7.5：连不上必须静默丢弃）。这是 Bootstrap 唯一调用它的地方——
 // 调用方（RunStandalone 或外壳）恰好调一次，模块自己永远不碰（§12.5.2）。
 func InitOTel(ctx context.Context, serviceName, otelBaseURL string) (shutdown func(context.Context) error, err error) {
