@@ -147,7 +147,8 @@ func buildModulesForTest(t *testing.T, ms []ServedMember, reg Registry) error {
 	return err
 }
 
-// startRun 在后台跑 Run，返回取消函数与结果通道。
+// startRun 在后台跑 Run，返回取消函数与结果通道。cfg 必须由调用方先在测试 goroutine 里
+// 构造好（testShellConfig 会 t.Skip），这里的 goroutine 内不许调用任何 t.* 方法。
 func startRun(cfg Config, ms []ServedMember, reg Registry, logger *slog.Logger) (context.CancelFunc, <-chan error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -193,14 +194,13 @@ func TestRunZeroMembersServesOnlyShellHealth(t *testing.T) {
 	called := false
 	reg := Registry{"test/a": func(context.Context, *besdk.Runtime) (*besdk.Module, error) { called = true; return nil, nil }}
 	port := freePort(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- Run(ctx, testShellConfig(t, port), []ServedMember{}, reg, besdk.NewLogger("test-shell"))
-	}()
+	// ⚠️ testShellConfig 可能 t.Skip，必须在测试 goroutine 里调：t.Skip/t.Fatal 只能结束
+	// 调用它的那个 goroutine，放进 go func() 里只会让测试带着零值配置继续往下跑。
+	cfg := testShellConfig(t, port)
+	cancel, done := startRun(cfg, []ServedMember{}, reg, besdk.NewLogger("test-shell"))
 	waitHealthy(t, port)
 	cancel()
-	if err := <-done; err != nil {
+	if err := waitRunReturn(t, done); err != nil {
 		t.Fatal(err)
 	}
 	if called {
