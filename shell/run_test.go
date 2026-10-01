@@ -436,3 +436,58 @@ func TestRunMemberPortFailureEndsRun(t *testing.T) {
 		})
 	}
 }
+
+// ctx 已取消之后，服务协程不管带着什么错误返回都是正常关停：gRPC 的 Serve 如果在 GracefulStop
+// 之后才开始，会返回 grpc.ErrServerStopped——启动窗口内收到 SIGTERM 时这是常态，不能被当成
+// 成员故障（否则多一条点名健康成员的 ERROR，外壳以 1 退出）。
+func TestServeResultAfterCancelIsCleanShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	logBuf := newSyncLogBuf("level=ERROR")
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+	for _, err := range []error{nil, grpc.ErrServerStopped, fmt.Errorf("额外端口 grpc 服务退出：%w", grpc.ErrServerStopped)} {
+		if got := serveResult(ctx, logger, "test/a", "额外端口 grpc", err); got != nil {
+			t.Errorf("ctx 已取消时 serveResult(%v) 应返回 nil，实际 %v", err, got)
+		}
+	}
+	if out := logBuf.String(); out != "" {
+		t.Errorf("正常关停不应记日志，实际：%s", out)
+	}
+}
+
+// ctx 未取消时，意外返回 nil 与返回错误都算失败——这是 R15 的另一半，防止上面的修正把它带歪。
+func TestServeResultBeforeCancelIsFailure(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(newSyncLogBuf("x"), nil))
+	for _, err := range []error{nil, errors.New("bind: address already in use")} {
+		got := serveResult(context.Background(), logger, "test/a", "HTTP", err)
+		if got == nil || !strings.Contains(got.Error(), "test/a") {
+			t.Errorf("ctx 未取消时 serveResult(%v) 应返回点名成员的错误，实际 %v", err, got)
+		}
+	}
+}
+
+// 端到端：ctx 在 Run 开始之前就已取消（启动窗口内收到 SIGTERM 的极端形态），成员带额外端口——
+// 所有服务协程都在取消之后才开始，Run 必须干净返回 nil。
+func TestRunCancelledBeforeServeIsCleanShutdown(t *testing.T) {
+	cfg := testShellConfig(t, freePort(t))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 20; i++ { // GracefulStop 与 Serve 的先后由调度决定，多跑几轮覆盖两种顺序
+		m := &fakeModule{grpc: true}
+		err := Run(ctx, cfg, []ServedMember{{ComponentID: "test/a", HTTPPort: freePort(t),
+			ExtraPorts: []ExtraPort{{Name: "grpc", Port: freePort(t)}}}}, Registry{"test/a": m.new}, besdk.NewLogger("test-shell"))
+		if err != nil {
+			t.Fatalf("第 %d 轮：ctx 已取消时 Run 应返回 nil，实际 %v", i, err)
+		}
+	}
+}
+
+// 成员声明了额外端口却没有 RegisterGRPC：没人服务那个端口就是一次静默故障，启动即失败，
+// 错误点名成员与端口。
+func TestRunRejectsExtraPortWithoutRegisterGRPC(t *testing.T) {
+	err := buildModulesForTest(t, []ServedMember{{ComponentID: "test/a", HTTPPort: 1,
+		ExtraPorts: []ExtraPort{{Name: "grpc", Port: 9101}}}}, Registry{"test/a": (&fakeModule{}).new})
+	if err == nil || !strings.Contains(err.Error(), "test/a") || !strings.Contains(err.Error(), "grpc") {
+		t.Fatalf("声明了额外端口却没有 RegisterGRPC 应报错并点名成员与端口：%v", err)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -145,15 +146,13 @@ func Run(ctx context.Context, cfg Config, members []ServedMember, registry Regis
 		g.Go(func() error {
 			return serveResult(gctx, logger, b.id, "HTTP", besdk.ServeHTTP(gctx, b.rt.HTTPPort, b.mod.HTTPHandler))
 		})
-		// 没有 RegisterGRPC 时不起额外端口，与 RunStandalone 的 serveExtraPort 行为一致。
-		if b.mod.RegisterGRPC != nil {
-			for name, port := range b.rt.ExtraPorts {
-				name, port := name, port
-				g.Go(func() error {
-					return serveResult(gctx, logger, b.id, "额外端口 "+name,
-						besdk.ServeExtraPort(gctx, name, port, b.mod.RegisterGRPC, b.rt.Logger))
-				})
-			}
+		// buildModules 已保证：声明了额外端口的成员一定有 RegisterGRPC。
+		for name, port := range b.rt.ExtraPorts {
+			name, port := name, port
+			g.Go(func() error {
+				return serveResult(gctx, logger, b.id, "额外端口 "+name,
+					besdk.ServeExtraPort(gctx, name, port, b.mod.RegisterGRPC, b.rt.Logger))
+			})
 		}
 		if b.mod.Start != nil {
 			// ⚠️ Start 的失败（panic 或返回错误）一律只记日志、返回 nil，绝不流回 errgroup：
@@ -193,12 +192,14 @@ func Run(ctx context.Context, cfg Config, members []ServedMember, registry Regis
 	return runErr
 }
 
-// serveResult 把一个服务协程的结束归一成 errgroup 的返回值：ctx 已取消时的正常关停返回 nil；
-// 出错，或在 ctx 未取消时意外返回 nil，都记 ERROR 并返回点名了归属的错误。
+// serveResult 把一个服务协程的结束归一成 errgroup 的返回值：ctx 已取消之后，不论带着什么
+// 错误返回都算正常关停，返回 nil——gRPC 的 Serve 如果在 GracefulStop 之后才开始，会返回
+// grpc.ErrServerStopped，启动窗口内收到 SIGTERM 时这是常态，不是成员故障。ctx 未取消时，
+// 出错或意外返回 nil 都记 ERROR 并返回点名了归属的错误（R15：端口死了必须闹大）。
 // memberID 为空表示外壳自己的端口。日志键用 module_component_id：外壳 logger 的
 // component_id 已经是外壳自己的名字。
 func serveResult(ctx context.Context, logger *slog.Logger, memberID, what string, err error) error {
-	if err == nil && ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return nil
 	}
 	if err == nil {
@@ -237,6 +238,15 @@ func buildModules(ctx context.Context, members []ServedMember, registry Registry
 		// nil Handler 交给 http.Server 会落到 DefaultServeMux，等于把进程全局的 mux 暴露出去。
 		if mod == nil || mod.HTTPHandler == nil {
 			return nil, fmt.Errorf("成员 %s 的构造函数没有返回 HTTPHandler", m.ComponentID)
+		}
+		// 声明了额外端口却没有 RegisterGRPC：那个端口没人监听，调用方连不上，外壳 /healthz
+		// 却是绿的——同 R15 的判据，启动即失败。
+		if mod.RegisterGRPC == nil && len(m.ExtraPorts) > 0 {
+			ports := make([]string, 0, len(m.ExtraPorts))
+			for _, p := range m.ExtraPorts {
+				ports = append(ports, fmt.Sprintf("%s(:%d)", p.Name, p.Port))
+			}
+			return nil, fmt.Errorf("成员 %s 声明了额外端口 %s，但构造函数没有返回 RegisterGRPC", m.ComponentID, strings.Join(ports, ", "))
 		}
 		out = append(out, builtModule{id: m.ComponentID, rt: rt, mod: mod})
 	}

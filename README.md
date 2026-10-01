@@ -57,7 +57,19 @@ func main() {
   - **启动阶段失败**（任何一步，包括某个成员的构造函数返回错误、`Registry` 里找不到成员、构造函数返回 nil `Module`/`HTTPHandler`、外壳端口为 0）：中止启动，先关掉共享池与 NATS 连接，再返回错误，外壳以非零码退出。
   - **端口失败**（外壳自己的 `/healthz`，或任一成员的 HTTP/额外端口；包括端口绑定失败，以及服务协程在没有收到关停信号时意外返回）：`Run` 返回点名该成员的错误，其余成员优雅退出（`Stop` 会被调用），外壳以非零码退出。这样做是为了把故障暴露出来：外壳 `/healthz` 只代表进程活着，成员端口死了它照样答 200，平台的 probe 看不到。
   - **成员 `Start()` 失败**（panic 或返回错误）：隔离。记一条 ERROR 日志（带 `module_component_id`），其余成员照常服务，外壳继续运行。这个成员的后台循环会一直停着，直到外壳下次重启；它自己的 HTTP/额外端口不受影响。
-  - 收到 SIGTERM/SIGINT 时全部优雅退出，`Run` 返回 nil。
+  - 收到 SIGTERM/SIGINT 时全部优雅退出，`Run` 返回 nil。关停开始之后，任何服务协程不论带着什么错误返回（比如 gRPC 的 `Serve` 晚于 `GracefulStop` 才开始时返回的 `grpc.ErrServerStopped`），都算正常关停。
+  - 启动阶段还有一项校验：成员声明了额外端口，构造函数却没有返回 `RegisterGRPC`，同样中止启动，错误点名成员和端口——那个端口没人监听，就是一次静默故障。
+- **panic 隔离的边界**（逐项核对过）：
+  - **会被兜住的**：
+    - 运行 `Start()` 的那个 goroutine 里的 panic：`shell` 包 recover，按上面「Start 失败」处理。只限这一个 goroutine，`Start()` 自己另起的 goroutine 不在其中。
+    - HTTP handler 的 panic：用 `besdk.NewGinEngine` 构造的 engine 由 `recoveryAndErrorMappingMiddleware` 转成 500；即使不走 gin，`net/http` 自己也会 recover 这一个请求的 panic（记日志、断开这条连接），进程不会退出。
+    - 一元 gRPC handler 的 panic：`ServeExtraPort` 装的 `grpcRecoveryInterceptor` 转成 `codes.Internal`。
+  - **不会被兜住的**（一旦 panic，整个外壳进程退出，所有成员一起下线）：
+    - 流式 gRPC handler（只装了 `UnaryInterceptor`，没有 stream 拦截器）；
+    - `besdk.Consume` 的回调——`fn` 跑在 nats.go 的订阅回调 goroutine 里；
+    - `Start()` 或构造函数自己另起的 goroutine；
+    - 模块构造函数本身（启动阶段）；
+    - `Stop()`（关停阶段）。
 
 ## 现状（阶段三 Task 8，`v0.2.4`）
 
