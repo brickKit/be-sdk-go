@@ -204,3 +204,60 @@ func TestConsume_version不大于本地当前值时跳过(t *testing.T) {
 		t.Fatalf("旧版本(2)应该被跳过，只有 version=3 该被应用，实际调用序列 %v", applied)
 	}
 }
+
+// TestHandleOne_并发重复投递撞inbox唯一键时静默跳过不报错 是 06b 压出来的：
+// 同一个 (subject, aggregate_id, version) 被两个消费者（两个副本，或外壳里
+// 两条订阅）同时处理时，后到的那个在 SELECT max(version) 时看不到先到者
+// 未提交的 inbox 行，INSERT 阻塞在唯一键上，先到者提交后它拿到 23505。
+// 唯一冲突之后事务已经 aborted，旧实现仍然 tx.Commit()，拿到
+// "commit unexpectedly resulted in rollback"，handleOne 返回错误，Consume
+// 按 ERROR 记一条"消费事件失败"——一次正常的重复投递被报成了故障（R51）。
+// 断言：后到者返回 nil、业务 fn 不被调用，先到者正常提交。
+func TestHandleOne_并发重复投递撞inbox唯一键时静默跳过不报错(t *testing.T) {
+	db := setupEventsProbeDB(t)
+	ctx := context.Background()
+	ev := Event{Subject: "test.events.race.v1", AggregateID: "agg-race", Version: 1}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	errA := make(chan error, 1)
+	go func() {
+		errA <- handleOne(ctx, nil, db, "postgres", "besdk_events_probe", ev,
+			func(context.Context, *sql.Tx, Event) error {
+				close(entered) // inbox 行已插入、尚未提交
+				<-release
+				return nil
+			})
+	}()
+	<-entered
+
+	var calledB atomic.Bool
+	errB := make(chan error, 1)
+	go func() {
+		errB <- handleOne(ctx, nil, db, "postgres", "besdk_events_probe", ev,
+			func(context.Context, *sql.Tx, Event) error {
+				calledB.Store(true)
+				return nil
+			})
+	}()
+	time.Sleep(300 * time.Millisecond) // 让 B 走过 SELECT max、阻塞在 INSERT 的唯一键上
+	close(release)
+
+	if err := <-errA; err != nil {
+		t.Fatalf("先到者应该正常提交，实际 %v", err)
+	}
+	if err := <-errB; err != nil {
+		t.Fatalf("后到者撞唯一键是正常的重复投递，应该静默跳过返回 nil，实际 %v", err)
+	}
+	if calledB.Load() {
+		t.Fatal("后到者不该调用业务 fn")
+	}
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM besdk_events_probe.event_inbox WHERE aggregate_id = 'agg-race'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("inbox 里应该只有 1 行，实际 %d", n)
+	}
+}

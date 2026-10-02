@@ -138,7 +138,13 @@ func handleOne(ctx context.Context, nc *nats.Conn, db *sql.DB, role, schema stri
 		idempotencyKey, ev.Subject, ev.AggregateID, ev.Version)
 	if err != nil {
 		if isUniqueViolation(err) {
-			return tx.Commit() // 已经处理过这个 (subject, aggregate_id, version)，静默跳过
+			// 另一个消费者正在/已经处理同一个 (subject, aggregate_id, version)：
+			// 它的 inbox 行在我们 SELECT max(version) 时还没提交，提交后我们的
+			// INSERT 撞上唯一键。这是正常的重复投递，静默跳过，不是错误（R51）。
+			// ⚠️ 不能 tx.Commit()：唯一冲突之后事务已经 aborted，COMMIT 会拿到
+			// "commit unexpectedly resulted in rollback"，被上面当成消费失败按
+			// ERROR 记一条。这里什么都没写，交给 defer 里的 Rollback。
+			return nil
 		}
 		return err
 	}
