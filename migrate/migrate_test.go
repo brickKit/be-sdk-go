@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -234,13 +235,33 @@ func TestMainMissingKeyExitsOne(t *testing.T) {
 	}
 }
 
-// ctx 已取消：不能报成功——golang-migrate 被请求停下时自己返回 nil，Run 必须把它翻成错误。
+// 迁移中途取消：golang-migrate 跑完当前这条（001 带 pg_sleep）再停，后面的（002）不跑；Run 不能报
+// 成功（被停下时 golang-migrate 自己返回 nil）；状态是 version=1 dirty=false，再跑 up 能到 2。
 func TestRunCancelledIsNotSuccess(t *testing.T) {
-	_, _, env := testDB(t)
+	admin, schema, env := testDB(t)
+	slow := fstest.MapFS{
+		"001_create_a.up.sql":   {Data: []byte("SELECT pg_sleep(1); CREATE TABLE a (id int);")},
+		"001_create_a.down.sql": testMigrations["001_create_a.down.sql"],
+		"002_create_b.up.sql":   testMigrations["002_create_b.up.sql"],
+		"002_create_b.down.sql": testMigrations["002_create_b.down.sql"],
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := Run(ctx, env, []string{"up"}, testMigrations); err == nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("ctx 已取消时 Run 应返回带 context.Canceled 的错误，got %v", err)
+	timer := time.AfterFunc(300*time.Millisecond, cancel) // 落在 001 的 pg_sleep 期间
+	defer timer.Stop()
+	if err := Run(ctx, env, []string{"up"}, slow); err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("迁移中途取消时 Run 应返回带 context.Canceled 的错误，got %v", err)
+	}
+	if v, dirty := migrationState(t, admin, schema); v != 1 || dirty {
+		t.Fatalf("应跑完当前这条再停：状态应为 version=1 dirty=false，got %d %v", v, dirty)
+	}
+	if !tableExists(t, admin, schema, "a") || tableExists(t, admin, schema, "b") {
+		t.Fatal("取消后应只有 001 生效：a 存在、b 不存在")
+	}
+	if err := Run(context.Background(), env, []string{"up"}, slow); err != nil {
+		t.Fatalf("取消之后再 up 应成功：%v", err)
+	}
+	if v, dirty := migrationState(t, admin, schema); v != 2 || dirty {
+		t.Fatalf("再 up 后状态应为 version=2 dirty=false，got %d %v", v, dirty)
 	}
 }
 
