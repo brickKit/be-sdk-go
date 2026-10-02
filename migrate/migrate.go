@@ -24,6 +24,7 @@ import (
 	besdk "github.com/brickKit/be-sdk-go"
 	gomigrate "github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5" // 注册 pgx5:// 驱动；与 SDK 同用 pgx，不引 lib/pq
+	"github.com/golang-migrate/migrate/v4/source"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
 
@@ -41,6 +42,7 @@ var schemaRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 // 环境、可以退出进程。
 func Main(src fs.FS) {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	slog.SetDefault(logger) // 迁移进程自己的入口，Run 经 slog.Default 记的日志也走 JSON
 	if _, err := parseArgs(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -73,11 +75,11 @@ func Run(ctx context.Context, env map[string]string, args []string, src fs.FS) e
 	if err != nil {
 		return err
 	}
-	source, err := iofs.New(src, ".")
+	srcDriver, err := iofs.New(src, ".")
 	if err != nil {
 		return fmt.Errorf("读取迁移文件失败：%w", err)
 	}
-	m, err := gomigrate.NewWithSourceInstance("iofs", source, dsn)
+	m, err := gomigrate.NewWithSourceInstance("iofs", srcDriver, dsn)
 	if err != nil {
 		return fmt.Errorf("迁移初始化失败（schema %s）：%w", env["PG_SCHEMA"], err)
 	}
@@ -95,6 +97,9 @@ func Run(ctx context.Context, env map[string]string, args []string, src fs.FS) e
 
 	if direction == "up" {
 		err = m.Up()
+		if err != nil && errors.Is(err, os.ErrNotExist) {
+			err = toleratesNewerDatabase(m, srcDriver, env["PG_SCHEMA"], err)
+		}
 	} else {
 		err = m.Down()
 	}
@@ -106,6 +111,40 @@ func Run(ctx context.Context, env map[string]string, args []string, src fs.FS) e
 		return fmt.Errorf("迁移 %s 被中止（schema %s），可能只执行了一部分：%w", direction, env["PG_SCHEMA"], ctx.Err())
 	}
 	return nil
+}
+
+// toleratesNewerDatabase 处理"库比本镜像新"：brickKit 多版本并存时按版本号串联迁移，低版本先跑、
+// 高版本后跑，而且每次 up 都重跑。库已被高版本迁到 N，低版本镜像的迁移集里没有 N，golang-migrate
+// 报 "no migration found for version N"（包着 os.ErrNotExist）。库版本高于本迁移集的最后一个版本时，
+// 本镜像无事可做：记一条带两个版本号的 WARN，返回 nil。版本间的数据兼容由组件作者负责（迁移只做加法）。
+// 其它情形（库版本落在本迁移集范围内却找不到，即迁移文件缺号）原样返回错误。down 不走这里。
+func toleratesNewerDatabase(m *gomigrate.Migrate, src source.Driver, schema string, upErr error) error {
+	dbVersion, dirty, err := m.Version()
+	if err != nil || dirty {
+		return upErr
+	}
+	latest, ok := lastVersion(src)
+	if !ok || dbVersion <= latest {
+		return upErr
+	}
+	slog.Default().Warn("库的迁移版本比本镜像的迁移集新，跳过 up（多版本并存时低版本在高版本之后重跑属正常）",
+		"schema", schema, "db_version", dbVersion, "image_latest_version", latest)
+	return nil
+}
+
+// lastVersion 沿 First/Next 走完迁移集，返回最后一个版本；迁移集为空时 ok=false。
+func lastVersion(src source.Driver) (uint, bool) {
+	v, err := src.First()
+	if err != nil {
+		return 0, false
+	}
+	for {
+		next, err := src.Next(v)
+		if err != nil {
+			return v, true
+		}
+		v = next
+	}
 }
 
 func parseArgs(args []string) (string, error) {

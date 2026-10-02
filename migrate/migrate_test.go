@@ -1,12 +1,14 @@
 package migrate
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	neturl "net/url"
 	"os"
 	"os/exec"
@@ -239,5 +241,59 @@ func TestRunCancelledIsNotSuccess(t *testing.T) {
 	cancel()
 	if err := Run(ctx, env, []string{"up"}, testMigrations); err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("ctx 已取消时 Run 应返回带 context.Canceled 的错误，got %v", err)
+	}
+}
+
+// migrationState 读该 schema 的状态表：当前版本与 dirty。
+func migrationState(t *testing.T, db *sql.DB, schema string) (int, bool) {
+	t.Helper()
+	var version int
+	var dirty bool
+	if err := db.QueryRow(fmt.Sprintf(`SELECT version, dirty FROM %s.schema_migrations_%s`, schema, schema)).Scan(&version, &dirty); err != nil {
+		t.Fatal(err)
+	}
+	return version, dirty
+}
+
+// captureLog 在测试期间把 slog 的默认 logger 换成写进缓冲区的 JSON logger（Run 用 slog.Default 记日志）。
+// 只在 Run 返回之后读缓冲区。
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	prev := slog.Default()
+	buf := &bytes.Buffer{}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+// 多版本并存：brickKit 按版本号串联迁移，低版本先跑、高版本后跑，每次 up 都重跑。库已被高版本
+// 迁到 2 之后，只认识 001 的低版本镜像再跑 up，必须成功（库比本镜像新，无事可做），记一条带两个
+// 版本号的 WARN，状态不动；down 不放宽，仍然失败。
+func TestRunUpOnNewerDatabaseIsNoop(t *testing.T) {
+	admin, schema, env := testDB(t)
+	ctx := context.Background()
+	v1 := fstest.MapFS{
+		"001_create_a.up.sql":   testMigrations["001_create_a.up.sql"],
+		"001_create_a.down.sql": testMigrations["001_create_a.down.sql"],
+	}
+	if err := Run(ctx, env, []string{"up"}, testMigrations); err != nil {
+		t.Fatalf("v2 迁移集 up：%v", err)
+	}
+	logBuf := captureLog(t)
+	if err := Run(ctx, env, []string{"up"}, v1); err != nil {
+		t.Fatalf("库已在 version=2 时 v1 迁移集 up 应成功（无事可做），got %v", err)
+	}
+	if v, dirty := migrationState(t, admin, schema); v != 2 || dirty {
+		t.Fatalf("状态应仍是 version=2 dirty=false，got %d %v", v, dirty)
+	}
+	out := logBuf.String()
+	if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, `"db_version":2`) || !strings.Contains(out, `"image_latest_version":1`) {
+		t.Fatalf("应记一条带两个版本号的 WARN，日志：%s", out)
+	}
+	if err := Run(ctx, env, []string{"down"}, v1); err == nil {
+		t.Fatal("down 不放宽：库比本镜像新时 v1 迁移集 down 应失败")
+	}
+	if v, dirty := migrationState(t, admin, schema); v != 2 || dirty {
+		t.Fatalf("失败的 down 不应改动状态，got %d %v", v, dirty)
 	}
 }

@@ -59,6 +59,7 @@ func main() { migrate.Main(migrations.FS) }
 - **配置**：从进程环境读 `PG_HOST`/`PG_PORT`/`PG_DATABASE`/`PG_USER`/`PG_PASSWORD`/`PG_SCHEMA`，缺任一以 **1** 退出并点名缺的键（`PG_PASSWORD` 可以是空串，但键必须存在）。`PG_SCHEMA` 必须是小写标识符。
 - **DSN**：复用 `besdk.PGDSN` 的拼法（口令转义），加 `search_path=<PG_SCHEMA>`（迁移里不带 schema 前缀的 SQL 和状态表都落在组件自己的 schema）和 `x-migrations-table=schema_migrations_<PG_SCHEMA>`（裸表名，不带 schema 前缀，不加 `x-migrations-table-quoted`）。schema 本身由装配项目的建库脚本预先建好，迁移不建 schema。
 - **幂等**：`ErrNoChange`（已是最新 / 已全部回滚）不是错误，同一个迁移连跑两次都成功。
+- **多版本并存**：brickKit 按版本号串联迁移，低版本先跑、高版本后跑，每次 `up` 都重跑。库已被高版本迁到比本镜像迁移集最后一个版本更高的版本时，`up` 记一条 WARN（`db_version`、`image_latest_version`）并成功返回，不动状态；版本之间的数据兼容由组件作者负责（迁移只做加法）。`down` 不放宽，这种情形下照样失败。
 - **中止**：收到 SIGTERM/SIGINT 时跑完当前这条迁移再停（不在一条迁移中途被杀、留下 dirty 状态），并以 1 退出——没跑完不报成功。
 - **实现**：golang-migrate + `database/pgx/v5` + `source/iofs`。golang-migrate 只在 `migrate` 子包里 import，根包 `besdk` 不依赖它（`go list -deps github.com/brickKit/be-sdk-go | grep golang-migrate` 为空）。
 - `migrate.Run(ctx, env, args, src)` 是可测形式：env 与 args 显式传入，返回错误不退出。
