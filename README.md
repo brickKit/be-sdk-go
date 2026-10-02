@@ -19,7 +19,7 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 - **键名精确匹配**：`configSchema` 的键就是环境变量名（UPPER_SNAKE），`cfg.String("PG_SCHEMA")` 原样查找，SDK 不再做 camelCase → SNAKE 转换。传 `pgSchema` 拿不到值。
 - **数据库**：`besdk.PGDSN(cfg)` 从 `PG_HOST`/`PG_PORT`/`PG_DATABASE`/`PG_USER`/`PG_PASSWORD` 拼 DSN（口令经 `url.UserPassword` 转义，含 `@ : / %` 也不会截断）。`PG_PASSWORD` 可以是空串，但键必须存在。平台不注入 `DATABASE_*`。
 - **TLS（`sslmode`）**：DSN 不带 `sslmode`，用 pgx 默认的 `prefer`——服务端支持 TLS 就用，不支持就退回明文，所以不开 TLS 的本地库直接可用。SDK 没有 `sslmode` 配置键；部署者要**强制** TLS，在 `PG_HOST` 指向的那一层解决：服务端 `pg_hba.conf` 只放行 `hostssl`（`prefer` 会先试 TLS，于是只剩 TLS 连接能进来），或者让 `PG_HOST` 指向一个只接受 TLS 的代理。注意 `prefer` 不校验服务端证书。迁移入口 `migrate.Main` 用的是同一套拼法，行为相同。
-- **NATS**：`besdk.NATSURL(cfg)` 读 `NATS_URL`（完整 URL，可含凭据）。不再从 `MQ_*` 拼。
+- **NATS**：`besdk.NATSURL(cfg)` 读 `NATS_URL`（完整 URL，可含凭据）。
 - **依赖地址**：`cfg.Endpoint(dep, extra)` / `cfg.MustEndpoint(dep, extra)` 读 `<ID>[_<PORT>]_ENDPOINT` 并剥掉 `http://`。读的是 `Config`，不是进程环境——外壳里成员的依赖地址只在它自己那一项成员配置里。
 - **对象存储**：`cfg.S3URL()` 读 `S3_URL`（完整 URL，原样返回）。`STORAGE_ENDPOINT` 不再注入，`*_ENDPOINT` 后缀是保留名，不能当配置键。
 - **gRPC 客户端**：`besdk.UserClient(ctx, cfg, dep, extra)` / `besdk.SystemClient(cfg, dep, extra)`，地址从 `cfg` 取。
@@ -55,12 +55,22 @@ import (
 func main() { migrate.Main(migrations.FS) }
 ```
 
+组件 `component.yaml` 里对应的迁移命令：
+
+```yaml
+migration:
+  command: ["./migrate", "up"]
+```
+
 - **参数**：恰好一个，`up` 或 `down`。参数不对时打印用法、以 **2** 退出，不读环境、不连库。
+- ⚠️ **`down` 回滚全部迁移**（golang-migrate 的 `Down()`，等于删掉组件的所有表），只用于开发 / 测试库，不要写进任何部署的 `migration.command`。
 - **配置**：从进程环境读 `PG_HOST`/`PG_PORT`/`PG_DATABASE`/`PG_USER`/`PG_PASSWORD`/`PG_SCHEMA`，缺任一以 **1** 退出并点名缺的键（`PG_PASSWORD` 可以是空串，但键必须存在）。`PG_SCHEMA` 必须是小写标识符。
 - **DSN**：复用 `besdk.PGDSN` 的拼法（口令转义），加 `search_path=<PG_SCHEMA>`（迁移里不带 schema 前缀的 SQL 和状态表都落在组件自己的 schema）和 `x-migrations-table=schema_migrations_<PG_SCHEMA>`（裸表名，不带 schema 前缀，不加 `x-migrations-table-quoted`）。schema 本身由装配项目的建库脚本预先建好，迁移不建 schema。
 - **幂等**：`ErrNoChange`（已是最新 / 已全部回滚）不是错误，同一个迁移连跑两次都成功。
 - **多版本并存**：brickKit 按版本号串联迁移，低版本先跑、高版本后跑，每次 `up` 都重跑。库已被高版本迁到比本镜像迁移集最后一个版本更高的版本时，`up` 记一条 WARN（`db_version`、`image_latest_version`）并成功返回，不动状态；版本之间的数据兼容由组件作者负责（迁移只做加法）。`down` 不放宽，这种情形下照样失败。
-- **中止**：收到 SIGTERM/SIGINT 时跑完当前这条迁移再停（不在一条迁移中途被杀、留下 dirty 状态），并以 1 退出——没跑完不报成功。
+- **中止**：收到 SIGTERM/SIGINT 时跑完当前这条迁移再停，并以 1 退出——没跑完不报成功。这只在停止宽限期内成立（docker 默认 10 秒，Kubernetes 30 秒）：单条迁移跑得比宽限期长，进程照样被 SIGKILL，状态表留下 `dirty=true`，之后每次 `up` 都报 dirty 并以 1 退出。
+- **结束日志**：每次结束记一条「迁移结束」，带 `outcome`（`ok` / `aborted` / `failed`）和库里的最终 `version`、`dirty`。
+- **dirty 状态的恢复**（SDK 没有 `force` 子命令）：先核对库里的实际状态——那条迁移到底生效了没有（表、列、索引在不在）。生效了，就手工 `UPDATE <schema>.schema_migrations_<schema> SET dirty = false;`；没生效（事务已回滚），就把版本退回上一条：`UPDATE <schema>.schema_migrations_<schema> SET version = <上一条的版本>, dirty = false;`（退回到第一条之前则删掉这一行）。然后再跑 `up`。
 - **实现**：golang-migrate + `database/pgx/v5` + `source/iofs`。golang-migrate 只在 `migrate` 子包里 import，根包 `besdk` 不依赖它（`go list -deps github.com/brickKit/be-sdk-go | grep golang-migrate` 为空）。
 - `migrate.Run(ctx, env, args, src)` 是可测形式：env 与 args 显式传入，返回错误不退出。
 
@@ -156,20 +166,6 @@ func main() {
 `BatchGetRouted` 原本假设每个组件都有 `{schema}_archive.{table}` 这张表——但真实情况是不少组件（比如 `mdm-customer`，主数据不分区不归档，设计计划 §7）压根不会有归档表，那个 schema 建了但里面永远没有表。
 
 第一版修复（`v0.1.2`）思路是错的：先查、报 `relation does not exist` 就在 Go 这层当空结果处理。**PostgreSQL 里一条语句真的执行失败之后，整个事务会被标记成 aborted——即使调用方选择不把这个错误向上传播，事务在数据库那一侧已经回不去了**，随后的 `COMMIT` 会拿到 `pgx.ErrTxCommitRollback`（"commit unexpectedly resulted in rollback"）。`v0.1.3` 改成用 `to_regclass` 在真正查询之前先问一句"这张表存在吗"——查不到只返回 `NULL`，不报错、不污染事务，存在才真的去查。
-
-## 现状（阶段一 Task 16，`v0.1.1`）
-
-> 下表是 brickKit v0 的契约，v0.3.0 已整体换成上文「配置」一节的 `PG_*`/`NATS_URL`，`buildPGDSN`/`buildNATSURL` 已删除。端口仍从 `component.yaml` 读。
-
-`v0.1.0` 的 `RunStandalone` 里有三处是"等第一个真实组件出现才能核对"的占位：`HTTP_PORT`/`PG_DSN`/`NATS_URL` 三个环境变量从来没有被平台真正注入过。`mdm-customer` 第一次真的 `brickkit up --dry-run` 之后核对出实际契约并修复：
-
-| 占位时的假设 | 实际契约 | 改成什么 |
-|---|---|---|
-| 读整段 `HTTP_PORT` 环境变量 | 平台不注入"我该监听哪个端口"（§13.8.1），端口只在组件自己的 `component.yaml` 里 | 新增 `manifest.go` 的 `loadOwnPorts`，读 `component.yaml` 的 `deployment.port`/`extraPorts` |
-| 读整段 `PG_DSN` 环境变量 | 平台注入的是分开的 `DATABASE_HOST/PORT/USER/PASSWORD/NAME` | `buildPGDSN()` 从五片拼 |
-| 读整段 `NATS_URL` 环境变量 | 平台注入的是分开的 `MQ_HOST/PORT`（+ 可选 `MQ_USER/MQ_PASSWORD`） | `buildNATSURL()` 从这几片拼，兼容无认证的情形 |
-
-顺带用 `-race -count=20` 复测抓到一个真实（非误报）的数据竞争：`serveExtraPort` 内部先 `net.Listen` 再 `register(srv)`，测试用裸 `bool` 记录 `register` 有没有跑过、靠 `waitForListen`（只探测 TCP 连通性）去读，两者之间没有同步——已改成 `chan struct{}` + `select` 等待。
 
 ## 现状（阶段一 Task 7 完成，`v0.1.0`）
 
