@@ -270,3 +270,31 @@ func TestRequirePermission_token晚于stale_since不受影响(t *testing.T) {
 		t.Fatalf("token 晚于 stale_since 不该被判 stale，实际 %d", w.Code)
 	}
 }
+
+// setupAuthzRuntime 只认 IAM_JWKS_URL / AUTHZ_BUNDLE_URL 这两个精确键名：键名一旦漂移
+// （读成 camelCase 旧名或别的拼写），值配了组件照样 fail-closed，所有受保护路由 403/503
+// 而 /healthz 是绿的。旧名必须不生效，新名必须生效。
+func TestSetupAuthzRuntime_读IAM_JWKS_URL与AUTHZ_BUNDLE_URL(t *testing.T) {
+	tj := newTestJWKS(t)
+	bundleURL := "http://127.0.0.1:1/authz/bundle" // 不监听：轮询失败只记日志，这里只看装配
+
+	v, b := setupAuthzRuntime(t.Context(), NewConfig(map[string]string{
+		"IAM_JWKS_URL": tj.url(), "AUTHZ_BUNDLE_URL": bundleURL,
+	}), discardLoggerForTest())
+	if v == nil {
+		t.Fatal("配了 IAM_JWKS_URL 应装配 JWT 验签器")
+	}
+	if b == nil {
+		t.Fatal("配了 AUTHZ_BUNDLE_URL 应启动 bundle 轮询")
+	}
+
+	for _, env := range []map[string]string{
+		{"iamJwksUrl": tj.url(), "authzBundleUrl": bundleURL},
+		{"IAM_JWKS_ENDPOINT": tj.url(), "AUTHZ_BUNDLE_ENDPOINT": bundleURL},
+	} {
+		v, b := setupAuthzRuntime(t.Context(), NewConfig(env), discardLoggerForTest())
+		if v != nil || b != nil {
+			t.Fatalf("键名 %v 不应被当成权限地址：verifier=%v bundle=%v", env, v != nil, b != nil)
+		}
+	}
+}
