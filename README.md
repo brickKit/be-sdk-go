@@ -71,7 +71,7 @@ migration:
 - **中止**：收到 SIGTERM/SIGINT 时跑完当前这条迁移再停，并以 1 退出——没跑完不报成功。这只在停止宽限期内成立（docker 默认 10 秒，Kubernetes 30 秒）：单条迁移跑得比宽限期长，进程照样被 SIGKILL，状态表留下 `dirty=true`，之后每次 `up` 都报 dirty 并以 1 退出。
 - **结束日志**：每次结束记一条「迁移结束」，带 `outcome`（`ok` / `aborted` / `failed`）和库里的最终 `version`、`dirty`。
 - **dirty 状态的恢复**（SDK 没有 `force` 子命令）：先核对库里的实际状态——那条迁移到底生效了没有（表、列、索引在不在）。生效了，就手工 `UPDATE <schema>.schema_migrations_<schema> SET dirty = false;`；没生效（事务已回滚），就把版本退回上一条：`UPDATE <schema>.schema_migrations_<schema> SET version = <上一条的版本>, dirty = false;`（退回到第一条之前则删掉这一行）。然后再跑 `up`。
-- **实现**：golang-migrate + `database/pgx/v5` + `source/iofs`。golang-migrate 只在 `migrate` 子包里 import，根包 `besdk` 不依赖它（`go list -deps github.com/brickKit/be-sdk-go | grep golang-migrate` 为空）。
+- **实现**：golang-migrate + `database/pgx/v5` + `source/iofs`，一条一条地跑（`Steps(±1)`），每两条之间检查是否收到停止信号（不用 golang-migrate 的 `GracefulStop`：v4.20.1 里它有数据竞争）。golang-migrate 只在 `migrate` 子包里 import，根包 `besdk` 不依赖它（`go list -deps github.com/brickKit/be-sdk-go | grep golang-migrate` 为空）。
 - `migrate.Run(ctx, env, args, src)` 是可测形式：env 与 args 显式传入，返回错误不退出。
 
 ## Shell

@@ -63,8 +63,8 @@ func Main(src fs.FS) {
 }
 
 // Run 是 Main 的可测形式：env 与 args 显式传入，返回错误不退出。
-// ErrNoChange（已是最新 / 已全部回滚）不是错误——迁移必须能连跑两次都成功。
-// ctx 取消时请求 golang-migrate 在当前这条迁移跑完后停下，并返回错误（没跑完不报成功）。
+// 已是最新 / 已全部回滚不是错误——迁移必须能连跑两次都成功。
+// ctx 取消时在当前这条迁移跑完后停下，并返回错误（没跑完不报成功）。
 func Run(ctx context.Context, env map[string]string, args []string, src fs.FS) error {
 	direction, err := parseArgs(args)
 	if err != nil {
@@ -84,30 +84,18 @@ func Run(ctx context.Context, env map[string]string, args []string, src fs.FS) e
 	}
 	defer func() { _, _ = m.Close() }()
 
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			m.GracefulStop <- true
-		case <-done:
-		}
-	}()
-
+	var aborted bool
 	if direction == "up" {
-		err = m.Up()
-		if err != nil && errors.Is(err, os.ErrNotExist) {
-			err = toleratesNewerDatabase(m, srcDriver, env["PG_SCHEMA"], err)
-		}
+		aborted, err = stepUp(ctx, m, srcDriver, env["PG_SCHEMA"])
 	} else {
-		err = m.Down()
+		aborted, err = stepDown(ctx, m)
 	}
-	if err != nil && !errors.Is(err, gomigrate.ErrNoChange) {
+	if err != nil {
 		logFinalVersion(m, direction, env["PG_SCHEMA"], "failed")
 		return fmt.Errorf("迁移 %s 失败（schema %s）：%w", direction, env["PG_SCHEMA"], err)
 	}
-	// 收到停止请求时 golang-migrate 在当前这条迁移之后停下并返回 nil：没跑完不能报成功。
-	if ctx.Err() != nil {
+	// 在两条迁移之间看到 ctx 已取消就停下：没跑完不能报成功。
+	if aborted {
 		logFinalVersion(m, direction, env["PG_SCHEMA"], "aborted")
 		return fmt.Errorf("迁移 %s 被中止（schema %s），可能只执行了一部分：%w", direction, env["PG_SCHEMA"], ctx.Err())
 	}
@@ -135,23 +123,65 @@ func logFinalVersion(m *gomigrate.Migrate, direction, schema, outcome string) {
 	slog.Default().Log(context.Background(), level, "迁移结束", attrs...)
 }
 
-// toleratesNewerDatabase 处理"库比本镜像新"：brickKit 多版本并存时按版本号串联迁移，低版本先跑、
-// 高版本后跑，而且每次 up 都重跑。库已被高版本迁到 N，低版本镜像的迁移集里没有 N，golang-migrate
-// 报 "no migration found for version N"（包着 os.ErrNotExist）。库版本高于本迁移集的最后一个版本时，
-// 本镜像无事可做：记一条带两个版本号的 WARN，返回 nil。版本间的数据兼容由组件作者负责（迁移只做加法）。
-// 其它情形（库版本落在本迁移集范围内却找不到，即迁移文件缺号）原样返回错误。down 不走这里。
-func toleratesNewerDatabase(m *gomigrate.Migrate, src source.Driver, schema string, upErr error) error {
-	dbVersion, dirty, err := m.Version()
-	if err != nil || dirty {
-		return upErr
+// stepUp 一条一条地 up（m.Steps(1)），每两条之间看一眼 ctx：取消了就在当前这条跑完之后停下，
+// 返回 aborted=true。不用 golang-migrate 的 GracefulStop：v4.20.1 里它的 isGracefulStop 被两个
+// goroutine 无同步地读写，-race 会报数据竞争。
+//
+// Steps(1) 返回 os.ErrNotExist 有三种含义，按库的当前版本区分：
+//   - 版本 = 本迁移集的最后一个版本：已是最新，结束；
+//   - 版本 > 最后一个版本：库比本镜像新。brickKit 多版本并存时按版本号串联迁移，低版本先跑、
+//     高版本后跑，而且每次 up 都重跑，低版本镜像的迁移集里自然没有高版本迁到的版本号。本镜像无事
+//     可做：记一条带两个版本号的 WARN，结束。版本间的数据兼容由组件作者负责（迁移只做加法）；
+//   - 其它（版本落在迁移集范围内却找不到，即迁移文件缺号；或 dirty）：原样返回错误。
+func stepUp(ctx context.Context, m *gomigrate.Migrate, src source.Driver, schema string) (bool, error) {
+	latest, hasAny := lastVersion(src)
+	for {
+		if ctx.Err() != nil {
+			return true, nil
+		}
+		err := m.Steps(1)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+		dbVersion, dirty, verr := m.Version()
+		switch {
+		case errors.Is(verr, gomigrate.ErrNilVersion) && !hasAny:
+			return false, nil // 空迁移集、空库：无事可做
+		case verr != nil || dirty || !hasAny:
+			return false, err
+		case dbVersion == latest:
+			return false, nil
+		case dbVersion > latest:
+			slog.Default().Warn("库的迁移版本比本镜像的迁移集新，跳过 up（多版本并存时低版本在高版本之后重跑属正常）",
+				"schema", schema, "db_version", dbVersion, "image_latest_version", latest)
+			return false, nil
+		default:
+			return false, err
+		}
 	}
-	latest, ok := lastVersion(src)
-	if !ok || dbVersion <= latest {
-		return upErr
+}
+
+// stepDown 一条一条地回滚到底（m.Steps(-1)），同样每两条之间看 ctx。回滚到没有版本即结束；
+// 其它 os.ErrNotExist（库的版本不在本迁移集里，比如库比本镜像新）一律报错——down 不放宽。
+func stepDown(ctx context.Context, m *gomigrate.Migrate) (bool, error) {
+	for {
+		if ctx.Err() != nil {
+			return true, nil
+		}
+		err := m.Steps(-1)
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			if _, _, verr := m.Version(); errors.Is(verr, gomigrate.ErrNilVersion) {
+				return false, nil
+			}
+		}
+		return false, err
 	}
-	slog.Default().Warn("库的迁移版本比本镜像的迁移集新，跳过 up（多版本并存时低版本在高版本之后重跑属正常）",
-		"schema", schema, "db_version", dbVersion, "image_latest_version", latest)
-	return nil
 }
 
 // lastVersion 沿 First/Next 走完迁移集，返回最后一个版本；迁移集为空时 ok=false。
