@@ -120,6 +120,22 @@ func main() {
     - 模块构造函数本身（启动阶段）；
     - `Stop()`（关停阶段）。
 
+## 数据范围（`ScopeOf`）
+
+`besdk.ScopeOf(ctx)` 把已验签 JWT 的 `dept_path` / `sub` 换算成 `ScopeFilter`，是纯函数。**v0.5.0 起（行为变更）**，`dept_path` 按下表求解：
+
+| token 里的 `dept_path` | `HasDept` | `All` | `Prefix` / `Exact` | 效果 |
+|---|---|---|---|---|
+| `""`（没分部门、claim 缺失）或不以 `/` 开头 | false | false | `besdk.NoDeptPath`（`"!no-dept"`） | `org` 维什么都不命中；`owner OR org` 只剩本人；"本部门及下级"是空列表 |
+| `"/"` | true | true | `"/"` | 整棵树的显式根标记，前缀匹配所有真实路径 |
+| `/1/12/` | true | false | 原值 | 本部门及下级 |
+
+- `Owner` 永远是 `sub`，不受部门影响。
+- `Prefix` / `Exact` 永远不是空串。哨兵不以 `/` 开头、不含 `LIKE` 的 `%` `_` `\`，所以现有的 `dept_path LIKE $n || '%'`、`= $n`、`strings.HasPrefix` 不改一行就对任何真实路径和空串都落空。仓储层收到空串的 prefix 只可能是漏填，应当报错，不能当成"不限"。
+- **哨兵不能写进行里**：建单时把调用者的部门快照进新行，先看 `HasDept`，为假就写空串。
+- 看全公司是"分到根部门"（`/<根id>/`）或拿到 `"/"`，不是空串。v0.4.0 及以前空串被当成 `All`，没分部门的新账号能看到全部——那是 fail-open，已经改掉。
+- `ctx` 里取不到 Claims 时 `ScopeOf` 会 `panic`，不返回零值（零值的空串在 SQL 里是"放行一切"）。
+
 ## 现状（阶段三 Task 8，`v0.2.4`）
 
 `erp-inventory` 真机测试时崩了三次（`RestartCount` 0→3）：`Receive`/`Adjust`/`GetBalance`/`ListMovements` 四个方法自阶段三 Task 6 起会在 `service` 层调 `besdk.ScopeOf(ctx)`，这四个方法本来只该走 REST（有 `RequirePermission` 中间件保证 ctx 里有 Claims），但它们同时也在 gRPC 服务定义里——被直接用 gRPC 调用时（本仓库自己的测试代码图省事这么调过）ctx 里没有 Claims，`ScopeOf` 按设计 panic（fail-loud 是刻意的，见 `scope.go`），而 `serveExtraPort` 的 `grpc.NewServer()` 从 `v0.1.0` 起就是裸的、零拦截器——panic 没有任何防护，一路把整个容器进程带崩，不是"这一个 RPC 报错"。
@@ -136,7 +152,7 @@ func main() {
 - **bundle 轮询**：15 秒条件 GET `AUTHZ_BUNDLE_URL`（`If-None-Match`，未变化 304 不重新解析），进程级单例，模块代码看不见（§14.1.4）。有一条测试真等 15 秒验证"改角色分配不重启组件也能生效"，不是 mock 时钟。
 - **`Authenticated` 新哨兵值**：阶段三 Task 4 写 `infra-authz` 时发现的真实缺口——`Public`/具体权限键两档之间缺"已登录即可，不需要权限键"这一档（`GET /api/me/permissions` 这类端点）。仍然验签、仍然查 `stale_since`，只是跳过权限键查找。
 - **降级语义按 §14.1.9 精确区分三种状态**：`IAM_JWKS_URL` 没配 → 阶段二遗留行为，非 Public 一律 403；配了但 bundle 从没连上过 → 503（不是 403，语义更准）；连上过但角色没这条权限 → 403。
-- **`ScopeOf` 是纯函数**（§14.2.4）：`Prefix`/`Exact`/`Owner` 三个字段永远从同一份 JWT 的 `dept_path`/`sub` 填，"这次查询该用哪一档"是调用方某条 `.sql` 的静态选择，不是 `ScopeOf` 自己判断。⚠️ **一处容易反方向的细节**：`ctx` 里取不到 Claims 时不能返回零值 `ScopeFilter{}`——§14.2.4 的 SQL 约定"空字符串表示不限"，零值会被下游解读成放行一切，是 fail-open 不是 fail-closed。这里改成 `panic`，让编程错误（在 `Start()`/事件 handler 里误用）在联调阶段就现形。
+- **`ScopeOf` 是纯函数**（§14.2.4）：`Prefix`/`Exact`/`Owner` 三个字段永远从同一份 JWT 的 `dept_path`/`sub` 填，"这次查询该用哪一档"是调用方某条 `.sql` 的静态选择，不是 `ScopeOf` 自己判断。⚠️ **一处容易反方向的细节**：`ctx` 里取不到 Claims 时不能返回零值 `ScopeFilter{}`——零值的空串在 `LIKE '' || '%'` 里匹配一切，会被下游解读成放行一切，是 fail-open 不是 fail-closed。这里改成 `panic`，让编程错误（在 `Start()`/事件 handler 里误用）在联调阶段就现形。（当时的约定"空字符串表示不限"在 v0.5.0 作废，见上面「数据范围」一节。）
 - 真机验证：起了本地 `infra-authz` 容器，`be-sdk-go` 的轮询客户端直接打它真实的 `GET /authz/bundle`，确认认得出自举种子数据 `authz_admin`/`infra.authz.admin`——两边是分开写的，这条测试专门抓"字段名各写各的"这类耦合裂缝。
 
 ## 从 `v0.1.1` 到 `v0.1.6` 修的六个 bug，五个是同一类问题

@@ -34,8 +34,8 @@ func TestScopeOf_按JWT字段填三个可选字段(t *testing.T) {
 // TestScopeOf_部门树根节点自然得到All——旧用例锁定的是 fail-open：authz
 // 签发的真实路径恒为 /<id>/…/，根部门也是 /<根id>/，dept_path 为空只有
 // "这个人没分部门"一种来源，旧语义把它当成"不限"，于是 Prefix == "" 在
-// LIKE '' || '%' 和 strings.HasPrefix 里都匹配一切。现在断言：空路径不是
-// All，Prefix 不命中任何真实路径、也不命中 dept_path = '' 的行，Owner 照旧。
+// LIKE ” || '%' 和 strings.HasPrefix 里都匹配一切。现在断言：空路径不是
+// All，Prefix 不命中任何真实路径、也不命中 dept_path = ” 的行，Owner 照旧。
 func TestScopeOf_dept_path为空时org维落空只剩本人(t *testing.T) {
 	ctx := ctxWithClaims(&Claims{Sub: "u_x", DeptPath: ""})
 	f := ScopeOf(ctx)
@@ -53,6 +53,70 @@ func TestScopeOf_dept_path为空时org维落空只剩本人(t *testing.T) {
 	}
 	if f.Owner != "u_x" {
 		t.Fatalf("Owner 应该照旧等于 sub，实际 %+v", f)
+	}
+	if f.HasDept {
+		t.Fatalf("dept_path 为空时 HasDept 应该为假，实际 %+v", f)
+	}
+	if f.Prefix != NoDeptPath || f.Exact != NoDeptPath {
+		t.Fatalf("dept_path 为空时 Prefix/Exact 应该都是哨兵 %q，实际 %+v", NoDeptPath, f)
+	}
+}
+
+// TestScopeOf_斜杠是整棵树的显式根标记："/" 是所有真实路径的公共前缀，
+// 作为普通前缀天然匹配整片森林（多个顶层部门），是"看全部"唯一的写法。
+func TestScopeOf_斜杠是整棵树的显式根标记(t *testing.T) {
+	f := ScopeOf(ctxWithClaims(&Claims{Sub: "u_hq", DeptPath: "/"}))
+	if !f.All || !f.HasDept || f.Prefix != "/" || f.Exact != "/" {
+		t.Fatalf(`dept_path 为 "/" 应该得到 All、HasDept、Prefix=Exact="/"，实际 %+v`, f)
+	}
+	if !strings.HasPrefix("/1/12/", f.Prefix) {
+		t.Fatalf(`"/" 应该前缀命中真实路径 /1/12/，实际 %+v`, f)
+	}
+	if strings.HasPrefix("", f.Prefix) {
+		t.Fatalf(`"/" 不该命中 dept_path = '' 的行（没有部门的行只对 owner 可见），实际 %+v`, f)
+	}
+	if f.Owner != "u_hq" {
+		t.Fatalf("Owner 应该等于 sub，实际 %+v", f)
+	}
+}
+
+// TestScopeOf_不以斜杠开头的dept_path按无部门处理：格式异常的路径前缀
+// 语义不可预期（"1" 会前缀命中 "12/…"），一律当成没有部门，fail-closed。
+func TestScopeOf_不以斜杠开头的dept_path按无部门处理(t *testing.T) {
+	for _, dp := range []string{"1/12/", "!no-dept", "%", " /1/"} {
+		f := ScopeOf(ctxWithClaims(&Claims{Sub: "u_y", DeptPath: dp}))
+		if f.All || f.HasDept || f.Prefix != NoDeptPath || f.Exact != NoDeptPath || f.Owner != "u_y" {
+			t.Fatalf("dept_path=%q 应该按无部门处理（!All、!HasDept、Prefix=Exact=哨兵、Owner 照旧），实际 %+v", dp, f)
+		}
+	}
+}
+
+// TestScopeOf_真实部门路径HasDept为真：普通路径 HasDept 为真、All 为假。
+func TestScopeOf_真实部门路径HasDept为真(t *testing.T) {
+	f := ScopeOf(ctxWithClaims(&Claims{Sub: "u_z", DeptPath: "/1/12/"}))
+	if !f.HasDept || f.All || f.Prefix != "/1/12/" || f.Exact != "/1/12/" {
+		t.Fatalf("真实路径应该 HasDept、!All、Prefix=Exact=原值，实际 %+v", f)
+	}
+}
+
+// TestNoDeptPath_不以斜杠开头且不含LIKE通配符：哨兵必须在
+// `dept_path LIKE prefix || '%'`、`dept_path = exact` 与 strings.HasPrefix
+// 里对任何真实路径（恒以 "/" 开头）和空串都落空——它不能以 "/" 开头，
+// 不能含 LIKE 的通配符 % _ 和默认转义符 \，也不能是空串。
+func TestNoDeptPath_不以斜杠开头且不含LIKE通配符(t *testing.T) {
+	if NoDeptPath == "" {
+		t.Fatal("哨兵不能是空串：空串在 LIKE '' || '%' 里匹配一切")
+	}
+	if strings.HasPrefix(NoDeptPath, "/") {
+		t.Fatalf("哨兵 %q 不能以 / 开头：那会和真实路径的前缀重叠", NoDeptPath)
+	}
+	if strings.ContainsAny(NoDeptPath, `%_\`) {
+		t.Fatalf("哨兵 %q 不能含 LIKE 通配符 %% _ 或转义符 \\", NoDeptPath)
+	}
+	for _, real := range []string{"/", "/1/", "/1/12/", ""} {
+		if strings.HasPrefix(real, NoDeptPath) {
+			t.Fatalf("哨兵 %q 不该前缀命中 %q", NoDeptPath, real)
+		}
 	}
 }
 
