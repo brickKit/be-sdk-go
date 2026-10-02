@@ -60,7 +60,6 @@ func Main(src fs.FS) {
 		logger.Error("迁移失败", "error", err)
 		os.Exit(1)
 	}
-	logger.Info("迁移完成", "direction", os.Args[1], "schema", env["PG_SCHEMA"])
 }
 
 // Run 是 Main 的可测形式：env 与 args 显式传入，返回错误不退出。
@@ -104,13 +103,36 @@ func Run(ctx context.Context, env map[string]string, args []string, src fs.FS) e
 		err = m.Down()
 	}
 	if err != nil && !errors.Is(err, gomigrate.ErrNoChange) {
+		logFinalVersion(m, direction, env["PG_SCHEMA"], "failed")
 		return fmt.Errorf("迁移 %s 失败（schema %s）：%w", direction, env["PG_SCHEMA"], err)
 	}
 	// 收到停止请求时 golang-migrate 在当前这条迁移之后停下并返回 nil：没跑完不能报成功。
 	if ctx.Err() != nil {
+		logFinalVersion(m, direction, env["PG_SCHEMA"], "aborted")
 		return fmt.Errorf("迁移 %s 被中止（schema %s），可能只执行了一部分：%w", direction, env["PG_SCHEMA"], ctx.Err())
 	}
+	logFinalVersion(m, direction, env["PG_SCHEMA"], "ok")
 	return nil
+}
+
+// logFinalVersion 在结束时记下库里的最终迁移版本——迁移容器的日志是排障的主要入口。
+// outcome：ok / aborted / failed。全部回滚后没有版本时 version 记为 none。
+func logFinalVersion(m *gomigrate.Migrate, direction, schema, outcome string) {
+	level := slog.LevelInfo
+	if outcome != "ok" {
+		level = slog.LevelWarn
+	}
+	attrs := []any{"direction", direction, "schema", schema, "outcome", outcome}
+	v, dirty, err := m.Version()
+	switch {
+	case errors.Is(err, gomigrate.ErrNilVersion):
+		attrs = append(attrs, "version", "none")
+	case err != nil:
+		attrs = append(attrs, "version_error", err.Error())
+	default:
+		attrs = append(attrs, "version", v, "dirty", dirty)
+	}
+	slog.Default().Log(context.Background(), level, "迁移结束", attrs...)
 }
 
 // toleratesNewerDatabase 处理"库比本镜像新"：brickKit 多版本并存时按版本号串联迁移，低版本先跑、

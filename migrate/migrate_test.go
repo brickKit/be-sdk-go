@@ -318,3 +318,33 @@ func TestRunUpOnNewerDatabaseIsNoop(t *testing.T) {
 		t.Fatalf("失败的 down 不应改动状态，got %d %v", v, dirty)
 	}
 }
+
+// 迁移容器的日志是排障的主要入口：结束时记下最终版本（成功与中止都记）。
+func TestRunLogsFinalVersion(t *testing.T) {
+	_, _, env := testDB(t)
+	logBuf := captureLog(t)
+	if err := Run(context.Background(), env, []string{"up"}, testMigrations); err != nil {
+		t.Fatal(err)
+	}
+	out := logBuf.String()
+	if !strings.Contains(out, `"outcome":"ok"`) || !strings.Contains(out, `"version":2`) || !strings.Contains(out, `"dirty":false`) {
+		t.Fatalf("成功时应记最终版本 version=2 dirty=false，日志：%s", out)
+	}
+
+	_, _, env2 := testDB(t)
+	logBuf.Reset()
+	slow := fstest.MapFS{
+		"001_create_a.up.sql": {Data: []byte("SELECT pg_sleep(1); CREATE TABLE a (id int);")},
+		"002_create_b.up.sql": testMigrations["002_create_b.up.sql"],
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(300*time.Millisecond, cancel)
+	defer timer.Stop()
+	if err := Run(ctx, env2, []string{"up"}, slow); err == nil {
+		t.Fatal("中途取消应返回错误")
+	}
+	out = logBuf.String()
+	if !strings.Contains(out, `"outcome":"aborted"`) || !strings.Contains(out, `"version":1`) {
+		t.Fatalf("中止时应记最终版本 version=1，日志：%s", out)
+	}
+}
