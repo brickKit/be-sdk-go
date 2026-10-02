@@ -27,6 +27,7 @@ type fakeBundleServer struct {
 	server   *httptest.Server
 	hitCount atomic.Int64
 	notMatch atomic.Int64 // 收到过 If-None-Match 且命中、返回 304 的次数
+	failLeft atomic.Int64 // 还要回几次 503（模拟 authz 还在启动）
 }
 
 func newFakeBundleServer(t *testing.T) *fakeBundleServer {
@@ -37,6 +38,10 @@ func newFakeBundleServer(t *testing.T) *fakeBundleServer {
 	}
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.hitCount.Add(1)
+		if f.failLeft.Add(-1) >= 0 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		if r.Header.Get("If-None-Match") == f.etag {
@@ -149,6 +154,49 @@ func TestBundleCache_15秒后角色变更真的生效(t *testing.T) {
 
 	if !c.hasPermission([]string{"sales_rep"}, "erp.sales.approve") {
 		t.Fatal("15 秒轮询之后应该拿到新权限，实际没有")
+	}
+}
+
+// TestBundleCache_首次拉取失败后短退避重试不等满15秒 是 06b 联调压出来的：
+// 组件和 authz 同时启动，第一次拉 bundle 时 authz 还没起来，旧实现要等满一
+// 个轮询周期（15 秒）才重试，这期间每个受保护的路由都答 503，启动后大约
+// 20 秒不可用。首次成功之前应该短退避重试（0.5 秒起翻倍、封顶轮询间隔）；
+// 成功之后回到 15 秒的条件轮询，不再密集请求。
+func TestBundleCache_首次拉取失败后短退避重试不等满15秒(t *testing.T) {
+	f := newFakeBundleServer(t)
+	f.setBundle(map[string][]string{"r1": {"perm.a"}}, nil, `"v1"`)
+	f.failLeft.Store(2) // 前两次 503，第三次才成功
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := startBundlePoller(ctx, f.url(), testLogger())
+
+	waitUntil(t, 3*time.Second, func() bool { return c.hasEverFetched() })
+	if !c.hasPermission([]string{"r1"}, "perm.a") {
+		t.Fatal("重试成功之后应该能查到权限")
+	}
+
+	hits := f.hitCount.Load()
+	time.Sleep(2 * time.Second)
+	if got := f.hitCount.Load(); got != hits {
+		t.Fatalf("首次成功之后应该回到 %v 的轮询间隔，不该继续短退避；2 秒内又多打了 %d 次",
+			bundlePollInterval, got-hits)
+	}
+}
+
+// TestNextBundleRetryDelay_翻倍并封顶轮询间隔 锁定退避序列的形状。
+func TestNextBundleRetryDelay_翻倍并封顶轮询间隔(t *testing.T) {
+	d := bundleFirstRetryDelay
+	if d != 500*time.Millisecond {
+		t.Fatalf("首次重试间隔应该是 0.5 秒，实际 %v", d)
+	}
+	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second,
+		bundlePollInterval, bundlePollInterval}
+	for i, w := range want {
+		d = nextBundleRetryDelay(d)
+		if d != w {
+			t.Fatalf("第 %d 次翻倍后应该是 %v，实际 %v", i+1, w, d)
+		}
 	}
 }
 

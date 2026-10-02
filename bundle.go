@@ -13,6 +13,18 @@ import (
 // §14.1.4/§14.1.6：生效时延全部 ~15 秒，就是这个数）。
 const bundlePollInterval = 15 * time.Second
 
+// bundleFirstRetryDelay 是首次拉取失败后的第一次重试间隔。首次成功之前
+// 按它翻倍退避（封顶 bundlePollInterval），见 loop。
+const bundleFirstRetryDelay = 500 * time.Millisecond
+
+// nextBundleRetryDelay 把退避间隔翻倍，封顶轮询间隔。
+func nextBundleRetryDelay(d time.Duration) time.Duration {
+	if d *= 2; d > bundlePollInterval {
+		return bundlePollInterval
+	}
+	return d
+}
+
 // bundleCache 是 RequirePermission 判定用的进程内 map——"组件里没有任何
 // 一张权限表"这条在这里成立：这只是一份内存缓存，不落库、不进迁移
 // （§14.1.4）。⚠️ 这是全组件唯一一份、由 RunStandalone 在启动时创建
@@ -32,6 +44,12 @@ func newBundleCache() *bundleCache {
 // startBundlePoller 立刻拉一次，之后每 15 秒条件 GET 一次。ctx 取消时
 // 循环退出——不需要额外的 Stop 方法。
 //
+// ⚠️ 首次成功之前不等满 15 秒：组件常和 authz 同时启动，第一次拉取时
+// authz 多半还没起来。旧实现要等一个完整轮询周期才重试，这期间每个受
+// 保护的路由都答 503（"还不知道"），启动后大约 20 秒不可用。现在首次
+// 成功之前按 0.5 秒起翻倍退避（封顶轮询间隔）重试，成功之后才进入 15
+// 秒的条件轮询。
+//
 // ⚠️ 单次失败（网络抖动、authz 重启中）只记日志、沿用内存里最后一份
 // bundle 继续跑——这是 §14.1.9 的 fail-static：一个授权服务抖动不该让
 // 使用它的组件同时拒绝所有请求。
@@ -42,7 +60,17 @@ func startBundlePoller(ctx context.Context, url string, logger *slog.Logger) *bu
 }
 
 func (c *bundleCache) loop(ctx context.Context, url string, logger *slog.Logger) {
-	c.fetchOnce(ctx, url, logger)
+	delay := bundleFirstRetryDelay
+	for !c.fetchOnce(ctx, url, logger) {
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		delay = nextBundleRetryDelay(delay)
+	}
 
 	ticker := time.NewTicker(bundlePollInterval)
 	defer ticker.Stop()
@@ -61,11 +89,13 @@ type bundleWireFormat struct {
 	StaleSince map[string]int64    `json:"stale_since"`
 }
 
-func (c *bundleCache) fetchOnce(ctx context.Context, url string, logger *slog.Logger) {
+// fetchOnce 拉一次，返回这次是否拿到了可用的 bundle（200 解析成功，或
+// 304 沿用已有的）。失败时只记日志、内存里的旧内容不动。
+func (c *bundleCache) fetchOnce(ctx context.Context, url string, logger *slog.Logger) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		logger.Error("构造 authz bundle 请求失败", "error", err)
-		return
+		return false
 	}
 	c.mu.RLock()
 	etag := c.etag
@@ -76,26 +106,29 @@ func (c *bundleCache) fetchOnce(ctx context.Context, url string, logger *slog.Lo
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return false // 关停中取消，不是故障，不记日志
+		}
 		logger.Warn("拉取 authz bundle 失败，沿用内存里已有的旧版本", "error", err)
-		return
+		return false
 	}
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case http.StatusNotModified:
-		return // ETag 命中，未变化，沿用旧的
+		return true // ETag 命中，未变化，沿用旧的
 	case http.StatusOK:
 		// 往下解析
 	default:
 		logger.Warn("拉取 authz bundle 收到非预期状态码，沿用内存里已有的旧版本",
 			"status", resp.StatusCode)
-		return
+		return false
 	}
 
 	var body bundleWireFormat
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		logger.Error("解析 authz bundle 失败，沿用内存里已有的旧版本", "error", err)
-		return
+		return false
 	}
 
 	c.mu.Lock()
@@ -104,6 +137,7 @@ func (c *bundleCache) fetchOnce(ctx context.Context, url string, logger *slog.Lo
 	c.etag = resp.Header.Get("ETag")
 	c.everFetched = true
 	c.mu.Unlock()
+	return true
 }
 
 // hasEverFetched 区分"authz 从启动到现在一次都没连上过"（§14.1.9：业务

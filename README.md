@@ -149,7 +149,7 @@ func main() {
 `RequirePermission`/`ScopeOf` 从阶段二的 fail-closed stub 换成真实判定——这是三个 `be-sdk-*` 共用的机制，`infra-authz` 建成之后才有真实数据可以对着测。⚠️ **这套机制本身的协议描述（JWT claims 约定、bundle 的 wire format、判定链、ScopeFilter 语义）见 [`docs/authz-protocol.md`](docs/authz-protocol.md)**——独立写的，不假设读者知道 brickKit 是什么，换一个签发方/策略服务实现也能对着它接。
 
 - **JWT 本地验签**：`IAM_JWKS_URL` 指向的 JWKS 端点，用 [`MicahParks/keyfunc`](https://github.com/MicahParks/keyfunc)（自带 JWK Set 后台刷新，不用自己写缓存）配 [`golang-jwt/jwt/v5`](https://github.com/golang-jwt/jwt)，只认 `RS256`。`infra-iam-casdoor` 要到阶段三 Task 7 才建仓库，暂时没有真实签发方——测试自己起一对 RSA 密钥 + 一个 `httptest.Server` 当 JWKS 端点，加密运算是真的，只是身份是测试夹具。
-- **bundle 轮询**：15 秒条件 GET `AUTHZ_BUNDLE_URL`（`If-None-Match`，未变化 304 不重新解析），进程级单例，模块代码看不见（§14.1.4）。有一条测试真等 15 秒验证"改角色分配不重启组件也能生效"，不是 mock 时钟。
+- **bundle 轮询**：15 秒条件 GET `AUTHZ_BUNDLE_URL`（`If-None-Match`，未变化 304 不重新解析），进程级单例，模块代码看不见（§14.1.4）。v0.5.0 起，首次成功之前不等满 15 秒：按 0.5 秒起翻倍、封顶 15 秒的退避重试，成功后才进入 15 秒轮询——组件和 authz 同时启动时，受保护的路由不再在启动后约 20 秒里一直答 503。有一条测试真等 15 秒验证"改角色分配不重启组件也能生效"，不是 mock 时钟。
 - **`Authenticated` 新哨兵值**：阶段三 Task 4 写 `infra-authz` 时发现的真实缺口——`Public`/具体权限键两档之间缺"已登录即可，不需要权限键"这一档（`GET /api/me/permissions` 这类端点）。仍然验签、仍然查 `stale_since`，只是跳过权限键查找。
 - **降级语义按 §14.1.9 精确区分三种状态**：`IAM_JWKS_URL` 没配 → 阶段二遗留行为，非 Public 一律 403；配了但 bundle 从没连上过 → 503（不是 403，语义更准）；连上过但角色没这条权限 → 403。
 - **`ScopeOf` 是纯函数**（§14.2.4）：`Prefix`/`Exact`/`Owner` 三个字段永远从同一份 JWT 的 `dept_path`/`sub` 填，"这次查询该用哪一档"是调用方某条 `.sql` 的静态选择，不是 `ScopeOf` 自己判断。⚠️ **一处容易反方向的细节**：`ctx` 里取不到 Claims 时不能返回零值 `ScopeFilter{}`——零值的空串在 `LIKE '' || '%'` 里匹配一切，会被下游解读成放行一切，是 fail-open 不是 fail-closed。这里改成 `panic`，让编程错误（在 `Start()`/事件 handler 里误用）在联调阶段就现形。（当时的约定"空字符串表示不限"在 v0.5.0 作废，见上面「数据范围」一节。）
