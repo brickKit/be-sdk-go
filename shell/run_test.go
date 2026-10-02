@@ -528,3 +528,30 @@ func TestRunRequiresShellAuthzURLs(t *testing.T) {
 		})
 	}
 }
+
+// 成员 httpPort ≤ 0（或额外端口 ≤ 0）：端口 0 会让 Listen 绑一个随机端口，平台按 component.yaml
+// 的端口去连永远连不上，外壳 /healthz 却是绿的。启动即失败，点名成员 ID，且在连库之前。
+func TestRunRejectsMemberWithoutValidPort(t *testing.T) {
+	cases := []struct {
+		name string
+		m    ServedMember
+		want string
+	}{
+		{"httpPort 为 0", ServedMember{ComponentID: "test/a", HTTPPort: 0}, "httpPort"},
+		{"httpPort 为负", ServedMember{ComponentID: "test/a", HTTPPort: -1}, "httpPort"},
+		{"额外端口为 0", ServedMember{ComponentID: "test/a", HTTPPort: 8101, ExtraPorts: []ExtraPort{{Name: "grpc", Port: 0}}}, "grpc"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// 外壳配置齐全到权限地址为止、没有 PG_*：校验必须在连库之前发生。
+			cfg := Config{ShellName: "test-shell", HTTPPort: freePort(t), ShellConfig: besdk.NewConfig(map[string]string{
+				"AUTHZ_BUNDLE_URL": "http://127.0.0.1:1/authz/bundle", "IAM_JWKS_URL": "http://127.0.0.1:1/jwks",
+			})}
+			m := &fakeModule{grpc: true}
+			err := Run(context.Background(), cfg, []ServedMember{c.m}, Registry{"test/a": m.new}, besdk.NewLogger("test-shell"))
+			if err == nil || !strings.Contains(err.Error(), "test/a") || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("应启动即失败并点名成员与 %s：%v", c.want, err)
+			}
+		})
+	}
+}

@@ -86,6 +86,9 @@ func Run(ctx context.Context, cfg Config, members []ServedMember, registry Regis
 	if cfg.HTTPPort <= 0 {
 		return fmt.Errorf("外壳 %s 的 HTTP 端口未设置（component.yaml 的 deployment.port）", cfg.ShellName)
 	}
+	if err := validateMemberPorts(members); err != nil {
+		return err
+	}
 	if err := requireShellAuthzURLs(cfg); err != nil {
 		return err
 	}
@@ -209,6 +212,23 @@ func requireShellAuthzURLs(cfg Config) error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("外壳 %s 缺少权限地址配置：%s（外壳自己的 configSchema，见 config/vars.yaml）", cfg.ShellName, strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+// validateMemberPorts：成员的 httpPort 或任一额外端口 ≤ 0 就启动即失败，点名成员 ID。
+// 端口 0 交给 Listen 会绑一个随机端口，平台按 component.yaml 的端口去连永远连不上，
+// 外壳 /healthz 却是绿的——同 R15 的判据，在连库之前查。
+func validateMemberPorts(members []ServedMember) error {
+	for _, m := range members {
+		if m.HTTPPort <= 0 {
+			return fmt.Errorf("成员 %s 的 httpPort 无效（%d）：BRICKKIT_SERVED_MEMBERS_CONFIG 里每个成员都必须带它 component.yaml 的 deployment.port", m.ComponentID, m.HTTPPort)
+		}
+		for _, p := range m.ExtraPorts {
+			if p.Port <= 0 {
+				return fmt.Errorf("成员 %s 的额外端口 %s 无效（%d）", m.ComponentID, p.Name, p.Port)
+			}
+		}
 	}
 	return nil
 }

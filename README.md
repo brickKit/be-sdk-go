@@ -91,7 +91,7 @@ func main() {
 - **外壳自己的配置**：`PG_*`、`NATS_URL`、`OTEL_BASE_URL`、`AUTHZ_BUNDLE_URL`、`IAM_JWKS_URL` 写在外壳自己的 `configSchema` 里。`Run` 用它们开**一个**共享连接池和**一条** NATS 连接给全部成员，`InitShellAuthz` 只调一次。`AUTHZ_BUNDLE_URL` / `IAM_JWKS_URL` 缺任一（或为空白）时外壳启动即失败并点名缺的键（与 Python 外壳一致）——单跑组件缺它们只是 fail-closed，外壳里同样的缺失会让全部成员一起 403/503。外壳自己 `component.yaml` 的 `deployment.port` 只答 `/healthz`，不查任何成员或依赖。
 - **迁移不在外壳里跑**：brickKit 在外壳启动前用每个成员自己的镜像和配置跑迁移（见下文「迁移」）。
 - **失败处理**（三类，处理方式不同）：
-  - **启动阶段失败**（任何一步，包括某个成员的构造函数返回错误、`Registry` 里找不到成员、构造函数返回 nil `Module`/`HTTPHandler`、外壳端口为 0、外壳缺 `AUTHZ_BUNDLE_URL`/`IAM_JWKS_URL`）：中止启动，先关掉共享池与 NATS 连接，再返回错误，外壳以非零码退出。
+  - **启动阶段失败**（任何一步，包括某个成员的构造函数返回错误、`Registry` 里找不到成员、构造函数返回 nil `Module`/`HTTPHandler`、外壳端口为 0、某个成员的 `httpPort` 或额外端口 ≤ 0（点名成员 ID）、外壳缺 `AUTHZ_BUNDLE_URL`/`IAM_JWKS_URL`）：中止启动，先关掉共享池与 NATS 连接，再返回错误，外壳以非零码退出。
   - **端口失败**（外壳自己的 `/healthz`，或任一成员的 HTTP/额外端口；包括端口绑定失败，以及服务协程在没有收到关停信号时意外返回）：`Run` 返回点名该成员的错误，其余成员优雅退出（`Stop` 会被调用），外壳以非零码退出。这样做是为了把故障暴露出来：外壳 `/healthz` 只代表进程活着，成员端口死了它照样答 200，平台的 probe 看不到。
   - **成员 `Start()` 失败**（panic 或返回错误）：隔离。记一条 ERROR 日志（带 `module_component_id`；panic 时还带 `stack`，即 recover 处的完整堆栈），其余成员照常服务，外壳继续运行。这个成员的后台循环会一直停着，直到外壳下次重启；它自己的 HTTP/额外端口不受影响。
   - 收到 SIGTERM/SIGINT 时全部优雅退出，`Run` 返回 nil。关停开始之后，任何服务协程不论带着什么错误返回（比如 gRPC 的 `Serve` 晚于 `GracefulStop` 才开始时返回的 `grpc.ErrServerStopped`），都算正常关停。
