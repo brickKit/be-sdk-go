@@ -231,3 +231,13 @@ func TestMainMissingKeyExitsOne(t *testing.T) {
 		t.Fatalf("应点名 PG_SCHEMA，输出：%s", out)
 	}
 }
+
+// ctx 已取消：不能报成功——golang-migrate 被请求停下时自己返回 nil，Run 必须把它翻成错误。
+func TestRunCancelledIsNotSuccess(t *testing.T) {
+	_, _, env := testDB(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := Run(ctx, env, []string{"up"}, testMigrations); err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("ctx 已取消时 Run 应返回带 context.Canceled 的错误，got %v", err)
+	}
+}

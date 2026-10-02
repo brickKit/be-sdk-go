@@ -16,8 +16,10 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"os/signal"
 	"regexp"
 	"strings"
+	"syscall"
 
 	besdk "github.com/brickKit/be-sdk-go"
 	gomigrate "github.com/golang-migrate/migrate/v4"
@@ -49,7 +51,10 @@ func Main(src fs.FS) {
 			env[k] = v
 		}
 	}
-	if err := Run(context.Background(), env, os.Args[1:], src); err != nil {
+	// SIGTERM/SIGINT 时让 golang-migrate 跑完当前这条迁移再停，不在一条迁移中途被杀、留下 dirty 状态。
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	if err := Run(ctx, env, os.Args[1:], src); err != nil {
 		logger.Error("迁移失败", "error", err)
 		os.Exit(1)
 	}
@@ -58,7 +63,7 @@ func Main(src fs.FS) {
 
 // Run 是 Main 的可测形式：env 与 args 显式传入，返回错误不退出。
 // ErrNoChange（已是最新 / 已全部回滚）不是错误——迁移必须能连跑两次都成功。
-// ctx 取消时请求 golang-migrate 在当前这条迁移跑完后停下。
+// ctx 取消时请求 golang-migrate 在当前这条迁移跑完后停下，并返回错误（没跑完不报成功）。
 func Run(ctx context.Context, env map[string]string, args []string, src fs.FS) error {
 	direction, err := parseArgs(args)
 	if err != nil {
@@ -95,6 +100,10 @@ func Run(ctx context.Context, env map[string]string, args []string, src fs.FS) e
 	}
 	if err != nil && !errors.Is(err, gomigrate.ErrNoChange) {
 		return fmt.Errorf("迁移 %s 失败（schema %s）：%w", direction, env["PG_SCHEMA"], err)
+	}
+	// 收到停止请求时 golang-migrate 在当前这条迁移之后停下并返回 nil：没跑完不能报成功。
+	if ctx.Err() != nil {
+		return fmt.Errorf("迁移 %s 被中止（schema %s），可能只执行了一部分：%w", direction, env["PG_SCHEMA"], ctx.Err())
 	}
 	return nil
 }
