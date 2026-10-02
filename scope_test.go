@@ -2,6 +2,7 @@ package besdk
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -29,14 +30,29 @@ func TestScopeOf_按JWT字段填三个可选字段(t *testing.T) {
 	}
 }
 
-// TestScopeOf_部门树根节点自然得到All 是"五档退化成纯函数"这条设计的
-// 直接验证：坐在根部门（dept_path 为空）的人，前缀匹配天然覆盖全部，
-// 不需要任何特判分支。
-func TestScopeOf_部门树根节点自然得到All(t *testing.T) {
-	ctx := ctxWithClaims(&Claims{Sub: "u_ceo", DeptPath: ""})
+// TestScopeOf_dept_path为空时org维落空只剩本人 替换了旧用例
+// TestScopeOf_部门树根节点自然得到All——旧用例锁定的是 fail-open：authz
+// 签发的真实路径恒为 /<id>/…/，根部门也是 /<根id>/，dept_path 为空只有
+// "这个人没分部门"一种来源，旧语义把它当成"不限"，于是 Prefix == "" 在
+// LIKE '' || '%' 和 strings.HasPrefix 里都匹配一切。现在断言：空路径不是
+// All，Prefix 不命中任何真实路径、也不命中 dept_path = '' 的行，Owner 照旧。
+func TestScopeOf_dept_path为空时org维落空只剩本人(t *testing.T) {
+	ctx := ctxWithClaims(&Claims{Sub: "u_x", DeptPath: ""})
 	f := ScopeOf(ctx)
-	if !f.All {
-		t.Fatalf("dept_path 为空应该得到 All:true，实际 %+v", f)
+	if f.All {
+		t.Fatalf("dept_path 为空不该得到 All，实际 %+v", f)
+	}
+	if strings.HasPrefix("/1/12/", f.Prefix) {
+		t.Fatalf("dept_path 为空时 Prefix 不该命中真实路径 /1/12/，实际 %+v", f)
+	}
+	if strings.HasPrefix("", f.Prefix) {
+		t.Fatalf("dept_path 为空时 Prefix 不该命中 dept_path = '' 的行，实际 %+v", f)
+	}
+	if f.Exact == "" {
+		t.Fatalf("dept_path 为空时 Exact 不该是空串（会命中 dept_path = '' 的行），实际 %+v", f)
+	}
+	if f.Owner != "u_x" {
+		t.Fatalf("Owner 应该照旧等于 sub，实际 %+v", f)
 	}
 }
 
