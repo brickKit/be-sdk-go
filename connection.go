@@ -7,8 +7,12 @@ import (
 	"strings"
 )
 
-// PGDSN 从统一连接键拼出 pgx 认得的 DSN。v1 起平台不再注入 DATABASE_* 资源变量，
-// 连接信息是组件自己 configSchema 里的普通配置项（docs/conventions/configuration.md）。
+// PGDSN 从统一连接键拼出 pgx 认得的 DSN。连接信息是组件自己 configSchema 里的普通配置项
+// PG_HOST/PG_PORT/PG_DATABASE/PG_USER/PG_PASSWORD（装配项目的 docs/en/01-conventions/04-configuration.md）。
+//
+// 不追加 sslmode：用 pgx 默认的 prefer——服务端支持 TLS 就用，不支持就退回明文，所以对不开
+// TLS 的本地库也能直接连。SDK 不提供 sslmode 配置键；部署者要强制 TLS，在 PG_HOST 指向的
+// 那一层解决（服务端 pg_hba 只放行 hostssl，或指向一个只接受 TLS 的代理）。
 //
 // 口令用 url.UserPassword 编码——含 @ : / % 的口令原样拼进去会把 DSN 截断。
 // PG_PASSWORD 允许为空字符串（trust 认证），但键必须存在：缺键说明 config 漏写，不是"没有密码"。

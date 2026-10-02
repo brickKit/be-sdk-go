@@ -132,10 +132,9 @@ func RunStandalone(newModule func(context.Context, *Runtime) (*Module, error)) {
 		exitf(componentID, "%v", err)
 	}
 
-	// ⚠️ 迁移不在这里跑：平台为每个组件单独生成一次性迁移容器（入口是各组件
-	// 自己的 backend/cmd/migrate），RunStandalone 服务的是应用进程本身。
-	// v1 起合并态也一样——brickKit 在外壳启动前用每个成员自己的镜像和配置
-	// 跑完迁移，shell 包不再消费 mod.Migrations。
+	// ⚠️ 迁移不在这里跑：brickKit 在应用进程启动前用组件自己的镜像跑一次性迁移
+	// （入口是组件 backend/cmd/migrate 里的 migrate.Main），RunStandalone 服务的是
+	// 应用进程本身。合并态也一样——外壳启动前每个成员的迁移已用它自己的镜像和配置跑完。
 
 	errCh := make(chan error, 1+len(rt.ExtraPorts))
 	go func() { errCh <- serveHTTP(ctx, rt.HTTPPort, mod.HTTPHandler) }()

@@ -17,7 +17,8 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 模块读配置只有一个入口 `rt.Config`；单跑时 `RunStandalone` 把进程环境整份灌进去，合并态由 `shell` 包给每个成员一份只属于它自己的 map。
 
 - **键名精确匹配**：`configSchema` 的键就是环境变量名（UPPER_SNAKE），`cfg.String("PG_SCHEMA")` 原样查找，SDK 不再做 camelCase → SNAKE 转换。传 `pgSchema` 拿不到值。
-- **数据库**：`besdk.PGDSN(cfg)` 从 `PG_HOST`/`PG_PORT`/`PG_DATABASE`/`PG_USER`/`PG_PASSWORD` 拼 DSN（口令经 `url.UserPassword` 转义）。`PG_PASSWORD` 可以是空串，但键必须存在。⚠️ **不再追加 `sslmode=disable`**：用 pgx 默认的 `prefer`（服务端支持 TLS 就用，不支持就退回明文）。v1 起平台不再注入 `DATABASE_*`。
+- **数据库**：`besdk.PGDSN(cfg)` 从 `PG_HOST`/`PG_PORT`/`PG_DATABASE`/`PG_USER`/`PG_PASSWORD` 拼 DSN（口令经 `url.UserPassword` 转义，含 `@ : / %` 也不会截断）。`PG_PASSWORD` 可以是空串，但键必须存在。平台不注入 `DATABASE_*`。
+- **TLS（`sslmode`）**：DSN 不带 `sslmode`，用 pgx 默认的 `prefer`——服务端支持 TLS 就用，不支持就退回明文，所以不开 TLS 的本地库直接可用。SDK 没有 `sslmode` 配置键；部署者要**强制** TLS，在 `PG_HOST` 指向的那一层解决：服务端 `pg_hba.conf` 只放行 `hostssl`（`prefer` 会先试 TLS，于是只剩 TLS 连接能进来），或者让 `PG_HOST` 指向一个只接受 TLS 的代理。注意 `prefer` 不校验服务端证书。迁移入口 `migrate.Main` 用的是同一套拼法，行为相同。
 - **NATS**：`besdk.NATSURL(cfg)` 读 `NATS_URL`（完整 URL，可含凭据）。不再从 `MQ_*` 拼。
 - **依赖地址**：`cfg.Endpoint(dep, extra)` / `cfg.MustEndpoint(dep, extra)` 读 `<ID>[_<PORT>]_ENDPOINT` 并剥掉 `http://`。读的是 `Config`，不是进程环境——外壳里成员的依赖地址只在它自己那一项成员配置里。
 - **对象存储**：`cfg.S3URL()` 读 `S3_URL`（完整 URL，原样返回）。`STORAGE_ENDPOINT` 不再注入，`*_ENDPOINT` 后缀是保留名，不能当配置键。
@@ -25,6 +26,41 @@ Go 横切基础库（总纲 §4 SOP-L 十四项能力）。**不是 brickKit 组
 - **权限判定**：读 `IAM_JWKS_URL` / `AUTHZ_BUNDLE_URL`。
 - **额外端口**：`component.yaml` 声明了 `extraPorts` 而模块没有返回 `RegisterGRPC` 时，`RunStandalone` 以非零码退出并点名端口（与外壳同一条规矩）。
 - **可观测**：`OTEL_BASE_URL`，为空时 Blackhole。
+
+## Module
+
+模块的构造函数 `func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error)` 交回一个 `*besdk.Module`，模块自己不 Listen、不注册全局、不装信号处理器：
+
+| 字段 | 必填 | 含义 |
+|---|---|---|
+| `HTTPHandler` | 是 | 用 `besdk.NewGinEngine(rt)` 构造；单跑由 `RunStandalone`、合并态由 `shell` 包在 `rt.HTTPPort` 上 Serve |
+| `RegisterGRPC` | 声明了 `extraPorts` 时必填 | 在 SDK 构造的 gRPC server 上注册服务（自带 panic 恢复拦截器）；声明了额外端口却为 nil，单跑与外壳都启动即失败 |
+| `Start` | 否 | 后台循环，必须接 ctx、cancel 时返回 |
+| `Stop` | 否 | 关停时调用，带 30 秒超时的 ctx |
+
+⚠️ **v0.4.0 删除了 `Module.Migrations` 字段**（破坏性）：迁移从来不由 `RunStandalone` 或外壳执行，留着这个字段只会让人以为"填了就会跑"。组件改用下面的 `migrate.Main`。
+
+## 迁移
+
+迁移由 brickKit 负责：在组件（单跑）或外壳（合并部署）启动之前，用**组件自己的镜像和它自己的配置**跑一次性迁移。入口是组件 `backend/cmd/migrate/main.go`，只有一行：
+
+```go
+package main
+
+import (
+    "github.com/brickKit/be-sdk-go/migrate"
+    "github.com/brickKit/<repo>/v2/migrations" // //go:embed *.sql 的 FS
+)
+
+func main() { migrate.Main(migrations.FS) }
+```
+
+- **参数**：恰好一个，`up` 或 `down`。参数不对时打印用法、以 **2** 退出，不读环境、不连库。
+- **配置**：从进程环境读 `PG_HOST`/`PG_PORT`/`PG_DATABASE`/`PG_USER`/`PG_PASSWORD`/`PG_SCHEMA`，缺任一以 **1** 退出并点名缺的键（`PG_PASSWORD` 可以是空串，但键必须存在）。`PG_SCHEMA` 必须是小写标识符。
+- **DSN**：复用 `besdk.PGDSN` 的拼法（口令转义），加 `search_path=<PG_SCHEMA>`（迁移里不带 schema 前缀的 SQL 和状态表都落在组件自己的 schema）和 `x-migrations-table=schema_migrations_<PG_SCHEMA>`（裸表名，不带 schema 前缀，不加 `x-migrations-table-quoted`）。schema 本身由装配项目的建库脚本预先建好，迁移不建 schema。
+- **幂等**：`ErrNoChange`（已是最新 / 已全部回滚）不是错误，同一个迁移连跑两次都成功。
+- **实现**：golang-migrate + `database/pgx/v5` + `source/iofs`。golang-migrate 只在 `migrate` 子包里 import，根包 `besdk` 不依赖它（`go list -deps github.com/brickKit/be-sdk-go | grep golang-migrate` 为空）。
+- `migrate.Run(ctx, env, args, src)` 是可测形式：env 与 args 显式传入，返回错误不退出。
 
 ## Shell
 
@@ -53,7 +89,7 @@ func main() {
   - `[]`：这次部署没有成员归这个外壳，只起外壳自己的 `/healthz`，不构造任何模块；
   - 空字符串：平台从不这样给，当作数据损坏，报错退出。
 - **外壳自己的配置**：`PG_*`、`NATS_URL`、`OTEL_BASE_URL`、`AUTHZ_BUNDLE_URL`、`IAM_JWKS_URL` 写在外壳自己的 `configSchema` 里。`Run` 用它们开**一个**共享连接池和**一条** NATS 连接给全部成员，`InitShellAuthz` 只调一次。`AUTHZ_BUNDLE_URL` / `IAM_JWKS_URL` 缺任一（或为空白）时外壳启动即失败并点名缺的键（与 Python 外壳一致）——单跑组件缺它们只是 fail-closed，外壳里同样的缺失会让全部成员一起 403/503。外壳自己 `component.yaml` 的 `deployment.port` 只答 `/healthz`，不查任何成员或依赖。
-- **迁移由 brickKit 负责**：v1 在外壳启动前用每个成员自己的镜像和配置跑迁移，`shell` 包不碰 `Module.Migrations`。
+- **迁移不在外壳里跑**：brickKit 在外壳启动前用每个成员自己的镜像和配置跑迁移（见下文「迁移」）。
 - **失败处理**（三类，处理方式不同）：
   - **启动阶段失败**（任何一步，包括某个成员的构造函数返回错误、`Registry` 里找不到成员、构造函数返回 nil `Module`/`HTTPHandler`、外壳端口为 0、外壳缺 `AUTHZ_BUNDLE_URL`/`IAM_JWKS_URL`）：中止启动，先关掉共享池与 NATS 连接，再返回错误，外壳以非零码退出。
   - **端口失败**（外壳自己的 `/healthz`，或任一成员的 HTTP/额外端口；包括端口绑定失败，以及服务协程在没有收到关停信号时意外返回）：`Run` 返回点名该成员的错误，其余成员优雅退出（`Stop` 会被调用），外壳以非零码退出。这样做是为了把故障暴露出来：外壳 `/healthz` 只代表进程活着，成员端口死了它照样答 200，平台的 probe 看不到。
@@ -165,8 +201,11 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 ```
 
 ```go
-// main.go 只有一行
+// backend/cmd/server/main.go 只有一行
 func main() { besdk.RunStandalone(module.New) }
+
+// backend/cmd/migrate/main.go 也只有一行
+func main() { migrate.Main(migrations.FS) }
 ```
 
 ```go
@@ -179,4 +218,4 @@ conn, err := besdk.SystemClient(rt.Config, "mdm/customer", "grpc") // 只许在 
 
 ## 依赖
 
-`gin` / `pgx`（不用 `lib/pq`）/ `nats.go` / `go.opentelemetry.io/otel` / `google.golang.org/grpc` / `prometheus/client_golang` / `golang-jwt/jwt/v5` / `MicahParks/keyfunc`（+ 间接依赖 `MicahParks/jwkset`）。版本精确锁定（`go.mod` 里没有 `latest`），`go 1.25`——理由见 `docs/dev/实测踩坑记录.md` 类别 D0。
+`gin` / `pgx`（不用 `lib/pq`）/ `nats.go` / `go.opentelemetry.io/otel` / `google.golang.org/grpc` / `prometheus/client_golang` / `golang-jwt/jwt/v5` / `MicahParks/keyfunc`（+ 间接依赖 `MicahParks/jwkset`）；`golang-migrate/migrate/v4` 只被 `migrate` 子包使用。版本精确锁定（`go.mod` 里没有 `latest`），`go 1.25.11`（golang-migrate v4.20.1 的最低要求；`golang:1.25-alpine` 构建镜像满足）。
