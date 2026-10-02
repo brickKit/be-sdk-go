@@ -66,3 +66,14 @@ func TestParseServedMembersMalformedJSON(t *testing.T) {
 		t.Fatal("坏 JSON 应报错")
 	}
 }
+
+// "null" 不是零成员：brickKit 零成员时给的是 []，null 说明数据在传递中损坏，必须报错，
+// 不能悄悄起一个什么都不服务的外壳。
+func TestParseServedMembersNullIsError(t *testing.T) {
+	for _, raw := range []string{"null", " null\n", "[null]", `[{"componentId":"","httpPort":8101}]`} {
+		ms, err := ParseServedMembers(raw, true)
+		if err == nil || !(strings.Contains(err.Error(), "null") || strings.Contains(err.Error(), "componentId")) {
+			t.Fatalf("%q 应报错并说明是 null 或缺 componentId，got ms=%#v err=%v", raw, ms, err)
+		}
+	}
+}

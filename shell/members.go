@@ -31,7 +31,7 @@ type ServedMember struct {
 // ⚠️ 三种状态含义相反，不能混为一谈：
 //   - 未设置：这个进程不是 brickkit 作为外壳启动的（比如手工 docker run），报错；
 //   - "[]"：这次部署所有成员都被移出外壳，零成员正常启动；
-//   - 空字符串：平台从不这样给，视为数据损坏，报错。
+//   - 空字符串或 null（或某一项没有 componentId）：平台从不这样给，视为数据损坏，报错。
 //
 // 绝不能把"没有成员"退化成"启动全部编译进来的模块"。
 func ParseServedMembers(raw string, present bool) ([]ServedMember, error) {
@@ -45,8 +45,14 @@ func ParseServedMembers(raw string, present bool) ([]ServedMember, error) {
 	if err := json.Unmarshal([]byte(raw), &ms); err != nil {
 		return nil, fmt.Errorf("解析 BRICKKIT_SERVED_MEMBERS_CONFIG 失败：%w", err)
 	}
+	// "[]" 解出来是非 nil 的空切片；只有 null 会留下 nil。
 	if ms == nil {
-		ms = []ServedMember{}
+		return nil, errors.New("BRICKKIT_SERVED_MEMBERS_CONFIG 为 null：零成员时平台给的是 []，null 说明数据在传递中损坏")
+	}
+	for i, m := range ms {
+		if strings.TrimSpace(m.ComponentID) == "" {
+			return nil, fmt.Errorf("BRICKKIT_SERVED_MEMBERS_CONFIG 第 %d 项没有 componentId（null 项或数据损坏）", i)
+		}
 	}
 	return ms, nil
 }

@@ -87,7 +87,7 @@ func main() {
 - **成员清单来自 `BRICKKIT_SERVED_MEMBERS_CONFIG`**（JSON 数组，每项 `componentId`/`version`/`httpPort`/`extraPorts`/`config`）。`config` 是这个成员独立部署时会拿到的全部变量（已求值，含 `*_ENDPOINT`），直接成为它的 `rt.Config`；外壳进程自己的环境只用来构造外壳自己的配置。三种状态含义不同：
   - 未设置：进程不是 brickkit 作为外壳启动的，报错退出；
   - `[]`：这次部署没有成员归这个外壳，只起外壳自己的 `/healthz`，不构造任何模块；
-  - 空字符串：平台从不这样给，当作数据损坏，报错退出。
+  - 空字符串、`null`，或某一项没有 `componentId`：平台从不这样给，当作数据损坏，报错退出（`null` 不能当成零成员）。
 - **外壳自己的配置**：`PG_*`、`NATS_URL`、`OTEL_BASE_URL`、`AUTHZ_BUNDLE_URL`、`IAM_JWKS_URL` 写在外壳自己的 `configSchema` 里。`Run` 用它们开**一个**共享连接池和**一条** NATS 连接给全部成员，`InitShellAuthz` 只调一次。`AUTHZ_BUNDLE_URL` / `IAM_JWKS_URL` 缺任一（或为空白）时外壳启动即失败并点名缺的键（与 Python 外壳一致）——单跑组件缺它们只是 fail-closed，外壳里同样的缺失会让全部成员一起 403/503。外壳自己 `component.yaml` 的 `deployment.port` 只答 `/healthz`，不查任何成员或依赖。
 - **迁移不在外壳里跑**：brickKit 在外壳启动前用每个成员自己的镜像和配置跑迁移（见下文「迁移」）。
 - **失败处理**（三类，处理方式不同）：
