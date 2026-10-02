@@ -555,3 +555,16 @@ func TestRunRejectsMemberWithoutValidPort(t *testing.T) {
 		})
 	}
 }
+
+// memberID 为空表示外壳自己的端口：错误归属到外壳，不能写成某个成员。
+func TestServeResultShellPortFailureNamesTheShell(t *testing.T) {
+	logBuf := newSyncLogBuf("level=ERROR")
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+	got := serveResult(context.Background(), logger, "", "/healthz", errors.New("bind: address already in use"))
+	if got == nil || !strings.Contains(got.Error(), "外壳 /healthz") || !strings.Contains(got.Error(), "address already in use") {
+		t.Fatalf("外壳端口失败应返回归属外壳、带原因的错误，got %v", got)
+	}
+	if out := logBuf.String(); !strings.Contains(out, "level=ERROR") || strings.Contains(out, "module_component_id") {
+		t.Fatalf("应记一条不带 module_component_id 的 ERROR，got %s", out)
+	}
+}
