@@ -63,10 +63,10 @@ migration:
 ```
 
 - **参数**：恰好一个，`up` 或 `down`。参数不对时打印用法、以 **2** 退出，不读环境、不连库。
-- ⚠️ **`down` 回滚全部迁移**（golang-migrate 的 `Down()`，等于删掉组件的所有表），只用于开发 / 测试库，不要写进任何部署的 `migration.command`。
+- ⚠️ **`down` 回滚全部迁移**（一条一条地回滚到零，等于删掉组件的所有表），只用于开发 / 测试库，不要写进任何部署的 `migration.command`。
 - **配置**：从进程环境读 `PG_HOST`/`PG_PORT`/`PG_DATABASE`/`PG_USER`/`PG_PASSWORD`/`PG_SCHEMA`，缺任一以 **1** 退出并点名缺的键（`PG_PASSWORD` 可以是空串，但键必须存在）。`PG_SCHEMA` 必须是小写标识符。
 - **DSN**：复用 `besdk.PGDSN` 的拼法（口令转义），加 `search_path=<PG_SCHEMA>`（迁移里不带 schema 前缀的 SQL 和状态表都落在组件自己的 schema）和 `x-migrations-table=schema_migrations_<PG_SCHEMA>`（裸表名，不带 schema 前缀，不加 `x-migrations-table-quoted`）。schema 本身由装配项目的建库脚本预先建好，迁移不建 schema。
-- **幂等**：`ErrNoChange`（已是最新 / 已全部回滚）不是错误，同一个迁移连跑两次都成功。
+- **幂等**：已是最新 / 已全部回滚不是错误，同一个迁移连跑两次都成功。
 - **多版本并存**：brickKit 按版本号串联迁移，低版本先跑、高版本后跑，每次 `up` 都重跑。库已被高版本迁到比本镜像迁移集最后一个版本更高的版本时，`up` 记一条 WARN（`db_version`、`image_latest_version`）并成功返回，不动状态；版本之间的数据兼容由组件作者负责（迁移只做加法）。`down` 不放宽，这种情形下照样失败。
 - **中止**：收到 SIGTERM/SIGINT 时跑完当前这条迁移再停，并以 1 退出——没跑完不报成功。这只在停止宽限期内成立（docker 默认 10 秒，Kubernetes 30 秒）：单条迁移跑得比宽限期长，进程照样被 SIGKILL，状态表留下 `dirty=true`，之后每次 `up` 都报 dirty 并以 1 退出。
 - **结束日志**：每次结束记一条「迁移结束」，带 `outcome`（`ok` / `aborted` / `failed`）和库里的最终 `version`、`dirty`。

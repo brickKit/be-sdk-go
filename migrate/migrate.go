@@ -53,7 +53,7 @@ func Main(src fs.FS) {
 			env[k] = v
 		}
 	}
-	// SIGTERM/SIGINT 时让 golang-migrate 跑完当前这条迁移再停，不在一条迁移中途被杀、留下 dirty 状态。
+	// SIGTERM/SIGINT 时跑完当前这条迁移再停（两条之间查 ctx），宽限期内不会在一条迁移中途被杀、留下 dirty 状态。
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	if err := Run(ctx, env, os.Args[1:], src); err != nil {
