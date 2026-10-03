@@ -1,8 +1,10 @@
-// Package authz holds the component side of the authorization bundle: fetching and accepting the
-// bundle (be-protocol P6.1, contract-infra-authz EVALUATION.md E1) and the keys-only route decision
-// (P6.2; E2–E5). Levels, dimensions, subject sets and the projection are a later wave; the bundle keeps
-// the fields and the raw JSON they will need. The package does not import internal/authn: the root
-// package maps verified claims to a Token.
+// Package authz holds the component side of authorization (be-protocol P6): fetching and accepting the
+// bundle (P6.1, contract-infra-authz EVALUATION.md E1), the keys-only route decision (P6.2; E2–E5), the
+// evaluation of levels, values, subjects, relations and graph ids into the canonical predicate's
+// parameters (P6.3–P6.5, P6.15; E3–E9), the single-record decision, field masks and explain facts
+// (P6.6–P6.8; E10–E12), the resource catalogue (catalog.schema.json) and the canonical SQL predicate.
+// The ACL projection is the subpackage acl. The package does not import internal/authn: the root package
+// maps verified claims to a Token.
 package authz
 
 import (

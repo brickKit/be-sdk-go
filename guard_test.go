@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
-	"os"
+	"io/fs"
 	"testing"
 	"time"
+
+	authzcontract "github.com/brickKit/contract-infra-authz/v2"
 
 	"github.com/brickKit/be-sdk-go/internal/authn"
 	"github.com/brickKit/be-sdk-go/internal/authz"
@@ -29,7 +31,7 @@ type staticBundle struct{ b *authz.Bundle }
 func (s staticBundle) Current() *authz.Bundle { return s.b }
 
 func exampleBundle(t *testing.T) *authz.Bundle {
-	raw, err := os.ReadFile("internal/authz/testdata/bundle.example.json")
+	raw, err := fs.ReadFile(authzcontract.FS, "examples/bundle.example.json")
 	if err != nil {
 		t.Fatal(err)
 	}

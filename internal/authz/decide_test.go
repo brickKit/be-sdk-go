@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The table below runs each E2–E5 rule against testdata/bundle.example.json:
+// The table below runs each E2–E5 rule against the contract's examples/bundle.example.json:
 // dev_sales_rep holds erp.sales.view; dev_wh_south holds erp.inventory.* until 1760000000;
 // delegation dg_91 lets u_B act on_behalf of u_A for two workflow keys in [1759276800, 1759881600);
 // stale_since u_123 = 1759400000; revoked_grants dg_77; profile view_as_ro lets erp.sales.view and

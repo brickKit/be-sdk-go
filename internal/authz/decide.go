@@ -20,12 +20,13 @@ const (
 // staleGrace is E2's 5 s allowance between stale_since and a token's iat (P5.6).
 const staleGrace = 5
 
-// Token is what the keys-only decision needs from a verified access token (P5.5). The root package
+// Token is what the decisions need from a verified access token (P5.5). The root package
 // maps authn.Claims onto it; this package never sees the raw token (P5.8).
 type Token struct {
 	Sub      string
 	IssuedAt time.Time
 	Roles    []string
+	DeptPath string // the dept_path claim; empty or malformed means no department (P6.4, E6)
 	Act      *Act
 	Ceil     []string
 	DG       string

@@ -2,17 +2,17 @@ package authz
 
 import (
 	"errors"
-	"os"
+	"io/fs"
 	"testing"
 
+	authzcontract "github.com/brickKit/contract-infra-authz/v2"
 	"github.com/stretchr/testify/require"
 )
 
-// testdata/bundle.example.json is a verbatim copy of examples/bundle.example.json from
-// github.com/brickKit/contract-infra-authz at tag v2.0.0-rc.1 (commit b2e1a8e).
+// loadExample reads examples/bundle.example.json from the pinned family contract module.
 func loadExample(t *testing.T) []byte {
 	t.Helper()
-	raw, err := os.ReadFile("testdata/bundle.example.json")
+	raw, err := fs.ReadFile(authzcontract.FS, "examples/bundle.example.json")
 	require.NoError(t, err)
 	return raw
 }

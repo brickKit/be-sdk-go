@@ -4,6 +4,7 @@ go 1.25.11
 
 require (
 	github.com/brickKit/be-protocol v1.0.0-rc.1
+	github.com/brickKit/contract-infra-authz/v2 v2.0.0-rc.1
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang-migrate/migrate/v4 v4.20.1

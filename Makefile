@@ -4,7 +4,7 @@
 #   make test-integration   the same plus every *_integration_test.go against throwaway containers
 #   make vectors            only the be-protocol vector suites (pinned module github.com/brickKit/be-protocol)
 #   make lint               go vet + gofmt
-#   make import-scan        the SDK depends on no component repository
+#   make import-scan        the SDK depends on no component repository (only be-protocol and family contracts)
 #
 # test-integration starts PostgreSQL 16, PostgreSQL 14 and NATS 2.12 (prefix $(PREFIX)), runs, and removes them.
 .DEFAULT_GOAL := help
@@ -26,7 +26,7 @@ lint:
 	@test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }
 
 import-scan:
-	@bad="$$(go list -deps ./... | grep '^github.com/brickKit/' | grep -vE '^github.com/brickKit/(be-sdk-go|be-protocol)($$|/)')"; \
+	@bad="$$(go list -deps ./... | grep '^github.com/brickKit/' | grep -vE '^github.com/brickKit/(be-sdk-go|be-protocol|contract-infra-authz/v2)($$|/)')"; \
 	if [ -n "$$bad" ]; then echo "be-sdk-go must not depend on: $$bad"; exit 1; fi; echo "no component dependency"
 
 containers-up:
