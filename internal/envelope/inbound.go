@@ -12,7 +12,7 @@ import (
 type Subscription struct {
 	ComponentID         string // the consuming component, in a shell the member: names the durable
 	Subject             string // the subscribed subject: ce-type must equal it
-	AggregateType       string // the contract's x-aggregate-type: ce-aggregatetype must equal it
+	AggregateType       string // the contract's x-aggregate-type: ce-aggregatetype must equal it; "" = any well-formed one
 	TransactionDocument bool   // the contract's x-transaction-document: ce-legalentity is required
 }
 

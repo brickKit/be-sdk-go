@@ -231,7 +231,6 @@ func TestConsumerConfigurationErrors(t *testing.T) {
 		"no handler":    func(c *Consumer) { c.Subscription.Apply = nil },
 		"bad component": func(c *Consumer) { c.ComponentID = "Peer" },
 		"bad subject":   func(c *Consumer) { c.Subscription.Subject = "a.b" },
-		"no aggregate":  func(c *Consumer) { c.Subscription.AggregateType = "" },
 		"no publisher":  func(c *Consumer) { c.Publisher = nil },
 	}
 	for name, mutate := range cases {

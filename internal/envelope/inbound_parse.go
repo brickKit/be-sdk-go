@@ -21,7 +21,11 @@ func parseEnvelope(s Subscription, h map[string]string) (Event, error) {
 	ev.ID = r.matching(HeaderID, idPattern.MatchString)
 	ev.Subject = r.matching(HeaderType, func(v string) bool { return v == s.Subject })
 	ev.Source = r.matching(HeaderSource, componentPattern.MatchString)
-	ev.AggregateType = r.matching(HeaderAggregateType, func(v string) bool { return v == s.AggregateType })
+	// An empty AggregateType means the subscriber does not hold the producer's contract: any
+	// well-formed aggregate type is taken as it comes (the cursor is keyed by it, P12.6).
+	ev.AggregateType = r.matching(HeaderAggregateType, func(v string) bool {
+		return v == s.AggregateType || (s.AggregateType == "" && aggregateTypePattern.MatchString(v))
+	})
 	ev.AggregateID = r.matching(HeaderSubject, func(v string) bool { return v != "" })
 	r.matching(HeaderDataSchema, dataSchemaPattern.MatchString)
 	ev.Version = r.decimal(HeaderAggregateVersion, 1, 64)

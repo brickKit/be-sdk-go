@@ -107,9 +107,6 @@ func (c *Consumer) newRunner(cur cursors) (*consumerRunner, error) {
 	if (s.Apply == nil) == (s.Run == nil) {
 		return nil, fmt.Errorf("events: subscription %s needs exactly one of Apply and Run", s.Subject)
 	}
-	if s.AggregateType == "" {
-		return nil, fmt.Errorf("events: subscription %s has no aggregate type", s.Subject)
-	}
 	if c.Publisher == nil {
 		return nil, fmt.Errorf("events: subscription %s has no dead-letter publisher", s.Subject)
 	}

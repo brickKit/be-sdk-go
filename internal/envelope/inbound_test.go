@@ -3,6 +3,7 @@ package envelope_test
 import (
 	"maps"
 	"testing"
+	"time"
 
 	"github.com/brickKit/be-sdk-go/internal/envelope"
 	"github.com/brickKit/be-sdk-go/internal/vectors"
@@ -130,5 +131,23 @@ func TestDeadLetterHeaders(t *testing.T) {
 	}
 	if envelope.DLQMsgID("d", 42) != "dlq:d:42" {
 		t.Fatalf("DLQMsgID %s", envelope.DLQMsgID("d", 42))
+	}
+}
+
+func TestAcceptWithoutTheProducersAggregateType(t *testing.T) {
+	sub := envelope.Subscription{ComponentID: "conformance/peer", Subject: "conformance.widget.created.v1"}
+	h, err := envelope.Headers(envelope.Producer{ComponentID: "conformance/widget", Version: "1.0.0", EventsFile: "widget.events.json"},
+		envelope.Row{ID: "0192f0c5-1111-7000-8000-000000000001", Subject: sub.Subject, AggregateType: "conformance.widget.widget",
+			AggregateID: "w1", AggregateVersion: 2, OccurredAt: time.Unix(1700000000, 0), Payload: []byte(`{}`)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := envelope.Accept(sub, h, []byte(`{}`), 1)
+	if err != nil || d.DeadLetter || d.Event.AggregateType != "conformance.widget.widget" {
+		t.Fatalf("%+v %v", d, err)
+	}
+	h["ce-aggregatetype"] = "Not Valid"
+	if d, _ := envelope.Accept(sub, h, []byte(`{}`), 1); !d.DeadLetter {
+		t.Fatal("a malformed aggregate type must still be dead-lettered")
 	}
 }
