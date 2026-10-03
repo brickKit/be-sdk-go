@@ -64,6 +64,7 @@ type runtimeDeps struct {
 	producer   *events.Producer
 	jobs       *jobs.Engine
 	lifecycle  *lifecycle.Engine
-	projection *acl.Projection // the ACL projection (P6.12); nil without resource types
-	authzGRPC  string          // AUTHZ_GRPC_URL's dial target; "" when not declared
+	projection *acl.Projection                // the ACL projection (P6.12); nil without resource types
+	authzGRPC  string                         // AUTHZ_GRPC_URL's dial target; "" when not declared
+	loaders    map[ResourceType]SharingLoader // Module.Sharing by type: PermKey.On and the resource contract
 }

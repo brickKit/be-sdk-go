@@ -71,6 +71,12 @@ func (g *authGuardian) check(c *gin.Context, gd Guard) *problem.Error {
 		perm = ""
 	}
 	a := &Access{user: userFromClaims(claims), token: tok, bundle: b, key: key, now: g.now, rt: g.rt}
+	if rg, ok := gd.(ResourceGuard); ok {
+		a.typ = rg.Type
+		if e := g.decideRecord(c, a, rg); e != nil {
+			return g.deny(e)
+		}
+	}
 	ctx = context.WithValue(ctx, accessKey{}, a)
 	ctx = context.WithValue(ctx, rawTokenKey{}, header)
 	attrs := []slog.Attr{slog.String("sub", claims.Sub)}

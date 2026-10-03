@@ -38,6 +38,7 @@ type Access struct {
 	key    PermKey
 	now    func() time.Time
 	rt     *Runtime         // the catalogue and the store, for scopes and record decisions
+	typ    ResourceType     // the route\'s resource type (PermKey.List / On); "" for a plain key
 	eval   *authz.Evaluator // built on first use, for this request only (P6.14)
 }
 

@@ -158,6 +158,10 @@ func (p *process) build(bg context.Context) int {
 	if err := p.wireLifecycle(); err != nil {
 		return p.failCode("lifecycle", err)
 	}
+	p.rt.deps.loaders = map[ResourceType]SharingLoader{}
+	for _, l := range p.mod.Sharing {
+		p.rt.deps.loaders[l.Type] = l
+	}
 	if err := p.wireProjection(); err != nil {
 		return p.failCode("authorization projection", err)
 	}
