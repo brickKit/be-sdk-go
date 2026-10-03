@@ -12,6 +12,7 @@ import (
 
 	"github.com/brickKit/be-sdk-go/internal/config"
 	"github.com/brickKit/be-sdk-go/internal/httpx"
+	"github.com/brickKit/be-sdk-go/internal/telemetry"
 	"google.golang.org/grpc"
 )
 
@@ -35,12 +36,14 @@ type process struct {
 	grpcLn   net.Listener
 	grace    time.Duration
 	closers  []func(ctx context.Context)
+	dbm      *telemetry.DBMetrics
+	fatal    chan error // a fatal condition found in the background (P1.8)
 }
 
 // serve runs the serving entry point (P1.2): configuration is checked, the ports open, the
 // dependencies connect in the background, the module starts; SIGTERM stops it (P1.6).
 func serve(ctx context.Context, b *boot, pe processEnv) int {
-	p := &process{b: b, grace: optDuration(b.vals, "SHUTDOWN_GRACE", 25*time.Second)}
+	p := &process{b: b, grace: optDuration(b.vals, "SHUTDOWN_GRACE", 25*time.Second), fatal: make(chan error, 1)}
 	if code := p.open(pe); code != exitOK {
 		return code
 	}
@@ -58,10 +61,24 @@ func serve(ctx context.Context, b *boot, pe processEnv) int {
 		return exitFailure
 	}
 	b.log.Info("serving", slog.Int("http_port", portOf(p.httpLn)), slog.Int("grpc_port", portOf(p.grpcLn)))
-	<-ctx.Done()
-	b.log.Info("stopping", slog.Duration("grace", p.grace))
-	p.stop()
-	return exitOK
+	select {
+	case <-ctx.Done():
+		b.log.Info("stopping", slog.Duration("grace", p.grace))
+		p.stop()
+		return exitOK
+	case err := <-p.fatal:
+		b.log.Error("fatal; stopping", slog.String("error", err.Error()))
+		p.stop()
+		return exitFailure
+	}
+}
+
+// fail reports a fatal condition found by background work (P1.8); the first one stops the process.
+func (p *process) fail(err error) {
+	select {
+	case p.fatal <- err:
+	default:
+	}
 }
 
 // open opens the secrets and the ports before anything connects (P1.2 step 2).

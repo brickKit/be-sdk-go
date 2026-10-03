@@ -2,13 +2,17 @@ package besdk
 
 import (
 	"context"
-	"fmt"
+
+	"github.com/brickKit/be-sdk-go/internal/pg"
 )
 
-// wireDeps connects the runtime's dependencies (database, bus, outbound clients) — filled in by the
-// store and events waves of this lane.
+// wireDeps builds the runtime's dependencies before New: the store (database), the outbound clients
+// and (with the events wave) the bus. Nothing connects here; connections happen in the background.
 func (p *process) wireDeps(ctx context.Context) error {
-	out, err := newOutbound(p.rt, func(context.Context) bool { return false })
+	if err := p.wireStore(); err != nil {
+		return err
+	}
+	out, err := newOutbound(p.rt, pg.InTx)
 	if err != nil {
 		return err
 	}
@@ -17,14 +21,9 @@ func (p *process) wireDeps(ctx context.Context) error {
 	return nil
 }
 
-// superviseDeps starts the dependency loops (probe, pump, consumers).
-func (p *process) superviseDeps() {}
-
-func (p *process) migrationsInfo() MigrationsInfo { return MigrationsInfo{} }
+// superviseDeps starts the dependency loops (probe, outbox window; pump and consumers with events).
+func (p *process) superviseDeps() {
+	p.superviseStore()
+}
 
 func (p *process) eventProfiles() []string { return nil }
-
-func runMigrate(ctx context.Context, b *boot, cmd command) int {
-	b.log.Error(fmt.Sprintf("migrate: not wired yet (%d)", cmd.kind))
-	return exitFailure
-}

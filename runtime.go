@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/brickKit/be-sdk-go/internal/pg"
 	"github.com/brickKit/be-sdk-go/internal/problem"
 	"github.com/brickKit/be-sdk-go/internal/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
@@ -52,5 +53,6 @@ func (rt *Runtime) Now() time.Time { return rt.clock() }
 
 // runtimeDeps holds what the serving process wires into a Runtime after the configuration loaded.
 type runtimeDeps struct {
-	out *outbound
+	out   *outbound
+	store *pg.Store
 }
