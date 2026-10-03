@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/brickKit/be-sdk-go/internal/authz"
 	"github.com/brickKit/be-sdk-go/internal/events"
 	"github.com/brickKit/be-sdk-go/internal/jobs"
 	"github.com/brickKit/be-sdk-go/internal/lifecycle"
@@ -18,14 +19,15 @@ import (
 // Runtime is what a component sees of the SDK: methods only, nothing to reach around it
 // (sdk-redesign-apis §2.2). One Runtime per component; in a shell one per member.
 type Runtime struct {
-	id, version string
-	cfg         *Config
-	log         *slog.Logger
-	tel         *telemetry.Member
-	catalogue   *problem.Catalogue
-	locale      string
-	clock       func() time.Time
-	deps        runtimeDeps // wired by the serving process: store, bus, connections …
+	id, version  string
+	cfg          *Config
+	log          *slog.Logger
+	tel          *telemetry.Member
+	catalogue    *problem.Catalogue
+	locale       string
+	clock        func() time.Time
+	deps         runtimeDeps    // wired by the serving process: store, bus, connections …
+	authzCatalog *authz.Catalog // Spec.Catalog's resource types; nil when it declares none
 }
 
 // ID is the component's ID (the member's in a shell).

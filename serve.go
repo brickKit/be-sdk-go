@@ -119,7 +119,8 @@ func (p *process) openRuntime() int {
 		return exitConfig
 	}
 	p.rt = &Runtime{id: p.b.id, version: p.b.version, cfg: &Config{vals: p.b.vals, secrets: secrets},
-		log: p.b.log, tel: p.b.member, catalogue: p.b.catalogue, locale: p.b.locale, clock: time.Now}
+		log: p.b.log, tel: p.b.member, catalogue: p.b.catalogue, locale: p.b.locale, clock: time.Now,
+		authzCatalog: p.b.authzCatalog}
 	return exitOK
 }
 

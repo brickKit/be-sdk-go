@@ -35,6 +35,7 @@ type authGuardian struct {
 	bundles  bundleSource
 	now      func() time.Time
 	denied   func(reason string)
+	rt       *Runtime // scopes and record decisions read its catalogue and store
 }
 
 func (g *authGuardian) check(c *gin.Context, gd Guard) *problem.Error {
@@ -69,7 +70,7 @@ func (g *authGuardian) check(c *gin.Context, gd Guard) *problem.Error {
 	if key == Authenticated {
 		perm = ""
 	}
-	a := &Access{user: userFromClaims(claims), token: tok, bundle: b, key: key, now: g.now}
+	a := &Access{user: userFromClaims(claims), token: tok, bundle: b, key: key, now: g.now, rt: g.rt}
 	ctx = context.WithValue(ctx, accessKey{}, a)
 	ctx = context.WithValue(ctx, rawTokenKey{}, header)
 	attrs := []slog.Attr{slog.String("sub", claims.Sub)}

@@ -37,6 +37,8 @@ type Access struct {
 	bundle *authz.Bundle
 	key    PermKey
 	now    func() time.Time
+	rt     *Runtime         // the catalogue and the store, for scopes and record decisions
+	eval   *authz.Evaluator // built on first use, for this request only (P6.14)
 }
 
 type accessKey struct{}
@@ -83,7 +85,8 @@ func actFrom(a *authn.Act) *Act {
 }
 
 func tokenFromClaims(c *authn.Claims) authz.Token {
-	return authz.Token{Sub: c.Sub, IssuedAt: c.IssuedAt, Roles: c.Roles, Act: authzAct(c.Act), Ceil: c.Ceil, DG: c.DG}
+	return authz.Token{Sub: c.Sub, IssuedAt: c.IssuedAt, Roles: c.Roles, DeptPath: c.DeptPath, Act: authzAct(c.Act),
+		Ceil: c.Ceil, DG: c.DG}
 }
 
 func authzAct(a *authn.Act) *authz.Act {

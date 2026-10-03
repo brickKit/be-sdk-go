@@ -49,7 +49,7 @@ func (a *authSetup) guardian(rt *Runtime) guardian {
 	if a == nil {
 		return noAuthGuardian{}
 	}
-	return &authGuardian{verifier: a.verifier, bundles: a.poller, now: rt.clock,
+	return &authGuardian{verifier: a.verifier, bundles: a.poller, now: rt.clock, rt: rt,
 		denied: func(r string) { a.metrics.Denied.WithLabelValues(r).Inc() }}
 }
 

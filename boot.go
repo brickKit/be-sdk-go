@@ -2,7 +2,6 @@ package besdk
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -10,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/brickKit/be-sdk-go/internal/authz"
 	"github.com/brickKit/be-sdk-go/internal/config"
 	"github.com/brickKit/be-sdk-go/internal/lifecycle"
 	"github.com/brickKit/be-sdk-go/internal/logx"
@@ -39,6 +39,7 @@ type boot struct {
 	secretM      *telemetry.SecretMetrics
 	lifecycle    *lifecycle.Declaration // migrations/lifecycle.yaml (P16.1); nil without a database
 	lifecycleCfg lifecycle.Config       // DATA_LIFECYCLE (P16.9)
+	authzCatalog *authz.Catalog         // Spec.Catalog's resource types (P6.10)
 	instance     string                 // service.instance.id: the container or pod; job and lease holders (P14)
 }
 
@@ -84,8 +85,10 @@ func bootstrap(ctx context.Context, s Spec, pe processEnv) (*boot, error) {
 	if b.catalogue, err = loadCatalogue(s.Contracts); err != nil {
 		return nil, &configFailure{errs: []*config.Error{{Reason: config.ReasonInvalid, Key: "contracts/errors.yaml", Detail: err.Error()}}}
 	}
-	if s.Catalog != "" && !json.Valid([]byte(s.Catalog)) {
-		return nil, &configFailure{errs: []*config.Error{{Reason: config.ReasonInvalid, Key: "Spec.Catalog", Detail: "not valid JSON (authzgen.CatalogJSON)"}}}
+	if s.Catalog != "" {
+		if b.authzCatalog, err = authz.ParseCatalog([]byte(s.Catalog)); err != nil {
+			return nil, &configFailure{errs: []*config.Error{{Reason: config.ReasonInvalid, Key: "Spec.Catalog", Detail: err.Error()}}}
+		}
 	}
 	if err := loadLifecycle(b); err != nil {
 		return nil, &configFailure{errs: asConfigErrors(err)}
