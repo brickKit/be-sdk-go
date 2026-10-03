@@ -27,9 +27,9 @@ type Spec struct {
 
 // Module is what a component's New returns: declarations only, the SDK runs them (P1.10).
 type Module struct {
-	HTTP func(r *Router)      // user-plane routes; the engine and middleware are the SDK's (P3)
-	GRPC func(s *grpc.Server) // system-plane services (P7)
-	// Events: published and consumed events (P12) — added with the events wave.
-	Start func(ctx context.Context) error // one-time initialisation, at most 30 s; never a loop
-	Stop  func(ctx context.Context) error // called once on shutdown, after the servers stopped
+	HTTP   func(r *Router)                 // user-plane routes; the engine and middleware are the SDK's (P3)
+	GRPC   func(s *grpc.Server)            // system-plane services (P7)
+	Events Events                          // published and consumed events (P12)
+	Start  func(ctx context.Context) error // one-time initialisation, at most 30 s; never a loop
+	Stop   func(ctx context.Context) error // called once on shutdown, after the servers stopped
 }
