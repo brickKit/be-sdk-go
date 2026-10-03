@@ -55,9 +55,7 @@ func run(ctx context.Context, s Spec, args []string, pe processEnv) int {
 	case cmdMigrateUp, cmdMigrateDown, cmdMigrateStatus:
 		return runMigrate(ctx, b, cmd)
 	case cmdJobRun:
-		b.log.Error("job run is not offered by this runtime version (capability job_run, P14.8)",
-			slog.String("job", cmd.job))
-		return exitUsage
+		return runJob(ctx, b, cmd.job)
 	}
 	return serve(ctx, b, pe)
 }

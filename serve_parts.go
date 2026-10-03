@@ -113,6 +113,7 @@ func (p *process) superviseBackground() {
 		p.auth.run(p.sup, p.ready)
 	}
 	p.superviseDeps()
+	p.superviseJobs()
 }
 
 func (p *process) startServers() {
@@ -178,7 +179,7 @@ func (p *process) info() Info {
 	return Info{ComponentID: p.b.id, ComponentVersion: p.b.version, Protocol: ProtocolVersion,
 		SDK:      &SDKInfo{Name: "be-sdk-go", Version: Version},
 		Language: LanguageInfo{Name: "go", Version: strings.TrimPrefix(runtime.Version(), "go")},
-		Profiles: p.profiles(), Ports: ports, Migrations: p.migrationsInfo()}
+		Profiles: p.profiles(), Ports: ports, Migrations: p.migrationsInfo(), Capabilities: p.capabilities()}
 }
 
 func (p *process) profiles() []string {
@@ -193,4 +194,14 @@ func (p *process) profiles() []string {
 		out = append(out, "db")
 	}
 	return append(out, p.eventProfiles()...)
+}
+
+// capabilities lists the optional protocol capabilities this process offers (P20.4): job_run when it
+// has a job engine (P14.8).
+func (p *process) capabilities() []string {
+	var out []string
+	if p.rt.deps.jobs != nil {
+		out = append(out, "job_run")
+	}
+	return out
 }

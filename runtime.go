@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/brickKit/be-sdk-go/internal/events"
+	"github.com/brickKit/be-sdk-go/internal/jobs"
 	"github.com/brickKit/be-sdk-go/internal/pg"
 	"github.com/brickKit/be-sdk-go/internal/problem"
 	"github.com/brickKit/be-sdk-go/internal/telemetry"
@@ -57,4 +58,5 @@ type runtimeDeps struct {
 	out      *outbound
 	store    *pg.Store
 	producer *events.Producer
+	jobs     *jobs.Engine
 }

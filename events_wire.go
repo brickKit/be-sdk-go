@@ -64,6 +64,12 @@ func (p *process) wireEvents() error {
 	if p.evm, err = telemetry.NewEventMetrics(p.b.member.Registerer()); err != nil {
 		return err
 	}
+	return p.wireProducer()
+}
+
+// wireProducer prepares the outbox writer of Module.Events.Publishes (P12.1, P12.2); no bus needed.
+func (p *process) wireProducer() error {
+	ev := p.mod.Events
 	if len(ev.Publishes) > 0 {
 		if p.b.spec.Contracts == nil {
 			return fmt.Errorf("Module.Events.Publishes needs Spec.Contracts with contracts/events (P12.2)")

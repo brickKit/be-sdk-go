@@ -36,6 +36,7 @@ type boot struct {
 	platform  *telemetry.Platform
 	member    *telemetry.Member
 	secretM   *telemetry.SecretMetrics
+	instance  string // service.instance.id: the container or pod; job and lease holders (P14)
 }
 
 // configFailure is a start failure that exits 78 (P1.2): every problem gets one log line naming its key.
@@ -63,7 +64,10 @@ func bootstrap(ctx context.Context, s Spec, pe processEnv) (*boot, error) {
 	if len(errs) > 0 {
 		return nil, &configFailure{errs: errs}
 	}
-	b := &boot{spec: s, id: s.ID, version: schema.Version, man: man, vals: vals}
+	b := &boot{spec: s, id: s.ID, version: schema.Version, man: man, vals: vals, instance: pe.instanceID}
+	if b.instance == "" {
+		b.instance = "local"
+	}
 	if v, ok := pe.lookup("COMPONENT_VERSION"); ok && v != "" {
 		b.version = v
 	}

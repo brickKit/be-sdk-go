@@ -200,7 +200,7 @@ func TestExitCodes(t *testing.T) {
 			return &Module{Start: func(context.Context) error { return errors.New("cannot start") }}, nil
 		}}, good, nil, 1, "cannot start"},
 		{"no COMPONENT_ID", thingSpec(&seen), map[string]string{"THING_TOKEN_FILE": good["THING_TOKEN_FILE"], noComponentID: "1"}, nil, 64, "COMPONENT_ID"},
-		{"job run not offered", thingSpec(&seen), good, []string{"job", "run", "x"}, 64, "job_run"},
+		{"job run without background work", thingSpec(&seen), good, []string{"job", "run", "x"}, 64, "no background work"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

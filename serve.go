@@ -86,13 +86,9 @@ func (p *process) fail(err error) {
 
 // open opens the secrets and the ports before anything connects (P1.2 step 2).
 func (p *process) open(pe processEnv) int {
-	secrets, errs := openSecrets(p.b.vals, p.secretOptions, "PG_OWNER_PASSWORD_FILE")
-	if len(errs) > 0 {
-		logConfigErrors(p.b.log, &configFailure{errs: errs})
-		return exitConfig
+	if code := p.openRuntime(); code != exitOK {
+		return code
 	}
-	p.rt = &Runtime{id: p.b.id, version: p.b.version, cfg: &Config{vals: p.b.vals, secrets: secrets},
-		log: p.b.log, tel: p.b.member, catalogue: p.b.catalogue, locale: p.b.locale, clock: time.Now}
 	port := p.b.man.Deployment.Port
 	if v, ok := pe.lookup("PORT"); ok {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -110,6 +106,18 @@ func (p *process) open(pe processEnv) int {
 			return exitFailure
 		}
 	}
+	return exitOK
+}
+
+// openRuntime opens the secret files (P2.12) and builds the component's Runtime.
+func (p *process) openRuntime() int {
+	secrets, errs := openSecrets(p.b.vals, p.secretOptions, "PG_OWNER_PASSWORD_FILE")
+	if len(errs) > 0 {
+		logConfigErrors(p.b.log, &configFailure{errs: errs})
+		return exitConfig
+	}
+	p.rt = &Runtime{id: p.b.id, version: p.b.version, cfg: &Config{vals: p.b.vals, secrets: secrets},
+		log: p.b.log, tel: p.b.member, catalogue: p.b.catalogue, locale: p.b.locale, clock: time.Now}
 	return exitOK
 }
 
@@ -143,6 +151,9 @@ func (p *process) build(bg context.Context) int {
 	}
 	if err := p.wireEvents(); err != nil {
 		return p.failCode("events", err)
+	}
+	if err := p.wireJobs(); err != nil {
+		return p.failCode("jobs", err)
 	}
 	if err := p.assembleHTTP(); err != nil {
 		return p.failCode("routes", err)
