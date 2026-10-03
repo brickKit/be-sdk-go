@@ -1,1 +1,4 @@
 # 本地构建/测试产物，不提交
+
+# rapid failfiles
+**/testdata/rapid/
