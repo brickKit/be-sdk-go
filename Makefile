@@ -1,50 +1,46 @@
-# be-sdk-go 不是 brickKit 组件，但仍按总纲 §I 的 9 个门禁目标写——
-# 一致性帮 AI：新开会话看到一份陌生 Makefile，不用先猜它和组件仓库的
-# Makefile 是不是同一套规矩。
+# be-sdk-go: the official Go implementation of be-protocol 1.0. Not a brickKit component.
+#
+#   make test               unit tests and vectors (no containers; integration tests skip)
+#   make test-integration   the same plus every *_integration_test.go against throwaway containers
+#   make vectors            only the be-protocol vector suites (pinned module github.com/brickKit/be-protocol)
+#   make lint               go vet + gofmt
+#   make import-scan        the SDK depends on no component repository
+#
+# test-integration starts PostgreSQL 16, PostgreSQL 14 and NATS 2.12 (prefix $(PREFIX)), runs, and removes them.
 .DEFAULT_GOAL := help
-.PHONY: help check-version test image migrate-idempotent dag-check contract-check \
-        import-scan smoke module-check all
+.PHONY: help test test-integration vectors lint import-scan containers-up containers-down
 
-help:  ## 列出所有目标
-	@awk 'BEGIN{FS=":.*##"; printf "\n用法: make <目标>\n\n"} \
-	     /^[a-zA-Z0-9_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2} \
-	     /^##@/ {printf "\n\033[1m%s\033[0m\n", substr($$0,5)}' $(MAKEFILE_LIST)
-	@echo ""
+PREFIX ?= sdkb-go-ci
 
-##@ 9 个门禁里对本仓库没意义的（非组件仓库，没有对应的东西）
-check-version:  ## N/A：没有 component.yaml
-	@echo "N/A：非组件仓库，没有 component.yaml"
+help:
+	@grep -E '^#   make' $(MAKEFILE_LIST) | sed 's/^#   //'
 
-image:  ## N/A：纯横切库，没有可执行文件，不产出部署镜像
-	@echo "N/A：纯横切库，没有可执行文件，不产出部署镜像"
+test:
+	go test -race -count=1 ./...
 
-migrate-idempotent:  ## N/A：没有迁移
-	@echo "N/A：非组件仓库，没有迁移"
+vectors:
+	go test -count=1 -run 'Vectors|TestVectors' ./internal/...
 
-contract-check:  ## N/A：没有 contracts/
-	@echo "N/A：非组件仓库，没有 contracts/"
+lint:
+	go vet ./...
+	@test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }
 
-smoke:  ## N/A：没有 brickkit up 的对象
-	@echo "N/A：非组件仓库，没有 brickkit up 的对象"
+import-scan:
+	@bad="$$(go list -deps ./... | grep '^github.com/brickKit/' | grep -vE '^github.com/brickKit/(be-sdk-go|be-protocol)($$|/)')"; \
+	if [ -n "$$bad" ]; then echo "be-sdk-go must not depend on: $$bad"; exit 1; fi; echo "no component dependency"
 
-module-check:  ## N/A：没有 module.New 契约
-	@echo "N/A：非组件仓库，没有 module.New 契约"
+containers-up:
+	docker run -d --rm --name $(PREFIX)-pg16 -e POSTGRES_PASSWORD=sdkb --tmpfs /var/lib/postgresql/data -p 127.0.0.1::5432 postgres:16-alpine >/dev/null
+	docker run -d --rm --name $(PREFIX)-pg14 -e POSTGRES_PASSWORD=sdkb --tmpfs /var/lib/postgresql/data -p 127.0.0.1::5432 postgres:14-alpine >/dev/null
+	docker run -d --rm --name $(PREFIX)-nats -p 127.0.0.1::4222 nats:2.12-alpine -js >/dev/null
+	@for c in pg16 pg14; do until docker exec $(PREFIX)-$$c pg_isready -U postgres -q 2>/dev/null; do sleep 1; done; done; sleep 1
 
-##@ 对本仓库真正有意义的
-test:  ## 跑全部单测（-race），需要 TEST_PG_DSN（+可选 TEST_NATS_URL）
-	go test ./... -race
+containers-down:
+	-docker rm -f $(PREFIX)-pg16 $(PREFIX)-pg14 $(PREFIX)-nats >/dev/null 2>&1
 
-dag-check:  ## 包依赖图无环（Go 编译器本身就不允许循环 import，这条恒过）
-	@go list ./... >/dev/null && echo "✓ 包依赖图无环（Go 编译器本身就不允许循环 import）"
-
-# ⚠️ be-sdk-go 是铁律六 import 扫描的白名单本体（§13.3 铁律六）——它被所有
-# 组件依赖，但它自己不许依赖任何组件仓库，否则白名单就变成了传染通道。
-import-scan:  ## 铁律六：be-sdk-go 自己不许依赖任何组件仓库
-	@bad="$$(go list -deps ./... 2>/dev/null | grep '^github.com/brickKit/' | grep -vE '^github.com/brickKit/be-sdk-go($$|/)')"; \
-	if [ -n "$$bad" ]; then \
-		echo "✗ be-sdk-go 不许依赖任何组件仓库：$$bad"; exit 1; \
-	fi; \
-	echo "✓ 零组件依赖"
-
-##@ 汇总
-all: check-version test image migrate-idempotent dag-check contract-check import-scan smoke module-check  ## 跑完整 9 项（含上面几条 N/A 直接过）
+test-integration: containers-up
+	@set -e; trap '$(MAKE) -s containers-down' EXIT; \
+	export TEST_PG16_DSN="postgres://postgres:sdkb@$$(docker port $(PREFIX)-pg16 5432)/postgres?sslmode=disable"; \
+	export TEST_PG14_DSN="postgres://postgres:sdkb@$$(docker port $(PREFIX)-pg14 5432)/postgres?sslmode=disable"; \
+	export TEST_NATS_URL="nats://$$(docker port $(PREFIX)-nats 4222)"; \
+	go test -race -count=1 ./...
