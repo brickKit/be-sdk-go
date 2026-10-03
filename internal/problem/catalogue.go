@@ -47,9 +47,6 @@ var beCatalogue = sync.OnceValue(func() *Catalogue {
 	if err := c.add(b, nil); err != nil {
 		panic("be-protocol errors-be.yaml invalid: " + err.Error())
 	}
-	if err := c.mergePending(); err != nil {
-		panic(err.Error())
-	}
 	return c
 })
 

@@ -221,8 +221,8 @@ func TestMigrateCreatesTheDeclaredWindows(t *testing.T) {
 			c.Lifecycle = decl
 			r, err := MigrateUp(within(t, 60e9), c)
 			require.NoError(t, err)
-			for _, p := range []string{"besdk_outbox_2026w40", "widgets_2026_10_01", "widgets_2027_01_01", "widget_lines_2026_10_01",
-				"widget_ledger_2026_12_01", "widget_audit_2026_11_01", "widget_jobs_2026_09_28", "widget_jobs_2026_10_12"} {
+			for _, p := range []string{"besdk_outbox_2026w40", "widgets_2026m10", "widgets_2027m01", "widget_lines_2026m10",
+				"widget_ledger_2026m12", "widget_audit_2026m11", "widget_jobs_2026w40", "widget_jobs_2026w42"} {
 				require.Contains(t, r.PartitionsCreated, p)
 			}
 			require.Len(t, r.PartitionsCreated, 3+4*4+3)

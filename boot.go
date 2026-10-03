@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/brickKit/be-sdk-go/internal/config"
@@ -68,7 +69,11 @@ func bootstrap(ctx context.Context, s Spec, pe processEnv) (*boot, error) {
 	}
 	level, _ := logx.ParseLevel(optString(vals, "LOG_LEVEL", "info"))
 	b.log = logx.New(logx.Options{ComponentID: b.id, ComponentVersion: b.version, Level: level, Writer: pe.stdout})
-	b.locale = optString(vals, "DEFAULT_LOCALE", "zh-CN")
+	locale, known := catalogueLocale(optString(vals, "DEFAULT_LOCALE", "zh-CN"))
+	if !known {
+		b.log.Warn("DEFAULT_LOCALE has no catalogue language; falling back to en", slog.String("key", "DEFAULT_LOCALE"))
+	}
+	b.locale = locale
 	if b.catalogue, err = loadCatalogue(s.Contracts); err != nil {
 		return nil, &configFailure{errs: []*config.Error{{Reason: config.ReasonInvalid, Key: "contracts/errors.yaml", Detail: err.Error()}}}
 	}
@@ -88,13 +93,34 @@ func (b *boot) initTelemetry(ctx context.Context, pe processEnv) error {
 	if err != nil {
 		return &configFailure{errs: []*config.Error{{Reason: config.ReasonInvalid, Key: "OTEL_BASE_URL", Detail: err.Error()}}}
 	}
-	b.member, err = telemetry.NewMember(b.platform, telemetry.Resource{ComponentID: b.id, ComponentVersion: b.version,
-		InstanceID: pe.instanceID})
+	b.member, err = telemetry.NewMember(b.platform, memberResource(b.id, b.version, pe.instanceID,
+		optString(b.vals, "DEPLOY_ENV", "")))
 	if err != nil {
 		return fmt.Errorf("telemetry: %w", err)
 	}
 	b.secretM, err = telemetry.NewSecretMetrics(b.member.Registerer())
 	return err
+}
+
+// catalogueLocale keeps a locale whose primary subtag is a catalogue language (zh, en) and otherwise
+// falls back to en (P4.1, DEFAULT_LOCALE); false reports the fallback.
+func catalogueLocale(v string) (string, bool) {
+	primary, _, _ := strings.Cut(strings.ToLower(strings.ReplaceAll(v, "_", "-")), "-")
+	if primary == "zh" || primary == "en" {
+		return v, true
+	}
+	return "en", false
+}
+
+// memberResource is the member's OpenTelemetry resource (P18.1): service.namespace is the domain (the
+// ID's first segment), deployment.environment.name is DEPLOY_ENV, "dev" when unset.
+func memberResource(id, version, instance, env string) telemetry.Resource {
+	domain, _, _ := strings.Cut(id, "/")
+	if env == "" {
+		env = "dev"
+	}
+	return telemetry.Resource{ComponentID: id, ComponentVersion: version, Namespace: domain,
+		InstanceID: instance, Environment: env}
 }
 
 // identityErrors checks the component ID three ways: Spec, manifest and the injected COMPONENT_ID.

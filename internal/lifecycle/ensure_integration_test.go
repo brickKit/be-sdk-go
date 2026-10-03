@@ -31,7 +31,7 @@ func TestEnsureWindowsAsRuntimeRole(t *testing.T) {
 			require.Empty(t, e.partitions(t, "widgets"), "migrated without the declaration: outbox only")
 
 			got := ensure(t, e, day0)
-			months := []string{"2026_10_01", "2026_11_01", "2026_12_01", "2027_01_01"}
+			months := []string{"2026m10", "2026m11", "2026m12", "2027m01"}
 			for _, tbl := range []string{"widgets", "widget_lines", "widget_ledger", "widget_audit"} {
 				var want []string
 				for _, m := range months {
@@ -39,7 +39,7 @@ func TestEnsureWindowsAsRuntimeRole(t *testing.T) {
 				}
 				require.Equal(t, want, e.partitions(t, tbl), tbl)
 			}
-			require.Equal(t, []string{"widget_jobs_2026_09_28", "widget_jobs_2026_10_05", "widget_jobs_2026_10_12"}, e.partitions(t, "widget_jobs"))
+			require.Equal(t, []string{"widget_jobs_2026w40", "widget_jobs_2026w41", "widget_jobs_2026w42"}, e.partitions(t, "widget_jobs"))
 			require.Len(t, got.Created, 4*4+3, "the outbox window existed already")
 
 			require.NoError(t, e.run(t, func(ctx context.Context, tx *pg.Tx) error {
@@ -58,10 +58,10 @@ func TestEnsureWindowsAsRuntimeRole(t *testing.T) {
 			require.Equal(t, 4*4+3, logged)
 
 			later := ensure(t, e, day0.AddDate(0, 0, 40)) // 2026-11-12
-			require.Contains(t, later.Created, "widgets_2027_02_01")
-			require.Contains(t, later.Created, "widget_lines_2027_02_01")
+			require.Contains(t, later.Created, "widgets_2027m02")
+			require.Contains(t, later.Created, "widget_lines_2027m02")
 			require.Contains(t, later.Created, "besdk_outbox_2026w48")
-			require.Contains(t, e.partitions(t, "widget_jobs"), "widget_jobs_2026_11_23")
+			require.Contains(t, e.partitions(t, "widget_jobs"), "widget_jobs_2026w48")
 		})
 	}
 }
@@ -77,9 +77,9 @@ func TestEnsureWindowsAdoptsByBounds(t *testing.T) {
 
 	got := ensure(t, e, day0)
 	require.Contains(t, got.Adopted, "widget_audit_oct")
-	require.NotContains(t, e.partitions(t, "widget_audit"), "widget_audit_2026_10_01")
-	require.ElementsMatch(t, []string{"widget_jobs_2026_09_28", "widget_jobs_2026_10_05"}, got.Skipped)
-	require.Equal(t, []string{"widget_jobs_2026_10_12", "widget_jobs_odd"}, e.partitions(t, "widget_jobs"))
+	require.NotContains(t, e.partitions(t, "widget_audit"), "widget_audit_2026m10")
+	require.ElementsMatch(t, []string{"widget_jobs_2026w40", "widget_jobs_2026w41"}, got.Skipped)
+	require.Equal(t, []string{"widget_jobs_2026w42", "widget_jobs_odd"}, e.partitions(t, "widget_jobs"))
 	var key string
 	e.scalar(t, &key, `SELECT unit_key FROM besdk_lifecycle_units WHERE table_name = 'widget_audit' AND range_from = '2026-10-01Z'`)
 	require.Equal(t, "widget_audit_oct", key)

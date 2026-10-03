@@ -3,8 +3,8 @@ module github.com/brickKit/be-sdk-go
 go 1.25.11
 
 require (
-	github.com/brickKit/be-protocol v1.0.0-rc.1
-	github.com/brickKit/contract-infra-authz/v2 v2.0.0-rc.1
+	github.com/brickKit/be-protocol v1.0.0-rc.2
+	github.com/brickKit/contract-infra-authz/v2 v2.0.0-rc.2
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang-migrate/migrate/v4 v4.20.1
@@ -34,6 +34,7 @@ require (
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/brickKit/contract-infra-iam v1.0.0-rc.2 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect

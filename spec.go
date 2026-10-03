@@ -22,7 +22,10 @@ type Spec struct {
 	Migrations fs.FS  // <version>_<name>.up.sql / .down.sql + lifecycle.yaml; nil = no database
 	Contracts  fs.FS  // contracts/: errors.yaml, events/*.events.json; nil = none
 	Catalog    string // authzgen.CatalogJSON: the component's keys and resource types; "" = none
-	New        func(ctx context.Context, rt *Runtime) (*Module, error)
+	// ErrorDomain is the domain of the component's own reasons: a slot-family member answers with its
+	// family's ID (infra/authz, P4.1); "" = ID.
+	ErrorDomain string
+	New         func(ctx context.Context, rt *Runtime) (*Module, error)
 }
 
 // Module is what a component's New returns: declarations only, the SDK runs them (P1.10).
@@ -32,4 +35,12 @@ type Module struct {
 	Events Events                          // published and consumed events (P12)
 	Start  func(ctx context.Context) error // one-time initialisation, at most 30 s; never a loop
 	Stop   func(ctx context.Context) error // called once on shutdown, after the servers stopped
+}
+
+// errorDomain is the domain the component's own errors carry (P4.1).
+func (s Spec) errorDomain() string {
+	if s.ErrorDomain != "" {
+		return s.ErrorDomain
+	}
+	return s.ID
 }

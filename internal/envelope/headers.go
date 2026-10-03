@@ -2,6 +2,7 @@ package envelope
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"time"
 )
@@ -40,6 +41,9 @@ type Producer struct {
 	EventsFile  string // the contract file under contracts/events/, e.g. "sales.events.json"
 }
 
+// PayloadLimitBytes is P12.2's payload limit: at most 64 KiB (65,536 bytes of serialised JSON).
+const PayloadLimitBytes = 64 << 10
+
 // Row is the part of a besdk_outbox row the envelope is built from (P12.1, P12 envelope).
 type Row struct {
 	ID               string    // besdk_outbox.id, a UUIDv7: ce-id and Nats-Msg-Id
@@ -49,6 +53,7 @@ type Row struct {
 	AggregateVersion int64     // ≥ 1: ce-aggregateversion
 	OccurredAt       time.Time // ce-time
 	TraceParent      string    // W3C traceparent of the producing span; "" for none
+	TraceState       string    // W3C tracestate of the producing span (outbox column tracestate); "" for none
 	CausationID      string    // "" from a request (P12.8)
 	HopCount         int       // ≥ 0 (P12.8)
 	Payload          []byte    // the business JSON object
@@ -68,6 +73,9 @@ func Headers(p Producer, r Row, txDocument bool) (map[string]string, error) {
 	r.ID = id.String() // the canonical lower-case form (P11.5)
 	if err := checkRow(p, r); err != nil {
 		return nil, err
+	}
+	if len(r.Payload) > PayloadLimitBytes {
+		return nil, fail(ReasonPayloadTooLarge, fmt.Sprintf("payload of %d bytes is above 64 KiB; use a claim check (P12.2)", len(r.Payload)))
 	}
 	legalEntity, err := payloadLegalEntity(r.Payload)
 	if err != nil {
@@ -94,6 +102,7 @@ func Headers(p Producer, r Row, txDocument bool) (map[string]string, error) {
 	setIf(h, HeaderLegalEntity, legalEntity)
 	if traceParentPattern.MatchString(r.TraceParent) {
 		h[HeaderTraceParent] = r.TraceParent
+		setIf(h, HeaderTraceState, r.TraceState)
 	}
 	return h, nil
 }

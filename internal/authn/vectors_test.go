@@ -2,20 +2,21 @@ package authn
 
 import (
 	"encoding/json"
+	iamcontract "github.com/brickKit/contract-infra-iam"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
-	"os"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
-// testdata/iam-access-token.json is a verbatim copy of vectors/tokens/access-token.json from
-// github.com/brickKit/contract-infra-iam at tag v1.0.0-rc.1 (commit e9acb07), 51 cases, the
-// component-side verification of TOKENS.md. Checks 1–12 are this package's; checks 13 (delegation
-// against the bundle's capabilities) and 14 (stale) need the bundle and run in internal/authz
-// (iam_vectors_test.go there). For a case whose failing rule is one of those, the expectation here is
+// vectors/tokens/access-token.json of the pinned contract-infra-iam module (v1.0.0-rc.2, 56 cases)
+// is the component-side verification of TOKENS.md. The signature and claim checks are this package's;
+// the checks that need the bundle (stale, revoked grant, delegation, the act chain) run in
+// internal/authz (iam_vectors_test.go there). For a case whose failing rule is one of those, the expectation here is
 // that the token verifies.
 type iamVectors struct {
 	Defaults struct {
@@ -44,11 +45,11 @@ type iamVectors struct {
 }
 
 func TestIAMAccessTokenVectors(t *testing.T) {
-	raw, err := os.ReadFile("testdata/iam-access-token.json")
+	raw, err := fs.ReadFile(iamcontract.FS, "vectors/tokens/access-token.json")
 	require.NoError(t, err)
 	var f iamVectors
 	require.NoError(t, json.Unmarshal(raw, &f))
-	require.Len(t, f.Cases, 51)
+	require.Len(t, f.Cases, 56)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(f.Defaults.JWKS)
@@ -66,7 +67,7 @@ func TestIAMAccessTokenVectors(t *testing.T) {
 				Now: func() time.Time { return now }})
 			claims, err := v.Verify(bg(), "Bearer "+c.Token)
 
-			bundleRule := c.Expect.Rule == "delegation" || c.Expect.Rule == "agents" || c.Expect.Rule == "stale"
+			bundleRule := slices.Contains([]string{"delegation", "agents", "impersonation", "stale", "revoked_grant"}, c.Expect.Rule)
 			if c.Expect.Valid || bundleRule {
 				require.NoError(t, err, c.Name)
 				if c.Expect.Sub != "" {

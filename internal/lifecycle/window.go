@@ -43,31 +43,30 @@ func nextStart(g Grain, from time.Time) time.Time {
 }
 
 // RangeWindow is the partition window of a range-partitioned table (P16.6, G1): the unit containing
-// now and the ahead units after it (a negative ahead counts as 0). A partition is named
-// <table>_YYYY_MM_DD after the first day of its range (foundations 09); names are for people only,
-// the engine finds partitions by their bounds.
+// now and the ahead units after it (a negative ahead counts as 0). A partition is named from its lower
+// bound (P16.10): <table>_<ISO week-year>w<WW> for week, <table>_<YYYY>m<MM> for month, <table>_<YYYY>
+// for year; the name is the unit key, and the engine still recognises partitions by their bounds.
 func RangeWindow(table string, g Grain, now time.Time, ahead int) []Unit {
 	from := unitStart(g, now)
 	out := make([]Unit, 0, max(ahead, 0)+1)
 	for i := 0; i <= max(ahead, 0); i++ {
 		to := nextStart(g, from)
-		out = append(out, Unit{Table: table, Name: rangeName(table, from), From: from, To: to})
+		out = append(out, Unit{Table: table, Name: rangeName(table, g, from), From: from, To: to})
 		from = to
 	}
 	return out
 }
 
-func rangeName(table string, from time.Time) string {
-	return fmt.Sprintf("%s_%04d_%02d_%02d", table, from.Year(), int(from.Month()), from.Day())
+func rangeName(table string, g Grain, from time.Time) string {
+	switch g {
+	case Week:
+		year, week := from.ISOWeek()
+		return fmt.Sprintf("%s_%04dw%02d", table, year, week)
+	case Month:
+		return fmt.Sprintf("%s_%04dm%02d", table, from.Year(), int(from.Month()))
+	}
+	return fmt.Sprintf("%s_%04d", table, from.Year())
 }
 
-// OutboxWindow is the outbox's weekly window, named besdk_outbox_<ISO year>w<ISO week, 2 digits>
-// (controller ruling, P16.6).
-func OutboxWindow(now time.Time, ahead int) []Unit {
-	units := RangeWindow(OutboxTable, Week, now, ahead)
-	for i := range units {
-		year, week := units[i].From.ISOWeek()
-		units[i].Name = fmt.Sprintf("%s_%dw%02d", OutboxTable, year, week)
-	}
-	return units
-}
+// OutboxWindow is the outbox's weekly window, besdk_outbox_<ISO week-year>w<WW> (P16.6, P16.10).
+func OutboxWindow(now time.Time, ahead int) []Unit { return RangeWindow(OutboxTable, Week, now, ahead) }

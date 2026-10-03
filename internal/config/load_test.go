@@ -80,8 +80,8 @@ func TestLoadWidgetAppliesDefaults(t *testing.T) {
 	if v.Has("JOBS_OVERRIDES") || v.Has("OTEL_BASE_URL") {
 		t.Error("an empty default of a typed key is not a value")
 	}
-	if ds, _ := v.Durations("EVENTS_BACKOFF"); len(ds) != 7 {
-		t.Errorf("EVENTS_BACKOFF = %v", ds)
+	if v.Has("EVENTS_BACKOFF") || v.Has("EVENTS_MAX_DELIVER") {
+		t.Error("rc.2 P12.5: EVENTS_* have no catalogue default; absent means the subscription's own value")
 	}
 }
 

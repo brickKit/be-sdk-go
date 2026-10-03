@@ -53,7 +53,8 @@ func EnsureWindows(ctx context.Context, q Querier, d *Declaration, now time.Time
 func followerUnits(follower string, parent []Unit) []Unit {
 	out := make([]Unit, len(parent))
 	for i, u := range parent {
-		out[i] = Unit{Table: follower, Name: rangeName(follower, u.From), From: u.From, To: u.To}
+		// the parent's grain: the follower's unit key carries the same suffix (P16.10)
+		out[i] = Unit{Table: follower, Name: follower + strings.TrimPrefix(u.Name, u.Table), From: u.From, To: u.To}
 	}
 	return out
 }

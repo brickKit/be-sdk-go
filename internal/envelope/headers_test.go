@@ -16,6 +16,7 @@ type vectorRow struct {
 	AggregateVersion int64  `json:"aggregate_version"`
 	OccurredAt       string `json:"occurred_at"`
 	TraceParent      string `json:"traceparent"`
+	TraceState       string `json:"tracestate"`
 	CausationID      string `json:"causation_id"`
 	HopCount         int    `json:"hop_count"`
 	PayloadJSON      string `json:"payload_json"`
@@ -44,7 +45,7 @@ func TestHeadersVectors(t *testing.T) {
 			r := envelope.Row{
 				ID: in.Row.ID, Subject: in.Row.Subject, AggregateType: in.Row.AggregateType,
 				AggregateID: in.Row.AggregateID, AggregateVersion: in.Row.AggregateVersion, OccurredAt: occurred,
-				TraceParent: in.Row.TraceParent, CausationID: in.Row.CausationID, HopCount: in.Row.HopCount,
+				TraceParent: in.Row.TraceParent, TraceState: in.Row.TraceState, CausationID: in.Row.CausationID, HopCount: in.Row.HopCount,
 				Payload: []byte(in.Row.PayloadJSON),
 			}
 			h, err := envelope.Headers(p, r, in.Contract.TransactionDocument)

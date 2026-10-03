@@ -20,16 +20,16 @@ import (
 type Resource struct {
 	ComponentID      string // service.name (required)
 	ComponentVersion string // service.version
-	Namespace        string // service.namespace: the project
+	Namespace        string // service.namespace: the component's domain (first segment of its ID)
 	InstanceID       string // service.instance.id: the container or pod
-	Environment      string // deployment.environment
+	Environment      string // deployment.environment.name: DEPLOY_ENV (OTel semantic conventions ≥ 1.27)
 }
 
 // resource returns the resource attributes, leaving out the empty ones.
 func (r Resource) resource() *resource.Resource {
 	attrs := serviceAttrs(r.ComponentID, r.ComponentVersion)
 	for _, kv := range [...][2]string{
-		{"service.namespace", r.Namespace}, {"service.instance.id", r.InstanceID}, {"deployment.environment", r.Environment},
+		{"service.namespace", r.Namespace}, {"service.instance.id", r.InstanceID}, {"deployment.environment.name", r.Environment},
 	} {
 		if kv[1] != "" {
 			attrs = append(attrs, attribute.String(kv[0], kv[1]))

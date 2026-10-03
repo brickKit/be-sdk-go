@@ -95,7 +95,7 @@ func insertDelivery(t *testing.T, e *env, at time.Time, state string) {
 // Queue retention: a partition with no open row is dropped, follower first, once retention.min has
 // passed (G3); a partition with an open row never is; a ledger is never dropped without a cold copy (G4).
 func TestRetentionQueue(t *testing.T) {
-	e := newEnv(t, "16", queueFS, true) // deliveries_2026_09_28 (w40) and _10_05 (w41)
+	e := newEnv(t, "16", queueFS, true) // deliveries_2026w40 (w40) and _10_05 (w41)
 	insertDelivery(t, e, day0, "PENDING")
 	insertDelivery(t, e, day0.AddDate(0, 0, 3), "SENT")
 	var pub published
@@ -104,17 +104,17 @@ func TestRetentionQueue(t *testing.T) {
 	r := step(t, e, en, time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC))
 	require.Empty(t, business(r.Dropped), "w41 ended 10-12: 30 days pass on 11-11")
 	r = step(t, e, en, time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC))
-	require.Equal(t, []string{"delivery_attempts_2026_10_05", "deliveries_2026_10_05"}, business(r.Dropped))
-	require.Contains(t, e.partitions(t, "deliveries"), "deliveries_2026_09_28", "an open row keeps w40")
-	require.Contains(t, e.partitions(t, "ledger"), "ledger_2026_09_28")
+	require.Equal(t, []string{"delivery_attempts_2026w41", "deliveries_2026w41"}, business(r.Dropped))
+	require.Contains(t, e.partitions(t, "deliveries"), "deliveries_2026w40", "an open row keeps w40")
+	require.Contains(t, e.partitions(t, "ledger"), "ledger_2026w40")
 	var state string
-	e.scalar(t, &state, `SELECT state FROM besdk_lifecycle_units WHERE unit_key = 'deliveries_2026_10_05'`)
+	e.scalar(t, &state, `SELECT state FROM besdk_lifecycle_units WHERE unit_key = 'deliveries_2026w41'`)
 	require.Equal(t, "DESTROYED", state)
-	require.Contains(t, pub.of("destroyed"), "conformance.widget.lifecycle.destroyed.v1 deliveries/deliveries_2026_10_05")
+	require.Contains(t, pub.of("destroyed"), "conformance.widget.lifecycle.destroyed.v1 deliveries/deliveries_2026w41")
 
 	r = step(t, e, engine(t, e, "dry-run", &pub), time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC))
 	require.Empty(t, r.Dropped)
-	require.Contains(t, r.Planned, "drop deliveries_2026_11_09")
-	require.Contains(t, r.Planned, "drop delivery_attempts_2026_11_09", "followers are planned with their parent")
-	require.Contains(t, e.partitions(t, "deliveries"), "deliveries_2026_11_09", "dry-run drops nothing")
+	require.Contains(t, r.Planned, "drop deliveries_2026w46")
+	require.Contains(t, r.Planned, "drop delivery_attempts_2026w46", "followers are planned with their parent")
+	require.Contains(t, e.partitions(t, "deliveries"), "deliveries_2026w46", "dry-run drops nothing")
 }

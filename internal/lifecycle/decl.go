@@ -35,8 +35,9 @@ const (
 // DefaultAhead is partition.ahead when the declaration omits it (lifecycle.schema.json).
 const DefaultAhead = 2
 
-// maxPartitionedName keeps `<table>_YYYY_MM_DD` within PostgreSQL's 63-byte identifiers.
-const maxPartitionedName = 63 - len("_2006_01_02")
+// maxPartitionedName keeps the longest P16.10 partition name, `<table>_<YYYY>w<WW>`, within
+// PostgreSQL's 63-byte identifiers.
+const maxPartitionedName = 63 - len("_2006w01")
 
 // Partition is a table's partition clause: a range by time ({by, grain, ahead}) or a list opened by a
 // command ({by, kind: list, opened_by: command}).

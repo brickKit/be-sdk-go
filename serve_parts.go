@@ -44,7 +44,7 @@ func (p *process) defaultDeadline() time.Duration {
 func (p *process) assembleHTTP() (err error) {
 	eng := gin.New()
 	eng.HandleMethodNotAllowed = false
-	cfg := routerConfig{componentID: p.b.id, catalogue: p.b.catalogue, locale: p.b.locale,
+	cfg := routerConfig{componentID: p.b.id, errorDomain: p.b.spec.errorDomain(), catalogue: p.b.catalogue, locale: p.b.locale,
 		defaultDeadline: p.defaultDeadline(), guardian: p.auth.guardian(p.rt)}
 	notFound := func(c *gin.Context) { fail(c, &cfg, problem.Be("NOT_FOUND", nil)) }
 	eng.NoRoute(notFound)
@@ -93,7 +93,7 @@ func (p *process) assembleGRPC() error {
 		MaxConnectionAge: optDuration(p.b.vals, "GRPC_MAX_CONNECTION_AGE", rpc.DefaultMaxConnectionAge),
 		Logger:           p.b.log, Catalogue: p.b.catalogue, Locale: p.b.locale,
 		TracerProvider: p.b.member.TracerProvider(), MeterProvider: p.b.member.MeterProvider(),
-		Propagator: p.b.member.Propagator(), Metrics: grpcServerMetrics{gm}, Domain: p.b.id,
+		Propagator: p.b.member.Propagator(), Metrics: grpcServerMetrics{gm}, Domain: p.b.spec.errorDomain(),
 		Inbound: func(ctx context.Context, reqID string, c rpc.Caller) context.Context {
 			ctx = httpx.WithRequestID(ctx, reqID)
 			return logx.WithFields(ctx, slog.String("request_id", reqID), slog.String("caller", c.Caller))

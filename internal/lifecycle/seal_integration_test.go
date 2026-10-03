@@ -103,7 +103,7 @@ func TestSealImmediate(t *testing.T) {
 			}))
 			// the runtime role has no TRUNCATE privilege; the owner has, and the guard still refuses it
 			requireSealed(t, ownerStore(t, e).Run(within(t, 10*time.Second), pg.TxOptions{}, func(ctx context.Context, tx *pg.Tx) error {
-				_, err := tx.ExecContext(ctx, `TRUNCATE widget_ledger_2026_10_01`)
+				_, err := tx.ExecContext(ctx, `TRUNCATE widget_ledger_2026m10`)
 				return err
 			}))
 
@@ -113,26 +113,26 @@ func TestSealImmediate(t *testing.T) {
 			require.Empty(t, r.Sealed, "October has not ended")
 
 			r = step(t, e, en, time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC))
-			require.Contains(t, r.Sealed, "widget_ledger_2026_10_01")
-			require.Contains(t, r.Sealed, "widget_audit_2026_10_01")
-			require.NotContains(t, r.Sealed, "widget_ledger_2026_11_01")
-			require.Contains(t, pub.subjects(), "conformance.widget.lifecycle.sealed.v1 widget_ledger/widget_ledger_2026_10_01")
+			require.Contains(t, r.Sealed, "widget_ledger_2026m10")
+			require.Contains(t, r.Sealed, "widget_audit_2026m10")
+			require.NotContains(t, r.Sealed, "widget_ledger_2026m11")
+			require.Contains(t, pub.subjects(), "conformance.widget.lifecycle.sealed.v1 widget_ledger/widget_ledger_2026m10")
 
 			var state string
 			var rows int64
 			var unitDigest, chain []byte
 			require.NoError(t, e.super.QueryRow(`SELECT state, rows, unit_digest, chain_digest FROM `+e.id.Schema+`.besdk_lifecycle_units
-			  WHERE table_name = 'widget_ledger' AND unit_key = 'widget_ledger_2026_10_01'`).Scan(&state, &rows, &unitDigest, &chain))
+			  WHERE table_name = 'widget_ledger' AND unit_key = 'widget_ledger_2026m10'`).Scan(&state, &rows, &unitDigest, &chain))
 			require.Equal(t, "SEALED", state)
 			require.Equal(t, int64(2), rows)
 			var want []byte
 			e.scalar(t, &want, `SELECT sha256(convert_to(string_agg(concat_ws(chr(31), id, created_at, legal_entity_id, widget_id,
-			  entry_no, posting_date, fiscal_period, currency, amount), chr(30) ORDER BY id, created_at), 'UTF8')) FROM widget_ledger_2026_10_01`)
+			  entry_no, posting_date, fiscal_period, currency, amount), chr(30) ORDER BY id, created_at), 'UTF8')) FROM widget_ledger_2026m10`)
 			require.Equal(t, hex.EncodeToString(want), hex.EncodeToString(unitDigest), "canonical digest, computed independently in SQL")
 			require.Equal(t, lifecycle.Chain(nil, unitDigest), chain, "the table's first link")
 
 			var logged int
-			e.scalar(t, &logged, `SELECT count(*) FROM besdk_lifecycle_log WHERE action = 'sealed' AND unit_key = 'widget_ledger_2026_10_01'`)
+			e.scalar(t, &logged, `SELECT count(*) FROM besdk_lifecycle_log WHERE action = 'sealed' AND unit_key = 'widget_ledger_2026m10'`)
 			require.Equal(t, 1, logged)
 			require.Empty(t, step(t, e, en, time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)).Sealed, "sealing is idempotent")
 
@@ -185,10 +185,10 @@ func TestSealAfterClosed(t *testing.T) {
 	june2028 := time.Date(2028, 6, 1, 0, 0, 0, 0, time.UTC)
 
 	r := step(t, e, en, june2028)
-	require.Contains(t, r.Blocked, "widgets_2026_10_01")
-	require.NotContains(t, r.Sealed, "widgets_2026_10_01")
+	require.Contains(t, r.Blocked, "widgets_2026m10")
+	require.NotContains(t, r.Sealed, "widgets_2026m10")
 	var reason string
-	e.scalar(t, &reason, `SELECT blocked_reason FROM besdk_lifecycle_units WHERE unit_key = 'widgets_2026_10_01'`)
+	e.scalar(t, &reason, `SELECT blocked_reason FROM besdk_lifecycle_units WHERE unit_key = 'widgets_2026m10'`)
 	require.Contains(t, reason, open.String())
 
 	require.NoError(t, e.run(t, func(ctx context.Context, tx *pg.Tx) error {
@@ -196,10 +196,10 @@ func TestSealAfterClosed(t *testing.T) {
 		return err
 	}))
 	r = step(t, e, en, june2028.Add(-time.Hour))
-	require.NotContains(t, r.Sealed, "widgets_2026_10_01", "closed 2026-12-01: sealable from 2028-06-01")
+	require.NotContains(t, r.Sealed, "widgets_2026m10", "closed 2026-12-01: sealable from 2028-06-01")
 	r = step(t, e, en, june2028)
-	require.Contains(t, r.Sealed, "widgets_2026_10_01")
-	require.Contains(t, r.Sealed, "widget_lines_2026_10_01", "a follower seals with its parent")
+	require.Contains(t, r.Sealed, "widgets_2026m10")
+	require.Contains(t, r.Sealed, "widget_lines_2026m10", "a follower seals with its parent")
 	requireSealed(t, e.run(t, func(ctx context.Context, tx *pg.Tx) error {
 		_, err := tx.ExecContext(ctx, `DELETE FROM widget_lines WHERE widget_id = $1`, open)
 		return err
@@ -260,15 +260,15 @@ func TestModesDryRunAndOff(t *testing.T) {
 	var pub published
 	r := step(t, e, engine(t, e, "dry-run", &pub), nov)
 	require.Empty(t, r.Sealed)
-	require.Contains(t, r.Planned, "seal widget_ledger_2026_10_01")
-	require.Contains(t, r.Created, "widgets_2027_02_01", "the window is kept in every mode")
+	require.Contains(t, r.Planned, "seal widget_ledger_2026m10")
+	require.Contains(t, r.Created, "widgets_2027m02", "the window is kept in every mode")
 	r = step(t, e, engine(t, e, "off", &pub), nov.AddDate(0, 1, 0))
 	require.Empty(t, r.Sealed)
 	require.Empty(t, r.Planned)
-	require.Contains(t, r.Created, "widgets_2027_03_01")
+	require.Contains(t, r.Created, "widgets_2027m03")
 	require.Empty(t, pub.subjects())
 	var state string
-	e.scalar(t, &state, `SELECT state FROM besdk_lifecycle_units WHERE unit_key = 'widget_ledger_2026_10_01'`)
+	e.scalar(t, &state, `SELECT state FROM besdk_lifecycle_units WHERE unit_key = 'widget_ledger_2026m10'`)
 	require.Equal(t, "ACTIVE", state)
 }
 

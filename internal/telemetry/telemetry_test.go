@@ -80,7 +80,7 @@ func TestStoppingOneMemberKeepsTheSharedExporter(t *testing.T) {
 	}
 	s, _ := c.find("b2")
 	want := map[string]string{"service.name": "erp/inventory", "service.version": "2.0.0",
-		"service.namespace": "be-assembly-standard", "service.instance.id": "pod-1", "deployment.environment": "dev"}
+		"service.namespace": "be-assembly-standard", "service.instance.id": "pod-1", "deployment.environment.name": "dev"}
 	for k, v := range want {
 		if s.Resource[k] != v {
 			t.Errorf("resource %s = %q, want %q", k, s.Resource[k], v)

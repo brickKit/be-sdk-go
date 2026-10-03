@@ -86,7 +86,7 @@ func ClassifySQLState(state string, attempt int, ctx ContextState, mapped *Error
 		return Classification{Err: Be("LOCK_TIMEOUT", nil)}
 	case "57014":
 		if ctx == ContextCancelled {
-			return Classification{Err: &Error{Code: codes.Canceled}}
+			return Classification{Err: Be("REQUEST_CANCELLED", nil)}
 		}
 		return Classification{Err: Be("STATEMENT_TIMEOUT", nil)}
 	case "25P04":

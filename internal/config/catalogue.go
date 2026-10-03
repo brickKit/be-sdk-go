@@ -29,6 +29,7 @@ type CatalogueKey struct {
 	Secret       bool     `yaml:"secret"`
 	Mount        string   `yaml:"mount"`
 	Shared       bool     `yaml:"shared"`
+	Shell        string   `yaml:"shell"` // whose value a shell uses: process | member (P19.3)
 	Profiles     []string `yaml:"profiles"`
 	AppliesWhen  string   `yaml:"applies_when"`
 	Ref          string   `yaml:"ref"`
@@ -107,7 +108,6 @@ func LoadCatalogue() (*Catalogue, error) {
 	if err != nil {
 		return nil, err
 	}
-	applyRulings(c)
 	return c, nil
 }
 

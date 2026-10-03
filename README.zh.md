@@ -2,7 +2,7 @@
 
 # be-sdk-go
 
-BrickEnterprise 组件协议 **be-protocol 1.0**（`github.com/brickKit/be-protocol`，钉在 `v1.0.0-rc.1`）的
+BrickEnterprise 组件协议 **be-protocol 1.0**（`github.com/brickKit/be-protocol`，钉在 `v1.0.0-rc.2`）的
 官方 Go 实现。Go 组件声明一个 `Spec` 并调用 `besdk.Main`；进程、端口、库身份、总线、所有超时和协议的
 每个面都归 SDK，组件拿到的是一个 `Runtime`。它不是 brickKit 组件，不含业务逻辑。
 

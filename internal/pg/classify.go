@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/brickKit/be-sdk-go/internal/problem"
-	"google.golang.org/grpc/codes"
 )
 
 // decision is what one failed transaction attempt becomes (P10.4).
@@ -43,7 +42,7 @@ func classifyAttempt(err error, attempt, maxAttempts int, ctxErr error) decision
 	}
 	switch cs {
 	case problem.ContextCancelled:
-		return decision{err: &problem.Error{Code: codes.Canceled, Cause: err}}
+		return decision{err: problem.Wrap(err, "REQUEST_CANCELLED", nil)}
 	case problem.ContextDeadlineExceeded:
 		return decision{err: problem.Wrap(err, "STATEMENT_TIMEOUT", nil)}
 	}

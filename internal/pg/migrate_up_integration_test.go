@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -40,9 +41,13 @@ func fakeBackend(t *testing.T, id testpg.Identity, name string) (pid int, closeF
 	return pid, closeFn
 }
 
+// gateID is a component ID of this test's own, so concurrent tests' sessions never block its gate.
+func gateID(id testpg.Identity) string { return "gate/g" + strings.ReplaceAll(id.Schema, "_", "") }
+
 func contractConfig(id testpg.Identity, fsys fstest.MapFS) MigrateConfig {
 	c := migrateConfig(id, fsys, nil)
 	c.Version = "3.1.0"
+	c.ComponentID = gateID(id) // unique: other packages' tests run "conformance/widget" sessions on the same server
 	c.contractProbe = 300 * time.Millisecond
 	return c
 }
@@ -54,9 +59,9 @@ func TestContractMigrationWaitsForOldVersions(t *testing.T) {
 	for _, major := range []string{"16", "14"} {
 		t.Run("pg"+major, func(t *testing.T) {
 			id := testpg.NewOn(t, major)
-			fakeBackend(t, id, "conformance/widget@3.1.0")
+			fakeBackend(t, id, gateID(id)+"@3.1.0")
 			fakeBackend(t, id, "other/component@1.0.0")
-			pid, stop := fakeBackend(t, id, "conformance/widget@3.0.0")
+			pid, stop := fakeBackend(t, id, gateID(id)+"@3.0.0")
 
 			r, err := MigrateUp(within(t, 60e9), contractConfig(id, contractFS()))
 			require.Error(t, err)
@@ -76,15 +81,15 @@ func TestContractMigrationWaitsForOldVersions(t *testing.T) {
 	}
 }
 
-// A backend seen only under the bare member ID is inside a transaction (SET LOCAL application_name):
-// its version is unknown, so it blocks too (fail closed).
-func TestContractMigrationTreatsAnUnknownVersionAsOld(t *testing.T) {
+// A backend seen only under the bare member ID is inside a transaction (SET LOCAL application_name);
+// only versioned session names count (P11.4 rc.2), and every serving process also keeps a versioned
+// presence session (P10.5), so a busy pool never starves the gate.
+func TestContractMigrationIgnoresBareMemberNames(t *testing.T) {
 	id := testpg.New(t)
-	pid, _ := fakeBackend(t, id, "conformance/widget")
-	_, err := MigrateUp(within(t, 60e9), contractConfig(id, contractFS()))
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "unknown")
-	require.Contains(t, err.Error(), fmt.Sprint(pid))
+	fakeBackend(t, id, gateID(id))
+	r, err := MigrateUp(within(t, 60e9), contractConfig(id, contractFS()))
+	require.NoError(t, err)
+	require.Equal(t, uint(3), r.To)
 }
 
 // A malformed header stops the step before any file runs.

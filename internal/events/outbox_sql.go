@@ -19,7 +19,7 @@ const claimOutbox = `UPDATE besdk_outbox SET status = 'SENDING', claimed_until =
         LIMIT 256
         FOR UPDATE SKIP LOCKED)
 RETURNING id::text, created_at, subject, aggregate_type, aggregate_id, aggregate_version, occurred_at,
-          traceparent, causation_id, hop_count, headers::text, payload::text, attempts`
+          traceparent, tracestate, causation_id, hop_count, headers::text, payload::text, attempts`
 
 const markPublished = `UPDATE besdk_outbox SET status = 'PUBLISHED', published_at = now(), claimed_until = NULL
  WHERE (id, created_at) IN (SELECT * FROM unnest($1::uuid[], $2::timestamptz[]))`
@@ -50,7 +50,7 @@ func (o pgOutbox) claim(ctx context.Context) ([]claimedRow, error) {
 			var r claimedRow
 			var headers, payload string
 			if err := res.Scan(&r.id, &r.createdAt, &r.subject, &r.aggregateType, &r.aggregateID,
-				&r.aggregateVersion, &r.occurredAt, &r.traceParent, &r.causationID, &r.hopCount,
+				&r.aggregateVersion, &r.occurredAt, &r.traceParent, &r.traceState, &r.causationID, &r.hopCount,
 				&headers, &payload, &r.attempts); err != nil {
 				return err
 			}

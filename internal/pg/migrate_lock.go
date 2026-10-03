@@ -151,8 +151,10 @@ type versionedBackend struct {
 func AppName(componentID, version string) string { return componentID + "@" + version }
 
 // oldBackends samples pg_stat_activity of this database for DefaultContractProbe and returns every
-// backend of this component whose version is <= after, or never showed a version (P11.4). Sessions
-// are matched by application_name only; the owner sees it for every role's backend.
+// backend of this component whose session name showed a version <= after (P11.4). Sessions are matched
+// by application_name only; the owner sees it for every role's backend. A backend seen only under the
+// bare member ID is inside a transaction and does not count: every serving process also keeps a
+// versioned presence session (P10.5), which is how an old process is seen.
 func (r *runner) oldBackends(ctx context.Context, after string) ([]versionedBackend, error) {
 	db, err := r.openDB(false)
 	if err != nil {
@@ -198,27 +200,19 @@ func (r *runner) sampleBackends(ctx context.Context, db *sql.DB, seen map[int]ma
 	return rows.Err()
 }
 
-// judgeBackends: a backend that ever showed a version <= after is old; one that never showed a
-// parseable version is unknown and counts as old (fail closed); the rest are new enough.
+// judgeBackends: a backend that ever showed a version <= after is old; the rest (newer versions, bare
+// member IDs, unparsable versions) do not block.
 func judgeBackends(seen map[int]map[string]bool, after string) []versionedBackend {
 	var out []versionedBackend
 	for pid, versions := range seen {
-		known, old := false, ""
+		old := ""
 		for v := range versions {
-			c, err := compareSemver(v, after)
-			if err != nil {
-				continue
-			}
-			known = true
-			if c <= 0 {
+			if c, err := compareSemver(v, after); err == nil && c <= 0 {
 				old = v
 			}
 		}
-		switch {
-		case old != "":
+		if old != "" {
 			out = append(out, versionedBackend{PID: pid, Version: old})
-		case !known:
-			out = append(out, versionedBackend{PID: pid})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PID < out[j].PID })

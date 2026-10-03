@@ -46,14 +46,14 @@ type outboxRow struct {
 	id, subject, aggregateType, aggregateID string
 	createdAt, occurredAt                   time.Time
 	aggregateVersion                        int64
-	traceParent, causationID                string
+	traceParent, traceState, causationID    string
 	hopCount                                int
 	headers, payload                        []byte
 }
 
 const insertOutbox = `INSERT INTO besdk_outbox (id, created_at, subject, aggregate_type, aggregate_id,
- aggregate_version, occurred_at, traceparent, causation_id, hop_count, headers, payload)
- VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb)`
+ aggregate_version, occurred_at, traceparent, tracestate, causation_id, hop_count, headers, payload)
+ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb)`
 
 // Write adds ev to the outbox inside the caller's business transaction and returns its id, the
 // ce-id (P12.1). The subject must be declared as published and be in the contract, the payload must
@@ -67,7 +67,8 @@ func Write(ctx context.Context, tx *pg.Tx, p *Producer, ev Outgoing) (string, er
 		return "", err
 	}
 	_, err = tx.ExecContext(ctx, insertOutbox, r.id, r.createdAt, r.subject, r.aggregateType, r.aggregateID,
-		r.aggregateVersion, r.occurredAt, r.traceParent, r.causationID, r.hopCount, string(r.headers), string(r.payload))
+		r.aggregateVersion, r.occurredAt, r.traceParent, r.traceState, r.causationID, r.hopCount, string(r.headers),
+		string(r.payload))
 	if err != nil {
 		// Not converted here: Store.Run classifies it by SQLSTATE and re-runs on 40001 / 40P01.
 		return "", fmt.Errorf("events: insert outbox row %s: %w", ev.Subject, err)
@@ -95,8 +96,9 @@ func (p *Producer) prepare(ctx context.Context, ev Outgoing) (outboxRow, error) 
 	causation, hop := envelope.Derive(ev.Origin)
 	r := outboxRow{id: id.String(), createdAt: envelope.IDTime(id), subject: ev.Subject,
 		aggregateType: def.AggregateType, aggregateID: ev.AggregateID, aggregateVersion: ev.Version,
-		occurredAt: p.occurredAt(ev), traceParent: p.traceParent(ctx), causationID: causation,
+		occurredAt: p.occurredAt(ev), causationID: causation,
 		hopCount: hop, payload: payload}
+	r.traceParent, r.traceState = p.traceContext(ctx)
 	h, err := envelope.Headers(envelope.Producer{ComponentID: p.ComponentID, Version: p.Version, EventsFile: def.File},
 		r.envelopeRow(), def.TransactionDocument)
 	if err != nil {
@@ -139,20 +141,21 @@ func (p *Producer) occurredAt(ev Outgoing) time.Time {
 	return t.UTC()
 }
 
-// traceParent is the W3C traceparent of the current span, "" when there is none (P18.1).
-func (p *Producer) traceParent(ctx context.Context) string {
+// traceContext is the W3C traceparent and tracestate of the current span, "" when there is none
+// (P18.1, P12 envelope).
+func (p *Producer) traceContext(ctx context.Context) (parent, state string) {
 	if p.Propagator == nil {
-		return ""
+		return "", ""
 	}
 	c := propagation.MapCarrier{}
 	p.Propagator.Inject(ctx, c)
-	return c.Get(envelope.HeaderTraceParent)
+	return c.Get(envelope.HeaderTraceParent), c.Get(envelope.HeaderTraceState)
 }
 
 func (r outboxRow) envelopeRow() envelope.Row {
 	return envelope.Row{ID: r.id, Subject: r.subject, AggregateType: r.aggregateType, AggregateID: r.aggregateID,
 		AggregateVersion: r.aggregateVersion, OccurredAt: r.occurredAt, TraceParent: r.traceParent,
-		CausationID: r.causationID, HopCount: r.hopCount, Payload: r.payload}
+		TraceState: r.traceState, CausationID: r.causationID, HopCount: r.hopCount, Payload: r.payload}
 }
 
 // storedHeaders keeps the ce-* attributes the outbox has no column for (ddl/02 headers): the

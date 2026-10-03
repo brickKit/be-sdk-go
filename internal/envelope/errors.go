@@ -14,6 +14,7 @@ const (
 	ReasonPayloadInvalid     = "PAYLOAD_INVALID"      // P12.7
 	ReasonMaxDeliver         = "MAX_DELIVER"          // P12.7
 	ReasonPermanent          = "PERMANENT"            // P12.7
+	ReasonPayloadTooLarge    = "PAYLOAD_TOO_LARGE"    // P12.2
 )
 
 // Error is a validation failure of this package, carrying one of the Reason* classes.

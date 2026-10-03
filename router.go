@@ -1,6 +1,7 @@
 package besdk
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,7 +40,8 @@ type guardian interface {
 }
 
 type routerConfig struct {
-	componentID     string
+	componentID     string // the route prefix /{domain}/{name}
+	errorDomain     string // the domain of the component's own reasons; "" = componentID (P4.1)
 	catalogue       *problem.Catalogue
 	locale          string
 	defaultDeadline time.Duration
@@ -189,7 +191,7 @@ func fail(c *gin.Context, cfg *routerConfig, e *problem.Error) {
 	cat, locale := problem.NewCatalogue(), "zh-CN"
 	if cfg != nil {
 		cat, locale = cfg.catalogue, cfg.locale
-		e = problem.WithDomain(e, cfg.componentID)
+		e = problem.WithDomain(e, cmp.Or(cfg.errorDomain, cfg.componentID))
 	}
 	httpx.WriteProblem(c.Writer, c.Request, cat, locale, e)
 }

@@ -68,7 +68,7 @@ func startProc(t *testing.T, spec Spec, env map[string]string, args ...string) *
 	if spec.Manifest == nil || len(spec.Manifest) == 0 {
 		spec.Manifest = []byte(strings.Replace(testManifest, "PORT_PLACEHOLDER", fmt.Sprint(port), 1))
 	}
-	lookup := func(k string) (string, bool) { v, ok := env[k]; return v, ok }
+	lookup := testLookup(spec, env)
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &testProc{port: port, out: &syncBuf{}, done: make(chan int, 1), stop: cancel}
 	go func() { p.done <- run(ctx, spec, args, processEnv{lookup: lookup, stdout: p.out, instanceID: "test"}) }()
@@ -166,7 +166,7 @@ func runOnce(t *testing.T, spec Spec, env map[string]string, args ...string) (in
 	}
 	spec.Manifest = []byte(strings.Replace(string(spec.Manifest), "PORT_PLACEHOLDER", fmt.Sprint(port), 1))
 	var out syncBuf
-	lookup := func(k string) (string, bool) { v, ok := env[k]; return v, ok }
+	lookup := testLookup(spec, env)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	code := run(ctx, spec, args, processEnv{lookup: lookup, stdout: &out})
@@ -199,6 +199,7 @@ func TestExitCodes(t *testing.T) {
 		{"Start fails", Spec{ID: "test/thing", New: func(context.Context, *Runtime) (*Module, error) {
 			return &Module{Start: func(context.Context) error { return errors.New("cannot start") }}, nil
 		}}, good, nil, 1, "cannot start"},
+		{"no COMPONENT_ID", thingSpec(&seen), map[string]string{"THING_TOKEN_FILE": good["THING_TOKEN_FILE"], noComponentID: "1"}, nil, 64, "COMPONENT_ID"},
 		{"job run not offered", thingSpec(&seen), good, []string{"job", "run", "x"}, 64, "job_run"},
 	}
 	for _, c := range cases {
@@ -208,5 +209,21 @@ func TestExitCodes(t *testing.T) {
 				t.Fatalf("exit %d (want %d), log:\n%s", code, c.code, out)
 			}
 		})
+	}
+}
+
+// noComponentID in a test environment leaves COMPONENT_ID out; otherwise the platform's injection is
+// simulated with the Spec's ID (P1.2: a process without COMPONENT_ID was not started by the platform).
+const noComponentID = "TEST_NO_COMPONENT_ID"
+
+func testLookup(spec Spec, env map[string]string) func(string) (string, bool) {
+	return func(k string) (string, bool) {
+		if v, ok := env[k]; ok {
+			return v, true
+		}
+		if k == "COMPONENT_ID" && env[noComponentID] == "" {
+			return spec.ID, true
+		}
+		return "", false
 	}
 }

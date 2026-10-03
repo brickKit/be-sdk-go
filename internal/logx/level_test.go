@@ -1,11 +1,8 @@
 package logx
 
 import (
-	"encoding/json"
 	"log/slog"
 	"testing"
-
-	"github.com/brickKit/be-sdk-go/internal/vectors"
 )
 
 func TestParseLevel(t *testing.T) {
@@ -20,33 +17,6 @@ func TestParseLevel(t *testing.T) {
 		if _, err := ParseLevel(s); err == nil {
 			t.Errorf("ParseLevel(%q): want an error", s)
 		}
-	}
-}
-
-// The P4.6 table; errors/levels.json is owned by the errors lane, run here too so both tables agree.
-func TestLevelForCodeVectors(t *testing.T) {
-	vectors.Run(t, "errors", "levels", map[string]func(*testing.T, vectors.Case){
-		"log_level": func(t *testing.T, c vectors.Case) {
-			var in struct {
-				Code string `json:"code"`
-			}
-			if err := json.Unmarshal(c.Input, &in); err != nil {
-				t.Fatal(err)
-			}
-			lvl, logged := LevelForCode(in.Code)
-			name := "none"
-			if logged {
-				name = levelName(lvl)
-			}
-			vectors.RequireJSON(t, c, map[string]string{"level": name})
-		},
-	})
-}
-
-func TestLevelForCodeUnknownNameIsCallerError(t *testing.T) {
-	lvl, logged := LevelForCode("SOMETHING_NEW")
-	if !logged || lvl != slog.LevelInfo {
-		t.Fatalf("got %v %v", lvl, logged)
 	}
 }
 

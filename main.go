@@ -33,6 +33,10 @@ func run(ctx context.Context, s Spec, args []string, pe processEnv) int {
 		early.Error("usage error", slog.String("error", err.Error()))
 		return exitUsage
 	}
+	if _, ok := pe.lookup("COMPONENT_ID"); !ok {
+		early.Error("usage error: no COMPONENT_ID in the environment; the process was not started by the platform (P1.2)")
+		return exitUsage
+	}
 	b, err := bootstrap(ctx, s, pe)
 	if err != nil {
 		var cf *configFailure

@@ -93,8 +93,12 @@ func TestVectorsSQLState(t *testing.T) {
 				return
 			}
 			e := got.Err
-			vectors.RequireJSON(t, c, map[string]any{"action": "fail", "code": CodeName(e.Code),
-				"reason": nullable(e.Reason), "domain": nullable(e.Domain), "http": e.HTTPStatus()})
+			want := map[string]any{"action": "fail", "code": CodeName(e.Code),
+				"reason": nullable(e.Reason), "domain": nullable(e.Domain), "http": e.HTTPStatus()}
+			if len(e.Metadata) > 0 {
+				want["metadata"] = e.Metadata
+			}
+			vectors.RequireJSON(t, c, want)
 		},
 	})
 }
@@ -114,6 +118,15 @@ func TestVectorsLevels(t *testing.T) {
 				name = strings.ToLower(level.String())
 			}
 			vectors.RequireJSON(t, c, map[string]any{"level": name})
+		},
+		"access_log_level": func(t *testing.T, c vectors.Case) {
+			var in struct{ Code string }
+			decode(t, c.Input, &in)
+			code, err := ParseCode(in.Code)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vectors.RequireJSON(t, c, map[string]any{"level": strings.ToLower(AccessLogLevel(code).String())})
 		},
 	})
 }

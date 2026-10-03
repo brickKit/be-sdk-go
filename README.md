@@ -3,7 +3,7 @@
 # be-sdk-go
 
 The official Go implementation of the BrickEnterprise component protocol **be-protocol 1.0**
-(`github.com/brickKit/be-protocol`, pinned at `v1.0.0-rc.1`). A Go component declares a `Spec` and calls
+(`github.com/brickKit/be-protocol`, pinned at `v1.0.0-rc.2`). A Go component declares a `Spec` and calls
 `besdk.Main`; the SDK owns the process, the ports, the database identity, the bus, every timeout and every
 protocol surface, and hands the component a `Runtime`. It is not a brickKit component and holds no
 business logic.

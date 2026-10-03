@@ -102,7 +102,7 @@ func From(err error) *Error {
 	}
 	switch {
 	case errors.Is(err, context.Canceled):
-		return &Error{Code: codes.Canceled, Cause: err}
+		return Wrap(err, "REQUEST_CANCELLED", nil)
 	case errors.Is(err, context.DeadlineExceeded):
 		return Wrap(err, "DEADLINE_BUDGET_EXHAUSTED", nil)
 	}
