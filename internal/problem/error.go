@@ -114,8 +114,8 @@ func From(err error) *Error {
 
 // Public is what a caller may see (P4.3): INTERNAL, UNKNOWN and DATA_LOSS, an unclassified error, and
 // an error with a reason but no domain all become reason INTERNAL of domain be with empty metadata, no
-// violations and no detail (the catalogue's generic text is rendered); UNKNOWN, DATA_LOSS and CANCELLED
-// keep their code. Every other error is returned unchanged.
+// violations and no detail (the catalogue's generic text is rendered); UNKNOWN, DATA_LOSS, CANCELLED
+// and a bare code without reason and domain keep their code. Every other error is returned unchanged.
 func Public(e *Error) *Error {
 	generic := e.Code == codes.OK || e.Code == codes.Internal || e.Code == codes.Unknown ||
 		e.Code == codes.DataLoss || e.Reason == "" || e.Domain == ""
@@ -123,7 +123,11 @@ func Public(e *Error) *Error {
 		return e
 	}
 	code := e.Code
-	if code != codes.Unknown && code != codes.DataLoss && code != codes.Canceled {
+	// A bare code without any identity (a transport failure, a dependency that answered without a
+	// problem body) keeps its code, so a caller still sees 503 / 504; a reason without a domain is
+	// unclassified and becomes INTERNAL (vectors errors/problem).
+	bare := e.Reason == "" && e.Domain == "" && code != codes.OK
+	if !bare && code != codes.Unknown && code != codes.DataLoss && code != codes.Canceled {
 		code = codes.Internal
 	}
 	return &Error{Code: code, Domain: DomainBe, Reason: "INTERNAL", Metadata: map[string]string{}}

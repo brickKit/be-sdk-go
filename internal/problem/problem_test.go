@@ -81,3 +81,10 @@ func TestBeUnknownReasonIsInternal(t *testing.T) {
 		t.Fatalf("%+v", e)
 	}
 }
+
+func TestPublicKeepsABareCode(t *testing.T) {
+	p := Public(&Error{Code: codes.Unavailable, Cause: errors.New("dial tcp: refused")})
+	if p.Code != codes.Unavailable || p.Reason != "INTERNAL" || p.Domain != DomainBe || p.HTTPStatus() != 503 {
+		t.Fatalf("%+v", p)
+	}
+}

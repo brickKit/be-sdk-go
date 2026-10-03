@@ -51,4 +51,6 @@ func (rt *Runtime) Registry() prometheus.Registerer { return rt.tel.Registerer()
 func (rt *Runtime) Now() time.Time { return rt.clock() }
 
 // runtimeDeps holds what the serving process wires into a Runtime after the configuration loaded.
-type runtimeDeps struct{}
+type runtimeDeps struct {
+	out *outbound
+}
