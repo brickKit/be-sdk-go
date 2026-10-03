@@ -1,6 +1,7 @@
 package pg
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	beprotocol "github.com/brickKit/be-protocol"
+	"github.com/brickKit/be-sdk-go/internal/problem"
 	"github.com/golang-migrate/migrate/v4/source"
 )
 
@@ -17,9 +19,13 @@ import (
 // be-protocol 1.0's reference DDL.
 const PlatformVersion = 1
 
+// authzProjectionDDL is the authorization projection (P6.12): created only in the schema of a
+// component that declares resource types (P11.3, CP-DB-04), so it is not part of platformSQL.
+const authzProjectionDDL = "ddl/07-authz-projection.sql"
+
 // platformSQL is platform migration version 1: every ddl/[0-9]*.sql of the pinned be-protocol in name
-// order (be_bus.sql is the project's, never a component's), then the component's row in
-// besdk_platform_version (P11.3).
+// order except the authorization projection (be_bus.sql is the project's, never a component's), then
+// the component's row in besdk_platform_version (P11.3).
 func platformSQL(componentID string) (string, error) {
 	names, err := fs.Glob(beprotocol.FS, "ddl/[0-9]*.sql")
 	if err != nil {
@@ -31,6 +37,9 @@ func platformSQL(componentID string) (string, error) {
 	sort.Strings(names)
 	var b strings.Builder
 	for _, n := range names {
+		if n == authzProjectionDDL {
+			continue
+		}
 		body, err := fs.ReadFile(beprotocol.FS, n)
 		if err != nil {
 			return "", err
@@ -42,6 +51,38 @@ func platformSQL(componentID string) (string, error) {
 		" ON CONFLICT (component) DO UPDATE SET version = EXCLUDED.version, applied_at = now();\n",
 		quoteLiteral(componentID), PlatformVersion)
 	return b.String(), nil
+}
+
+// authzProjectionSQL is ddl/07 of the pinned be-protocol; every statement is IF NOT EXISTS.
+func authzProjectionSQL() (string, error) {
+	b, err := fs.ReadFile(beprotocol.FS, authzProjectionDDL)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// ensureAuthzProjection creates besdk_authz_acl and besdk_authz_cursor, as the owner in PG_SCHEMA,
+// when the component declares resource types (MigrateConfig.AuthzProjection; P11.3, CP-DB-04). It runs
+// on every migrate up after the platform migration, so a component that starts declaring resources
+// gets the tables on its next deployment; a component that declares none never has them.
+func (r *runner) ensureAuthzProjection(ctx context.Context) error {
+	if !r.c.AuthzProjection {
+		return nil
+	}
+	body, err := authzProjectionSQL()
+	if err != nil {
+		return problem.Wrap(err, "INTERNAL", nil)
+	}
+	db, err := r.openDB(true)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(ctx, body); err != nil {
+		return problem.Wrap(fmt.Errorf("authz projection: %w", err), "INTERNAL", nil)
+	}
+	return nil
 }
 
 // platformSource is a golang-migrate source with the platform migration as its only, up-only version.

@@ -2,63 +2,27 @@ package pg
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 	"time"
 
+	"github.com/brickKit/be-sdk-go/internal/lifecycle"
 	"github.com/brickKit/be-sdk-go/internal/problem"
 )
 
 // DefaultOutboxAhead is how many weeks after the current one the outbox window covers (lifecycle
 // default `ahead: 2`, P16.6).
-const DefaultOutboxAhead = 2
-
-// outboxParent is the partitioned outbox table of the reference DDL (ddl/02-outbox.sql).
-const outboxParent = "besdk_outbox"
-
-// weekPartition is one weekly RANGE partition [From, To) of besdk_outbox.
-type weekPartition struct {
-	Name     string
-	From, To time.Time
-}
-
-// outboxWindow lists the outbox partitions for the week containing now and the `ahead` weeks after
-// it: weeks start Monday 00:00 UTC and are named besdk_outbox_<ISO year>w<ISO week, 2 digits>
-// (P11.3, P16.6). A negative ahead counts as 0.
-func outboxWindow(now time.Time, ahead int) []weekPartition {
-	now = now.UTC()
-	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	monday := day.AddDate(0, 0, -((int(day.Weekday()) + 6) % 7))
-	out := make([]weekPartition, 0, max(ahead, 0)+1)
-	for i := 0; i <= max(ahead, 0); i++ {
-		from := monday.AddDate(0, 0, 7*i)
-		year, week := from.ISOWeek()
-		out = append(out, weekPartition{
-			Name: fmt.Sprintf("%s_%dw%02d", outboxParent, year, week),
-			From: from, To: from.AddDate(0, 0, 7),
-		})
-	}
-	return out
-}
-
-// rowQuerier is what the window needs: a *Tx (runtime) or the owner's *sql.Tx (migration).
-type rowQuerier interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
+const DefaultOutboxAhead = lifecycle.OutboxAhead
 
 // EnsureOutboxWindow creates, through the owner's SECURITY DEFINER function besdk_ensure_range_partition,
 // the outbox partitions for the week containing now and the ahead weeks after it that do not exist
-// yet, and returns their names (P10.12, P16.6). It is idempotent.
+// yet (named besdk_outbox_<ISO year>w<ISO week>), and returns their names (P10.12, P16.6). It is
+// idempotent. The lifecycle engine (be.lifecycle) keeps the outbox and every declared window ahead
+// with lifecycle.EnsureWindows; this remains for a runtime without the engine.
 func EnsureOutboxWindow(ctx context.Context, tx *Tx, now time.Time, ahead int) ([]string, error) {
-	return ensureWindow(ctx, tx, now, ahead)
-}
-
-func ensureWindow(ctx context.Context, q rowQuerier, now time.Time, ahead int) ([]string, error) {
 	var created []string
-	for _, w := range outboxWindow(now, ahead) {
+	for _, w := range lifecycle.OutboxWindow(now, ahead) {
 		var ok bool
-		err := q.QueryRowContext(ctx, `SELECT besdk_ensure_range_partition($1, $2, $3, $4)`,
-			outboxParent, w.Name, w.From, w.To).Scan(&ok)
+		err := tx.QueryRowContext(ctx, `SELECT besdk_ensure_range_partition($1, $2, $3, $4)`,
+			w.Table, w.Name, w.From, w.To).Scan(&ok)
 		if err != nil {
 			return created, err
 		}
@@ -69,7 +33,9 @@ func ensureWindow(ctx context.Context, q rowQuerier, now time.Time, ahead int) (
 	return created, nil
 }
 
-// ensureWindow is the platform migration's window step, as the owner in one transaction (P11.3).
+// ensureWindow is the platform migration's window step, as the owner in one transaction (P11.3,
+// P16.6): the outbox's window and the window of every range-partitioned table of lifecycle.yaml
+// (MigrateConfig.Lifecycle; nil = the outbox only), followers included.
 func (r *runner) ensureWindow(ctx context.Context) ([]string, error) {
 	db, err := r.openDB(true)
 	if err != nil {
@@ -83,10 +49,18 @@ func (r *runner) ensureWindow(ctx context.Context) ([]string, error) {
 			return err
 		}
 		defer func() { _ = tx.Rollback() }()
-		if created, err = ensureWindow(ctx, tx, r.c.now(), orDefault(r.c.OutboxAhead, DefaultOutboxAhead)); err != nil {
+		res, err := lifecycle.EnsureWindows(ctx, tx, r.c.Lifecycle, r.c.now(), "migration")
+		if err != nil {
 			return err
 		}
-		return tx.Commit()
+		for _, s := range res.Skipped {
+			r.log.Warn("partition skipped: an existing partition overlaps its range", "partition", s)
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		created = res.Created
+		return nil
 	})
 	if err != nil {
 		return nil, problem.From(err)

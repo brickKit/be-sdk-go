@@ -3,8 +3,8 @@ package besdk
 import (
 	"context"
 	"encoding/json"
-	"net/http/httptest"
 	"io/fs"
+	"net/http/httptest"
 	"testing"
 	"time"
 

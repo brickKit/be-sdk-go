@@ -3,6 +3,11 @@ package pg
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
+	"io/fs"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -127,4 +132,123 @@ func (r *runner) blockers(ctx context.Context, db *sql.DB) []blocker {
 		}
 	}
 	return out
+}
+
+// DefaultContractProbe is how long a contract migration watches pg_stat_activity before deciding
+// (P11.4): a pooled session shows "<id>@<version>" while idle and the bare member ID inside a
+// transaction (SET LOCAL application_name), so one look is not enough.
+const DefaultContractProbe = 2 * time.Second
+
+// versionedBackend is a backend of this component that a contract migration waits for.
+type versionedBackend struct {
+	PID     int
+	Version string // "" = never seen outside a transaction: unknown
+}
+
+// AppName is the session-level application_name every SDK pool connection of a component carries:
+// "<component id>@<version>" (P11.4 gating; inside a transaction SET LOCAL keeps the bare member ID,
+// P10.2).
+func AppName(componentID, version string) string { return componentID + "@" + version }
+
+// oldBackends samples pg_stat_activity of this database for DefaultContractProbe and returns every
+// backend of this component whose version is <= after, or never showed a version (P11.4). Sessions
+// are matched by application_name only; the owner sees it for every role's backend.
+func (r *runner) oldBackends(ctx context.Context, after string) ([]versionedBackend, error) {
+	db, err := r.openDB(false)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+	seen := map[int]map[string]bool{} // pid → versions seen ("" = bare ID)
+	deadline := time.Now().Add(orDefaultDuration(r.c.contractProbe, DefaultContractProbe))
+	for {
+		if err := r.sampleBackends(ctx, db, seen); err != nil {
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		if err := sleepCtx(ctx, 100*time.Millisecond); err != nil {
+			return nil, problem.From(err)
+		}
+	}
+	return judgeBackends(seen, after), nil
+}
+
+func (r *runner) sampleBackends(ctx context.Context, db *sql.DB, seen map[int]map[string]bool) error {
+	rows, err := db.QueryContext(ctx, `SELECT pid, application_name FROM pg_stat_activity
+	  WHERE datname = current_database() AND pid <> pg_backend_pid()
+	    AND (application_name = $1 OR left(application_name, length($1) + 1) = $1 || '@')`, r.c.ComponentID)
+	if err != nil {
+		return problem.Wrap(err, "INTERNAL", nil)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var pid int
+		var name string
+		if err := rows.Scan(&pid, &name); err != nil {
+			return problem.Wrap(err, "INTERNAL", nil)
+		}
+		if seen[pid] == nil {
+			seen[pid] = map[string]bool{}
+		}
+		_, v, _ := strings.Cut(name, "@")
+		seen[pid][v] = true
+	}
+	return rows.Err()
+}
+
+// judgeBackends: a backend that ever showed a version <= after is old; one that never showed a
+// parseable version is unknown and counts as old (fail closed); the rest are new enough.
+func judgeBackends(seen map[int]map[string]bool, after string) []versionedBackend {
+	var out []versionedBackend
+	for pid, versions := range seen {
+		known, old := false, ""
+		for v := range versions {
+			c, err := compareSemver(v, after)
+			if err != nil {
+				continue
+			}
+			known = true
+			if c <= 0 {
+				old = v
+			}
+		}
+		switch {
+		case old != "":
+			out = append(out, versionedBackend{PID: pid, Version: old})
+		case !known:
+			out = append(out, versionedBackend{PID: pid})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PID < out[j].PID })
+	return out
+}
+
+// contractGate stops before a contract file while an old version still runs (P11.4).
+func (r *runner) contractGate(headers map[uint]fileHeader) func(ctx context.Context, next uint) error {
+	return func(ctx context.Context, next uint) error {
+		h := headers[next]
+		if !h.Contract {
+			return nil
+		}
+		old, err := r.oldBackends(ctx, h.After)
+		if err != nil || len(old) == 0 {
+			return err
+		}
+		names, _ := fs.Glob(r.c.Component, fmt.Sprintf("%d_*.up.sql", next))
+		parts := make([]string, len(old))
+		for i, b := range old {
+			v := b.Version
+			if v == "" {
+				v = "unknown version"
+			}
+			parts[i] = fmt.Sprintf("%s (pid %d)", v, b.PID)
+		}
+		msg := fmt.Sprintf("contract migration %s (after=%s) waits until no version <= %s of %s runs; still running: %s",
+			strings.Join(names, ","), h.After, h.After, r.c.ComponentID, strings.Join(parts, ", "))
+		r.log.Error("contract migration blocked by older versions", "migration", strings.Join(names, ","), "after", h.After,
+			"backends", old)
+		return problem.Wrap(errors.New(msg), "INTERNAL", nil)
+	}
 }

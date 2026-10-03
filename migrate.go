@@ -2,6 +2,7 @@ package besdk
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 
 	"github.com/brickKit/be-sdk-go/internal/config"
@@ -60,5 +61,19 @@ func migrateConfig(b *boot) (pg.MigrateConfig, error) {
 	return pg.MigrateConfig{Host: optString(v, "PG_MIGRATION_HOST", optString(v, "PG_HOST", "")),
 		Port: int(intOr(v, "PG_MIGRATION_PORT", intOr(v, "PG_PORT", 5432))), Database: optString(v, "PG_DATABASE", ""),
 		Owner: optString(v, "PG_OWNER_USER", ""), OwnerPassword: sec.Current(), Schema: optString(v, "PG_SCHEMA", ""),
-		ComponentID: b.id, Component: b.spec.Migrations, Logger: b.log}, nil
+		ComponentID: b.id, Component: b.spec.Migrations, Logger: b.log,
+		AuthzProjection: declaresResources(b.spec.Catalog)}, nil
+}
+
+// declaresResources reports whether Spec.Catalog has a non-empty resource_types array
+// (contract-infra-authz schemas/catalog.schema.json): only then does the schema get the authorization
+// projection tables (P11.3, CP-DB-04). boot validated the JSON already.
+func declaresResources(catalog string) bool {
+	if catalog == "" {
+		return false
+	}
+	var c struct {
+		ResourceTypes []json.RawMessage `json:"resource_types"`
+	}
+	return json.Unmarshal([]byte(catalog), &c) == nil && len(c.ResourceTypes) > 0
 }

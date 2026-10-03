@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/brickKit/be-sdk-go/internal/lifecycle"
 	"github.com/brickKit/be-sdk-go/internal/problem"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -35,11 +36,17 @@ type MigrateConfig struct {
 	ComponentID   string
 	Component     fs.FS // <version>_<name>.up.sql / .down.sql at the root, plus lifecycle.yaml
 	Logger        *slog.Logger
-	Now           func() time.Time // nil = time.Now; picks the outbox window's weeks
-	OutboxAhead   int              // weeks after the current one; 0 = 2
+	Now           func() time.Time       // nil = time.Now; picks the partition windows' units
+	OutboxAhead   int                    // weeks after the current one; 0 = 2
+	Version       string                 // the component's own version (semver): `-- be:contract after=` must be below it
+	Lifecycle     *lifecycle.Declaration // the loaded lifecycle.yaml; nil = no declared windows (outbox only)
+	// AuthzProjection: the component declares resource types, so besdk_authz_acl / _cursor are
+	// created (ddl/07, P11.3, CP-DB-04); false = they never are.
+	AuthzProjection bool
 
-	lockTimeout  time.Duration // tests only; 0 = MigrateLockTimeout
-	retryBackoff time.Duration // tests only; 0 = 1 s
+	lockTimeout   time.Duration // tests only; 0 = MigrateLockTimeout
+	retryBackoff  time.Duration // tests only; 0 = 1 s
+	contractProbe time.Duration // tests only; 0 = DefaultContractProbe
 }
 
 // MigrateResult says what a migration step found and did.

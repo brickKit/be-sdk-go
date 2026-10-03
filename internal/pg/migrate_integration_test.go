@@ -13,6 +13,7 @@ import (
 	"time"
 
 	beprotocol "github.com/brickKit/be-protocol"
+	"github.com/brickKit/be-sdk-go/internal/lifecycle"
 	"github.com/brickKit/be-sdk-go/internal/testpg"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -23,7 +24,8 @@ var migrateNow = utc("2026-10-03T10:00:00Z")
 func migrateConfig(id testpg.Identity, component fs.FS, log *slog.Logger) MigrateConfig {
 	return MigrateConfig{Host: id.Host, Port: id.Port, Database: id.Database, SSLMode: "disable",
 		Owner: id.Owner, OwnerPassword: id.OwnerPassword, Schema: id.Schema, ComponentID: "conformance/widget",
-		Component: component, Logger: log, Now: func() time.Time { return migrateNow }}
+		Component: component, Logger: log, Now: func() time.Time { return migrateNow },
+		AuthzProjection: true} // the widget declares resource types (CP-DB-04)
 }
 
 // referenceTables lists every table the reference DDL creates (be_bus.sql excluded).
@@ -192,4 +194,49 @@ func TestMigrateUpRefusesAMissingVersion(t *testing.T) {
 	_, err = MigrateUp(within(t, 60e9), migrateConfig(id, gap, nil))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "version 2")
+}
+
+// fixtureFS is the widget fixture's reference schema in golang-migrate's layout, plus its
+// lifecycle.yaml (be-protocol fixtures/widget).
+func fixtureFS(t *testing.T) fstest.MapFS {
+	sql, err := fs.ReadFile(beprotocol.FS, "fixtures/widget/migrations/0001_widget.sql")
+	require.NoError(t, err)
+	yml, err := fs.ReadFile(beprotocol.FS, "fixtures/widget/migrations/lifecycle.yaml")
+	require.NoError(t, err)
+	return fstest.MapFS{"0001_widget.up.sql": {Data: sql}, "0001_widget.down.sql": {Data: []byte("SELECT 1;")},
+		"lifecycle.yaml": {Data: yml}}
+}
+
+// CP-LIFE-01: a database migrated on any day accepts writes that day. The platform migration creates,
+// as the owner and after the platform DDL, the window of the outbox and of every partitioned table of
+// lifecycle.yaml, followers included (P11.3, P16.6).
+func TestMigrateCreatesTheDeclaredWindows(t *testing.T) {
+	for _, major := range []string{"16", "14"} {
+		t.Run("pg"+major, func(t *testing.T) {
+			id := testpg.NewOn(t, major)
+			fsys := fixtureFS(t)
+			decl, err := lifecycle.Load(fsys)
+			require.NoError(t, err)
+			c := migrateConfig(id, fsys, nil)
+			c.Lifecycle = decl
+			r, err := MigrateUp(within(t, 60e9), c)
+			require.NoError(t, err)
+			for _, p := range []string{"besdk_outbox_2026w40", "widgets_2026_10_01", "widgets_2027_01_01", "widget_lines_2026_10_01",
+				"widget_ledger_2026_12_01", "widget_audit_2026_11_01", "widget_jobs_2026_09_28", "widget_jobs_2026_10_12"} {
+				require.Contains(t, r.PartitionsCreated, p)
+			}
+			require.Len(t, r.PartitionsCreated, 3+4*4+3)
+
+			_, s := standalone(t, id, 1)
+			require.NoError(t, s.Run(within(t, 10e9), TxOptions{}, func(ctx context.Context, tx *Tx) error {
+				_, err := tx.ExecContext(ctx, `INSERT INTO widget_jobs (id, created_at, widget_id, kind, state, updated_at)
+				  VALUES ($1, now(), 'w1', 'approved', 'PENDING', now())`, uuid.Must(uuid.NewV7()))
+				return err
+			}), "a row for today goes in")
+
+			r, err = MigrateUp(within(t, 60e9), c)
+			require.NoError(t, err)
+			require.Empty(t, r.PartitionsCreated, "the second run creates nothing")
+		})
+	}
 }

@@ -13,19 +13,25 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
 
-// MigrateUp runs the component's migrations, then the platform migration, then ensures the outbox's
-// current partition window, all as the owner on a dedicated connection (P11.1, P11.3, P16.6). Running
-// it twice changes nothing the second time. A schema newer than the image is left untouched with a
-// WARN and no error (P1.8).
+// MigrateUp runs the component's migrations, then the platform migration, then creates the current
+// partition window of the outbox and of every partitioned table of lifecycle.yaml, all as the owner on
+// a dedicated connection (P11.1, P11.3, P16.6). Running it twice changes nothing the second time. A
+// schema newer than the image is left untouched with a WARN and no error (P1.8).
 //
-// Decision tree: invalid config → error; dirty state → error; schema newer than image → WARN, return;
-// otherwise component up (each step retried on 55P03), platform up (same), window, result.
+// Decision tree: invalid config or a malformed file header → error before anything runs; dirty state →
+// error; schema newer than image → WARN, return; otherwise component up one file at a time (each
+// retried on 55P03; a `-- be:contract after=` file first waits for no older version to run, else
+// error with the earlier files applied, P11.4), platform up (same), window, result.
 func MigrateUp(ctx context.Context, c MigrateConfig) (MigrateResult, error) {
 	r, err := newRunner(c)
 	if err != nil {
 		return MigrateResult{}, err
 	}
 	latest, err := LatestVersion(c.Component)
+	if err != nil {
+		return MigrateResult{}, err
+	}
+	headers, err := migrationHeaders(c.Component, c.Version)
 	if err != nil {
 		return MigrateResult{}, err
 	}
@@ -43,14 +49,17 @@ func MigrateUp(ctx context.Context, c MigrateConfig) (MigrateResult, error) {
 		return res, nil
 	}
 	if latest > from {
-		if res.To, err = r.up(ctx, func() (source.Driver, error) { return iofs.New(c.Component, ".") }, ComponentStateTable(c.Schema)); err != nil {
+		if res.To, err = r.up(ctx, func() (source.Driver, error) { return iofs.New(c.Component, ".") }, ComponentStateTable(c.Schema), r.contractGate(headers)); err != nil {
 			return res, err
 		}
 		if res.To != latest {
 			return res, problem.Wrap(fmt.Errorf("schema is at version %d, which the image's migrations do not contain (latest %d)", res.To, latest), "INTERNAL", nil)
 		}
 	}
-	if _, err := r.up(ctx, func() (source.Driver, error) { return newPlatformSource(c.ComponentID) }, PlatformStateTable(c.Schema)); err != nil {
+	if _, err := r.up(ctx, func() (source.Driver, error) { return newPlatformSource(c.ComponentID) }, PlatformStateTable(c.Schema), nil); err != nil {
+		return res, err
+	}
+	if err := r.ensureAuthzProjection(ctx); err != nil {
 		return res, err
 	}
 	if res.PartitionsCreated, err = r.ensureWindow(ctx); err != nil {
@@ -128,28 +137,68 @@ func (r *runner) migrator(src func() (source.Driver, error), table string) (*gom
 }
 
 // up applies every pending migration of one source one step at a time, checking ctx between steps
-// (a cancelled step is never cut in half), and returns the version reached.
-func (r *runner) up(ctx context.Context, src func() (source.Driver, error), table string) (uint, error) {
+// (a cancelled step is never cut in half), and returns the version reached, also on error. gate, when
+// set, is asked before each file with the file's version.
+func (r *runner) up(ctx context.Context, src func() (source.Driver, error), table string, gate func(context.Context, uint) error) (uint, error) {
+	s, err := src()
+	if err != nil {
+		return 0, problem.Wrap(err, "INTERNAL", nil)
+	}
+	defer func() { _ = s.Close() }()
 	m, closeFn, err := r.migrator(src, table)
 	if err != nil {
 		return 0, err
 	}
 	defer closeFn()
 	for {
-		if err := ctx.Err(); err != nil {
-			return 0, problem.From(err)
-		}
-		err := r.withLockRetry(ctx, m, func() error { return m.Steps(1) })
-		if errors.Is(err, os.ErrNotExist) {
-			break
-		}
+		cur, err := current(m)
 		if err != nil {
-			return 0, problem.From(err)
+			return cur, err
+		}
+		if err := ctx.Err(); err != nil {
+			return cur, problem.From(err)
+		}
+		next, ok, err := nextVersion(s, m)
+		if err != nil || !ok {
+			return cur, err
+		}
+		if gate != nil {
+			if err := gate(ctx, next); err != nil {
+				return cur, err
+			}
+		}
+		if err := r.withLockRetry(ctx, m, func() error { return m.Steps(1) }); err != nil {
+			return cur, problem.From(err)
 		}
 	}
+}
+
+// current is the state table's version; 0 when no migration ran.
+func current(m *gomigrate.Migrate) (uint, error) {
 	v, _, err := m.Version()
 	if err != nil && !errors.Is(err, gomigrate.ErrNilVersion) {
 		return 0, problem.Wrap(err, "INTERNAL", nil)
 	}
 	return v, nil
+}
+
+// nextVersion is the version the next Steps(1) applies; ok is false when none is left.
+func nextVersion(s source.Driver, m *gomigrate.Migrate) (uint, bool, error) {
+	v, _, err := m.Version()
+	var next uint
+	switch {
+	case errors.Is(err, gomigrate.ErrNilVersion):
+		next, err = s.First()
+	case err != nil:
+		return 0, false, problem.Wrap(err, "INTERNAL", nil)
+	default:
+		next, err = s.Next(v)
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, problem.Wrap(err, "INTERNAL", nil)
+	}
+	return next, true, nil
 }
