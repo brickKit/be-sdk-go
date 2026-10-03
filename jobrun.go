@@ -37,6 +37,9 @@ func runJob(ctx context.Context, b *boot, name string) int {
 	if err := p.wireProducer(); err != nil {
 		return p.failCode("events", err)
 	}
+	if err := p.wireLifecycle(); err != nil {
+		return p.failCode("lifecycle", err)
+	}
 	if err := p.wireJobs(); err != nil {
 		return p.failCode("jobs", err)
 	}

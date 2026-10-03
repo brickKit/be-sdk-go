@@ -13,6 +13,7 @@ import (
 	"github.com/brickKit/be-sdk-go/internal/bus/jetstream"
 	"github.com/brickKit/be-sdk-go/internal/config"
 	"github.com/brickKit/be-sdk-go/internal/httpx"
+	"github.com/brickKit/be-sdk-go/internal/pg"
 	"github.com/brickKit/be-sdk-go/internal/telemetry"
 	"google.golang.org/grpc"
 )
@@ -40,6 +41,7 @@ type process struct {
 	dbm      *telemetry.DBMetrics
 	evm      *telemetry.EventMetrics
 	bus      *jetstream.Bus
+	pool     *pg.Pool
 	fatal    chan error // a fatal condition found in the background (P1.8)
 }
 
@@ -151,6 +153,9 @@ func (p *process) build(bg context.Context) int {
 	}
 	if err := p.wireEvents(); err != nil {
 		return p.failCode("events", err)
+	}
+	if err := p.wireLifecycle(); err != nil {
+		return p.failCode("lifecycle", err)
 	}
 	if err := p.wireJobs(); err != nil {
 		return p.failCode("jobs", err)

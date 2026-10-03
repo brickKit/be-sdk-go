@@ -36,6 +36,7 @@ type Module struct {
 	Jobs        []Job                           // scheduled jobs: every, singleton, cron (P14)
 	Workers     []Worker                        // consumers of tx.Enqueue's queued jobs (P14 "queue")
 	Reconcilers []ReconcilerRunner              // NewReconciler's results (P14 "reconciler")
+	Lifecycle   LifecycleHooks                  // the component's seal guards (P16)
 	Start       func(ctx context.Context) error // one-time initialisation, at most 30 s; never a loop
 	Stop        func(ctx context.Context) error // called once on shutdown, after the servers stopped
 }

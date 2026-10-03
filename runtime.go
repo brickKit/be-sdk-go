@@ -6,6 +6,7 @@ import (
 
 	"github.com/brickKit/be-sdk-go/internal/events"
 	"github.com/brickKit/be-sdk-go/internal/jobs"
+	"github.com/brickKit/be-sdk-go/internal/lifecycle"
 	"github.com/brickKit/be-sdk-go/internal/pg"
 	"github.com/brickKit/be-sdk-go/internal/problem"
 	"github.com/brickKit/be-sdk-go/internal/telemetry"
@@ -55,8 +56,9 @@ func (rt *Runtime) Now() time.Time { return rt.clock() }
 
 // runtimeDeps holds what the serving process wires into a Runtime after the configuration loaded.
 type runtimeDeps struct {
-	out      *outbound
-	store    *pg.Store
-	producer *events.Producer
-	jobs     *jobs.Engine
+	out       *outbound
+	store     *pg.Store
+	producer  *events.Producer
+	jobs      *jobs.Engine
+	lifecycle *lifecycle.Engine
 }

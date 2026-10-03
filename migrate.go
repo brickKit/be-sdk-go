@@ -62,7 +62,7 @@ func migrateConfig(b *boot) (pg.MigrateConfig, error) {
 		Port: int(intOr(v, "PG_MIGRATION_PORT", intOr(v, "PG_PORT", 5432))), Database: optString(v, "PG_DATABASE", ""),
 		Owner: optString(v, "PG_OWNER_USER", ""), OwnerPassword: sec.Current(), Schema: optString(v, "PG_SCHEMA", ""),
 		ComponentID: b.id, Component: b.spec.Migrations, Logger: b.log,
-		AuthzProjection: declaresResources(b.spec.Catalog)}, nil
+		AuthzProjection: declaresResources(b.spec.Catalog), Lifecycle: b.lifecycle, Version: b.version}, nil
 }
 
 // declaresResources reports whether Spec.Catalog has a non-empty resource_types array

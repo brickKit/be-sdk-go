@@ -27,11 +27,12 @@ func (p *process) wireStore() error {
 		Database: optString(v, "PG_DATABASE", ""), User: optString(v, "PG_USER", ""), Password: pw.Current,
 		MaxConns: poolMax, MinIdle: int(intOr(v, "PG_POOL_MIN_IDLE", 2)),
 		MaxLifetime: optDuration(v, "PG_CONN_MAX_LIFETIME", 30*time.Minute),
-		MaxIdleTime: optDuration(v, "PG_CONN_MAX_IDLE_TIME", 5*time.Minute), ApplicationName: p.b.id})
+		MaxIdleTime: optDuration(v, "PG_CONN_MAX_IDLE_TIME", 5*time.Minute), ApplicationName: pg.AppName(p.b.id, p.b.version)})
 	if err != nil {
 		return err
 	}
 	p.closers = append(p.closers, func(context.Context) { _ = pool.Close() })
+	p.pool = pool
 	m, err := telemetry.NewDBMetrics(p.b.member.Registerer())
 	if err != nil {
 		return err
@@ -49,13 +50,14 @@ func (p *process) wireStore() error {
 }
 
 // superviseStore runs the start-up probe until the identity and the migrations check out (P10.7,
-// P1.4), and keeps the outbox's partition window ahead (P16.6) until the lifecycle engine takes over.
+// P1.4) and keeps the versioned presence session open (P10.5, P11.4). Partition windows are the
+// lifecycle engine's (be.lifecycle, P16.6).
 func (p *process) superviseStore() {
 	if p.rt.deps.store == nil {
 		return
 	}
 	p.sup.Go("be.db.probe", p.probeLoop)
-	p.sup.Go("be.outbox.window", p.outboxWindowLoop)
+	p.sup.Go("be.db.presence", func(ctx context.Context) error { return p.pool.HoldPresence(ctx, 0) })
 }
 
 func (p *process) probeLoop(ctx context.Context) error {
@@ -106,24 +108,6 @@ func (p *process) reportOnce(last, msg, detail string) string {
 		return key
 	}
 	return last
-}
-
-func (p *process) outboxWindowLoop(ctx context.Context) error {
-	for {
-		err := p.rt.deps.store.Run(ctx, pg.TxOptions{}, func(ctx context.Context, tx *pg.Tx) error {
-			_, err := pg.EnsureOutboxWindow(ctx, tx, time.Now(), pg.DefaultOutboxAhead)
-			return err
-		})
-		wait := 6 * time.Hour
-		if err != nil && ctx.Err() == nil {
-			wait = time.Minute
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(wait):
-		}
-	}
 }
 
 func (p *process) migrationsInfo() MigrationsInfo {

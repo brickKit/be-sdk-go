@@ -187,13 +187,17 @@ func (p *process) profiles() []string {
 	if p.auth != nil {
 		out = append(out, "auth")
 	}
+	if declaresResources(p.b.spec.Catalog) {
+		out = append(out, "scope")
+	}
 	if p.grpcSrv != nil {
 		out = append(out, "grpc")
 	}
+	out = append(out, p.eventProfiles()...)
 	if p.hasDatabase() {
-		out = append(out, "db")
+		out = append(out, "db", "jobs", "lifecycle") // jobs and lifecycle: "the component has a database"
 	}
-	return append(out, p.eventProfiles()...)
+	return out
 }
 
 // capabilities lists the optional protocol capabilities this process offers (P20.4): job_run when it

@@ -42,7 +42,7 @@ deployment:
 var thingMigrations = fstest.MapFS{
 	"0001_things.up.sql":   {Data: []byte("CREATE TABLE things (id uuid PRIMARY KEY, name text NOT NULL);")},
 	"0001_things.down.sql": {Data: []byte("DROP TABLE things;")},
-	"lifecycle.yaml":       {Data: []byte("version: 1\ntables: {}\n")},
+	"lifecycle.yaml":       {Data: []byte("lifecycle: v1\ntables:\n  things: {class: master}\n")},
 }
 
 func dbEnv(t *testing.T, id testpg.Identity) map[string]string {

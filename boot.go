@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/brickKit/be-sdk-go/internal/config"
+	"github.com/brickKit/be-sdk-go/internal/lifecycle"
 	"github.com/brickKit/be-sdk-go/internal/logx"
 	"github.com/brickKit/be-sdk-go/internal/problem"
 	"github.com/brickKit/be-sdk-go/internal/telemetry"
@@ -25,18 +26,20 @@ type processEnv struct {
 
 // boot is one component's configuration, logging and telemetry, built before anything listens.
 type boot struct {
-	spec      Spec
-	id        string
-	version   string
-	man       manifest
-	vals      *config.Values
-	log       *slog.Logger
-	catalogue *problem.Catalogue
-	locale    string
-	platform  *telemetry.Platform
-	member    *telemetry.Member
-	secretM   *telemetry.SecretMetrics
-	instance  string // service.instance.id: the container or pod; job and lease holders (P14)
+	spec         Spec
+	id           string
+	version      string
+	man          manifest
+	vals         *config.Values
+	log          *slog.Logger
+	catalogue    *problem.Catalogue
+	locale       string
+	platform     *telemetry.Platform
+	member       *telemetry.Member
+	secretM      *telemetry.SecretMetrics
+	lifecycle    *lifecycle.Declaration // migrations/lifecycle.yaml (P16.1); nil without a database
+	lifecycleCfg lifecycle.Config       // DATA_LIFECYCLE (P16.9)
+	instance     string                 // service.instance.id: the container or pod; job and lease holders (P14)
 }
 
 // configFailure is a start failure that exits 78 (P1.2): every problem gets one log line naming its key.
@@ -83,6 +86,9 @@ func bootstrap(ctx context.Context, s Spec, pe processEnv) (*boot, error) {
 	}
 	if s.Catalog != "" && !json.Valid([]byte(s.Catalog)) {
 		return nil, &configFailure{errs: []*config.Error{{Reason: config.ReasonInvalid, Key: "Spec.Catalog", Detail: "not valid JSON (authzgen.CatalogJSON)"}}}
+	}
+	if err := loadLifecycle(b); err != nil {
+		return nil, &configFailure{errs: asConfigErrors(err)}
 	}
 	if err := b.initTelemetry(ctx, pe); err != nil {
 		return nil, err

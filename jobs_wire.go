@@ -125,7 +125,11 @@ func (p *process) runtimeJobs() []jobs.Job {
 	if p.rt.deps.store == nil {
 		return nil
 	}
-	return []jobs.Job{cleanupJob(p.rt)}
+	out := []jobs.Job{cleanupJob(p.rt)}
+	if p.rt.deps.lifecycle != nil {
+		out = append(out, lifecycleJob(p.rt))
+	}
+	return out
 }
 
 // wireJobs builds the job engine after New declared the module's jobs.

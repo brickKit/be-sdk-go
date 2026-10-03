@@ -32,6 +32,7 @@ func TestPublishAndConsumeThroughRuntime(t *testing.T) {
 	migrations := fstest.MapFS{
 		"0001_things.up.sql":   {Data: []byte("CREATE TABLE things (id uuid PRIMARY KEY, name text NOT NULL); CREATE TABLE seen (name text PRIMARY KEY, hop int NOT NULL);")},
 		"0001_things.down.sql": {Data: []byte("DROP TABLE seen; DROP TABLE things;")},
+		"lifecycle.yaml":       {Data: []byte("lifecycle: v1\ntables:\n  things: {class: master}\n  seen: {class: snapshot}\n")},
 	}
 	spec := Spec{ID: "test/thing", Manifest: []byte(manifest), Migrations: migrations, Contracts: contracts,
 		New: func(_ context.Context, rt *Runtime) (*Module, error) {
