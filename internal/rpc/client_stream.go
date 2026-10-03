@@ -24,7 +24,7 @@ func (ch *clientChain) deadlineStream(ctx context.Context, desc *grpc.StreamDesc
 	cs, err := streamer(ctx, desc, cc, method, opts...)
 	if err != nil {
 		cancel()
-		return nil, restore(err)
+		return nil, ch.restore(err)
 	}
 	context.AfterFunc(cs.Context(), cancel)
 	return cs, nil

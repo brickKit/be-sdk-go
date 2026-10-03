@@ -51,12 +51,17 @@ type ServerConfig struct {
 	Inbound func(ctx context.Context, requestID string, c Caller) context.Context
 	// Domain is the member's component ID: an error with a reason but no domain (besdk.Errorf) is its.
 	Domain string
+	// UserFacing lists the full method names ("/pkg.Service/Method") of user-facing rpcs kept in the
+	// contract: they answer UNAUTHENTICATED / TOKEN_INVALID before any component code runs, because a
+	// system call never carries a user token (P7.3, stage-B ruling).
+	UserFacing []string
 }
 
 // NewServer returns the gRPC server of one member with the parameters of P7.5 and the interceptor
 // chain of P7.4, unary and streaming alike: panic recovery with error normalisation, the access log
 // and RED metrics (outermost, so every outcome is normalised, logged and counted) → identity →
-// deadline floor → batch limit → the service. Tracing is otelgrpc's stats handler, which encloses
+// deadline floor → decode check (REQUEST_INVALID) and batch limit → the service; a user-facing rpc
+// (ServerConfig.UserFacing) is refused at the identity layer. Tracing is otelgrpc's stats handler, which encloses
 // the whole call. Services are registered on the returned server as usual (generated
 // Register…Server); the batch limits cover all of them, because they are read from each request's
 // own message descriptor.
@@ -72,6 +77,7 @@ func NewServer(c ServerConfig) *grpc.Server {
 			MaxConnectionAge: age, MaxConnectionAgeGrace: MaxConnectionAgeGrace}),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime: KeepaliveMinTime, PermitWithoutStream: false}),
+		grpc.ForceServerCodecV2(newRequestCodec(&s.bad)),
 		grpc.StatsHandler(otelgrpc.NewServerHandler(otelOptions(c.TracerProvider, c.MeterProvider, c.Propagator)...)),
 		grpc.ChainUnaryInterceptor(s.reportUnary, s.identityUnary, s.deadlineUnary, s.batchUnary),
 		grpc.ChainStreamInterceptor(s.reportStream, s.identityStream, s.deadlineStream, s.batchStream),

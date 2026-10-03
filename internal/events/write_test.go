@@ -129,6 +129,9 @@ func TestPrepareEnforcesTheLegalEntity(t *testing.T) {
 	requireInternal(t, err, envelope.ReasonLegalEntityMissing)
 }
 
+// P12.2 (stage-B ruling): a payload is at most 64 KiB (65,536 bytes of serialised JSON); a larger
+// one is refused at publish, naming the subject and the size (rc.2 vectors
+// envelope.headers.payload-at-limit / payload-too-large).
 func TestPayloadSizeLimits(t *testing.T) {
 	big := func(n int) Outgoing {
 		ev := reverted(1)
@@ -136,18 +139,18 @@ func TestPayloadSizeLimits(t *testing.T) {
 			"status": "DRAFT", "reason": "RESERVATION_EXPIRED", "version": 1}
 		return ev
 	}
+	sizeOf := func(ev Outgoing) int { b, _ := json.Marshal(ev.Payload); return len(b) }
+	fill := PayloadLimitBytes - sizeOf(big(0)) // the filler that makes the payload exactly 64 KiB
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
-	_, err := widgetProducer(t, log).prepare(context.Background(), big(70<<10))
+	atLimit := big(fill)
+	require.Equal(t, 65536, sizeOf(atLimit))
+	_, err := widgetProducer(t, log).prepare(context.Background(), atLimit)
 	require.NoError(t, err)
-	require.Contains(t, buf.String(), "level=WARN")
-	require.Contains(t, buf.String(), "64 KiB")
+	require.Empty(t, buf.String(), "no warning: the limit is a hard one")
 
-	buf.Reset()
-	_, err = widgetProducer(t, log).prepare(context.Background(), big(10<<10))
-	require.NoError(t, err)
-	require.Empty(t, buf.String())
-
-	_, err = widgetProducer(t, log).prepare(context.Background(), big(1<<20))
-	requireInternal(t, err, "1 MiB")
+	_, err = widgetProducer(t, log).prepare(context.Background(), big(fill+1))
+	requireInternal(t, err, "PAYLOAD_TOO_LARGE")
+	require.Contains(t, err.Error(), "65537 bytes")
+	require.Contains(t, err.Error(), "conformance.widget.reverted.v1")
 }

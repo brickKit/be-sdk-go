@@ -111,8 +111,18 @@ func TestGuardWithoutBundle(t *testing.T) {
 	if s, b := call(eng, "GET", "/erp/sales/orders", "Bearer good"); s != 503 || b["reason"] != "AUTHZ_NOT_READY" {
 		t.Fatalf("%d %v", s, b)
 	}
-	if s, _ := call(eng, "GET", "/erp/sales/me", "Bearer good"); s != 200 {
-		t.Fatalf("Authenticated route before the bundle: %d", s)
+	// stage-B ruling (P1.5 / P6.2): the token is verified first, then every non-Public route,
+	// Authenticated included, answers 503 until the first bundle (fail closed).
+	if s, b := call(eng, "GET", "/erp/sales/me", "Bearer good"); s != 503 || b["reason"] != "AUTHZ_NOT_READY" {
+		t.Fatalf("Authenticated route before the bundle: %d %v", s, b)
+	}
+	for _, path := range []string{"/erp/sales/me", "/erp/sales/orders"} {
+		if s, b := call(eng, "GET", path, ""); s != 401 || b["reason"] != "TOKEN_INVALID" {
+			t.Fatalf("%s without a token before the bundle: %d %v", path, s, b)
+		}
+		if s, b := call(eng, "GET", path, "Bearer bad"); s != 401 || b["reason"] != "TOKEN_INVALID" {
+			t.Fatalf("%s with a bad token before the bundle: %d %v", path, s, b)
+		}
 	}
 	if s, _ := call(eng, "GET", "/erp/sales/public", ""); s != 200 {
 		t.Fatalf("public route before the bundle: %d", s)

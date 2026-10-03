@@ -11,11 +11,13 @@ import (
 // no streaming rpcs of its own (P7.11), but the health service's Watch is one, and a server must not
 // let a stream bypass the chain.
 
-// wrappedStream replaces a server stream's context and checks each received message's batch limits.
+// wrappedStream replaces a server stream's context and checks that each received message decoded and
+// is within its batch limits.
 type wrappedStream struct {
 	grpc.ServerStream
 	ctx   context.Context
 	batch *batchLimits
+	bad   *malformed // the server's undecodable messages (REQUEST_INVALID)
 }
 
 func (w *wrappedStream) Context() context.Context { return w.ctx }
@@ -23,6 +25,11 @@ func (w *wrappedStream) Context() context.Context { return w.ctx }
 func (w *wrappedStream) RecvMsg(m any) error {
 	if err := w.ServerStream.RecvMsg(m); err != nil {
 		return err
+	}
+	if w.bad != nil {
+		if e := w.bad.take(m); e != nil {
+			return e
+		}
 	}
 	if w.batch != nil {
 		if e := w.batch.check(m); e != nil {
@@ -34,7 +41,7 @@ func (w *wrappedStream) RecvMsg(m any) error {
 
 func withContext(ss grpc.ServerStream, ctx context.Context) grpc.ServerStream {
 	if w, ok := ss.(*wrappedStream); ok {
-		return &wrappedStream{ServerStream: w.ServerStream, ctx: ctx, batch: w.batch}
+		return &wrappedStream{ServerStream: w.ServerStream, ctx: ctx, batch: w.batch, bad: w.bad}
 	}
 	return &wrappedStream{ServerStream: ss, ctx: ctx}
 }
@@ -73,5 +80,5 @@ func (s *serverChain) batchStream(srv any, ss grpc.ServerStream, _ *grpc.StreamS
 	if !ok {
 		w = &wrappedStream{ServerStream: ss, ctx: ss.Context()}
 	}
-	return next(srv, &wrappedStream{ServerStream: w.ServerStream, ctx: w.ctx, batch: &s.batch})
+	return next(srv, &wrappedStream{ServerStream: w.ServerStream, ctx: w.ctx, batch: &s.batch, bad: &s.bad})
 }

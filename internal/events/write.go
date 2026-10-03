@@ -14,12 +14,10 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 )
 
-// Payload size limits (P12.2): a payload stays under 64 KiB (larger content goes through a claim
-// check); 1 MiB is the hard limit enforced at publish.
-const (
-	PayloadWarnBytes  = 64 << 10
-	PayloadLimitBytes = 1 << 20
-)
+// PayloadLimitBytes is the payload size limit of P12.2: at most 64 KiB (65,536 bytes of serialised
+// JSON); a larger payload is refused at publish (stage-B ruling), larger content goes through a claim
+// check. The bus's own 1 MiB message limit is never reached by a valid event.
+const PayloadLimitBytes = 64 << 10
 
 // Producer is the publishing component, in a shell the member (P12 envelope: ce-source,
 // ce-dataschema; P12.2 contract; P12.16 declared subjects).
@@ -59,7 +57,7 @@ const insertOutbox = `INSERT INTO besdk_outbox (id, created_at, subject, aggrega
 
 // Write adds ev to the outbox inside the caller's business transaction and returns its id, the
 // ce-id (P12.1). The subject must be declared as published and be in the contract, the payload must
-// match the contract and stay ≤ 1 MiB (P12.2), a transaction-document event needs its legal entity
+// match the contract and stay ≤ 64 KiB (P12.2), a transaction-document event needs its legal entity
 // (P11.8); causation and hop come from ev.Origin (P12.8). A programming error of the component is
 // a *problem.Error INTERNAL with a clear cause; a database error is returned wrapped so that
 // Store.Run classifies it by SQLSTATE (and re-runs the transaction on 40001 / 40P01, P10.4).
@@ -122,13 +120,9 @@ func (p *Producer) marshal(ev Outgoing) ([]byte, error) {
 			return nil, programming("event %s: marshal payload: %v", ev.Subject, err)
 		}
 	}
-	switch {
-	case len(b) > PayloadLimitBytes:
-		return nil, programming("event %s: payload of %d bytes is above the 1 MiB hard limit; use a claim check (P12.2)",
+	if len(b) > PayloadLimitBytes {
+		return nil, programming("PAYLOAD_TOO_LARGE: event %s: payload of %d bytes is above the 64 KiB limit; use a claim check (P12.2)",
 			ev.Subject, len(b))
-	case len(b) > PayloadWarnBytes:
-		logger(p.Logger).Warn("event payload above 64 KiB; use a claim check (P12.2)",
-			"subject", ev.Subject, "bytes", len(b))
 	}
 	return b, nil
 }

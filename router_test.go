@@ -105,14 +105,37 @@ func TestRouterBodyLimit(t *testing.T) {
 func TestBindInvalidJSON(t *testing.T) {
 	eng, r, _ := newTestRouter(t)
 	POST(r, "/j", Public, func(c *gin.Context) {
-		_, err := Bind[struct{ N int }](c)
+		_, err := Bind[struct {
+			N int `json:"n"`
+		}](c)
 		Fail(c, err)
 	})
 	rec := httptest.NewRecorder()
 	eng.ServeHTTP(rec, httptest.NewRequest("POST", "/erp/sales/j", strings.NewReader(`{"n":"x"}`)))
 	var p problem.Problem
 	_ = json.Unmarshal(rec.Body.Bytes(), &p)
-	if rec.Code != 400 || p.Code != "INVALID_ARGUMENT" || p.Domain != "erp/sales" || len(p.Violations) != 1 {
+	// stage-B ruling: a malformed request the SDK detects is be/REQUEST_INVALID with violations.
+	if rec.Code != 400 || p.Code != "INVALID_ARGUMENT" || p.Domain != "be" || p.Reason != "REQUEST_INVALID" ||
+		len(p.Violations) != 1 || p.Violations[0].Field != "n" {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if p.Title != "Invalid request" {
+		t.Fatalf("catalogue title: %q", p.Title)
+	}
+}
+
+func TestBindMissingBodyIsRequestInvalid(t *testing.T) {
+	eng, r, _ := newTestRouter(t)
+	POST(r, "/j", Public, func(c *gin.Context) {
+		_, err := Bind[struct{ N int }](c)
+		Fail(c, err)
+	})
+	rec := httptest.NewRecorder()
+	eng.ServeHTTP(rec, httptest.NewRequest("POST", "/erp/sales/j", strings.NewReader("")))
+	var p problem.Problem
+	_ = json.Unmarshal(rec.Body.Bytes(), &p)
+	if rec.Code != 400 || p.Domain != "be" || p.Reason != "REQUEST_INVALID" || len(p.Violations) != 1 ||
+		p.Violations[0].Field != "body" {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 }

@@ -14,7 +14,7 @@ import (
 type decision struct {
 	retry  bool
 	base   time.Duration // 10 ms · 2^(attempt−1), before jitter
-	reason string        // the SQLSTATE that caused a retry, the be_tx_retries_total label
+	reason string        // the SQLSTATE that caused a retry, be_tx_retries_total{sqlstate}
 	err    error         // when not retried
 }
 
@@ -23,8 +23,9 @@ type decision struct {
 //
 // Decision tree: a *problem.Error anywhere in the chain passes through unchanged; 40001 / 40P01
 // retry while attempt < maxAttempts; any other SQLSTATE (and a retryable one on the last attempt)
-// maps through problem.ClassifySQLState with the original error as Cause; without a SQLSTATE a
-// cancelled ctx is CANCELLED, an expired deadline STATEMENT_TIMEOUT, anything else INTERNAL.
+// maps through problem.ClassifySQLState with the original error as Cause (class 08 is
+// DEPENDENCY_UNAVAILABLE); without a SQLSTATE a cancelled ctx is CANCELLED, an expired deadline
+// STATEMENT_TIMEOUT, a lost connection DEPENDENCY_UNAVAILABLE {dependency: db}, anything else INTERNAL.
 func classifyAttempt(err error, attempt, maxAttempts int, ctxErr error) decision {
 	var pe *problem.Error
 	if errors.As(err, &pe) {
@@ -45,6 +46,9 @@ func classifyAttempt(err error, attempt, maxAttempts int, ctxErr error) decision
 		return decision{err: &problem.Error{Code: codes.Canceled, Cause: err}}
 	case problem.ContextDeadlineExceeded:
 		return decision{err: problem.Wrap(err, "STATEMENT_TIMEOUT", nil)}
+	}
+	if IsConnectionFailure(err) {
+		return decision{err: problem.DBUnavailable(err)}
 	}
 	return decision{err: problem.Wrap(err, "INTERNAL", nil)}
 }

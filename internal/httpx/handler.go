@@ -138,19 +138,30 @@ func (h *Handler) answer(w http.ResponseWriter, r *http.Request, buf *buffer, ho
 	return buf.code()
 }
 
+// accessLogLevel is the level of a user-plane access-log line (P3.10, P4.6 rc.2, stage-B ruling): by
+// the answer's code when a problem was written, else by the status — 500 ERROR, 503 and 504 WARN,
+// everything else (2xx, 4xx, 499, 501) INFO. Ops endpoints (quiet) log at DEBUG.
+func accessLogLevel(status int, perr *problem.Error, quiet bool) slog.Level {
+	switch {
+	case quiet:
+		return slog.LevelDebug
+	case perr != nil:
+		return problem.AccessLogLevel(perr.Code)
+	case status == http.StatusInternalServerError:
+		return slog.LevelError
+	case status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout:
+		return slog.LevelWarn
+	}
+	return slog.LevelInfo
+}
+
 func (h *Handler) accessLog(ctx context.Context, r *http.Request, route string, status int, d time.Duration,
 	perr *problem.Error, res result, attrs []slog.Attr) {
-	level := slog.LevelInfo
-	if h.Quiet != nil && h.Quiet(r.URL.Path) {
-		level = slog.LevelDebug
-	}
+	level := accessLogLevel(status, perr, h.Quiet != nil && h.Quiet(r.URL.Path))
 	all := []slog.Attr{slog.String("http.request.method", r.Method), slog.String("http.route", route),
 		slog.Int("http.response.status_code", status), slog.Int64("duration_ms", d.Milliseconds())}
 	all = append(all, attrs...)
 	if perr != nil {
-		if l, logged := problem.LogLevel(perr.Code); logged && l > level && level != slog.LevelDebug {
-			level = l
-		}
 		all = append(all, slog.String("error", perr.Error()), slog.String("error.code", problem.CodeName(perr.Code)),
 			slog.String("error.reason", perr.Reason))
 	}

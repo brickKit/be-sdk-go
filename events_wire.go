@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/brickKit/be-sdk-go/internal/bus/jetstream"
+	"github.com/brickKit/be-sdk-go/internal/config"
 	"github.com/brickKit/be-sdk-go/internal/envelope"
 	"github.com/brickKit/be-sdk-go/internal/events"
 	"github.com/brickKit/be-sdk-go/internal/logx"
@@ -103,14 +104,22 @@ func (p *process) superviseEvents() {
 	}
 }
 
-func (p *process) consumer(s Subscription) *events.Consumer {
-	maxDeliver := int(intOr(p.b.vals, "EVENTS_MAX_DELIVER", int64(s.MaxDeliver)))
+// subscriptionLimits resolves a subscription's redelivery limits (P12.5): EVENTS_MAX_DELIVER and
+// EVENTS_BACKOFF override the subscription only when set (they have no catalogue default); otherwise
+// its own MaxDeliver / Backoff apply, and 0 / empty leave the built-in 8 and 1s…1h to internal/events.
+func subscriptionLimits(vals *config.Values, s Subscription) (int, []time.Duration) {
+	maxDeliver := int(intOr(vals, "EVENTS_MAX_DELIVER", int64(s.MaxDeliver)))
 	backoff := s.Backoff
-	if declared(p.b.vals, "EVENTS_BACKOFF") {
-		if d, ok := p.b.vals.Durations("EVENTS_BACKOFF"); ok {
+	if declared(vals, "EVENTS_BACKOFF") {
+		if d, ok := vals.Durations("EVENTS_BACKOFF"); ok {
 			backoff = d
 		}
 	}
+	return maxDeliver, backoff
+}
+
+func (p *process) consumer(s Subscription) *events.Consumer {
+	maxDeliver, backoff := subscriptionLimits(p.b.vals, s)
 	if p.rt.deps.producer != nil && s.AggregateType == "" {
 		if def, own := p.rt.deps.producer.Contract.Lookup(s.Subject); own {
 			s.AggregateType, s.TransactionDocument = def.AggregateType, def.TransactionDocument

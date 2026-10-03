@@ -140,3 +140,19 @@ func TestExternalHTTPStripsInternalHeaders(t *testing.T) {
 		t.Fatal("ordinary header lost")
 	}
 }
+
+// A user-plane dependency that refuses the connection is UNAVAILABLE / be DEPENDENCY_UNAVAILABLE
+// naming its component ID (stage-B ruling; P4 rc.2).
+func TestUserHTTPUnreachableIsDependencyUnavailable(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	addr := srv.URL
+	srv.Close() // nothing listens there now
+	rt := testRuntime(t, map[string]string{"ERP_INVENTORY_ENDPOINT": addr}, nil)
+	c, _ := rt.UserHTTP("erp/inventory")
+	err := c.JSON(withUser(context.Background(), "u1", "Bearer tok"), "GET", "/x", nil, nil)
+	var pe *problem.Error
+	if !errors.As(err, &pe) || pe.Reason != "DEPENDENCY_UNAVAILABLE" || pe.Domain != "be" ||
+		pe.Metadata["dependency"] != "erp/inventory" || pe.HTTPStatus() != 503 {
+		t.Fatalf("%#v", err)
+	}
+}

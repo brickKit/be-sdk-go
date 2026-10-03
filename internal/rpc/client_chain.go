@@ -55,12 +55,18 @@ func outboundContext(ctx context.Context) (context.Context, context.CancelFunc, 
 }
 
 // restore returns every error a call ends with as a *problem.Error, the dependency's domain and
-// reason kept (P4.2, P4.9).
-func restore(err error) error {
+// reason kept (P4.2, P4.9). UNAVAILABLE without an ErrorInfo of the dependency's own (the connection
+// was refused or reset, nothing answered) is DEPENDENCY_UNAVAILABLE naming the dependency (stage-B
+// ruling; P4 rc.2).
+func (ch *clientChain) restore(err error) error {
 	if err == nil {
 		return nil
 	}
-	return problem.From(err)
+	e := problem.From(err)
+	if e.Code == codes.Unavailable && e.Reason == "" {
+		return problem.DependencyUnavailable(ch.dep, err)
+	}
+	return e
 }
 
 func (ch *clientChain) deadlineUnary(ctx context.Context, method string, req, reply any,
@@ -70,7 +76,7 @@ func (ch *clientChain) deadlineUnary(ctx context.Context, method string, req, re
 	if err != nil {
 		return err
 	}
-	return restore(invoker(ctx, method, req, reply, cc, opts...))
+	return ch.restore(invoker(ctx, method, req, reply, cc, opts...))
 }
 
 func (ch *clientChain) bulkheadUnary(ctx context.Context, method string, req, reply any,

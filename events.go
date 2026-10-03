@@ -45,8 +45,8 @@ type Subscription struct {
 	TransactionDocument bool
 	Apply               func(ctx context.Context, tx *Tx, ev Event) error // local writes, in the cursor's tx
 	Run                 func(ctx context.Context, ev Event) error         // outside any transaction
-	MaxDeliver          int                                               // 0 = EVENTS_MAX_DELIVER or 8; counted by the SDK
-	Backoff             []time.Duration                                   // nak delays; EVENTS_BACKOFF overrides
+	MaxDeliver          int                                               // 0 = 8; EVENTS_MAX_DELIVER, when set, overrides (P12.5)
+	Backoff             []time.Duration                                   // nak delays, empty = 1s…1h; EVENTS_BACKOFF, when set, overrides
 	Concurrency         int                                               // default 4
 }
 

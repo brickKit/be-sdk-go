@@ -15,7 +15,6 @@ import (
 	"github.com/brickKit/be-sdk-go/internal/problem"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
-	"google.golang.org/grpc/codes"
 )
 
 // UserHTTP calls another component's user plane on behalf of the current user (P8.1, P8.2): it
@@ -110,7 +109,7 @@ func (c *UserHTTP) send(req *http.Request) (*http.Response, error) {
 	c.o.httpM.Requests.WithLabelValues(c.dep, req.Method, status).Inc()
 	c.o.httpM.Duration.WithLabelValues(c.dep, req.Method).Observe(time.Since(start).Seconds())
 	if err != nil {
-		return nil, unavailable(err, req.Context())
+		return nil, c.unavailable(err, req.Context())
 	}
 	return resp, nil
 }
@@ -140,7 +139,7 @@ func (c *UserHTTP) JSON(ctx context.Context, method, path string, in, out any) e
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
-		return unavailable(err, ctx)
+		return c.unavailable(err, ctx)
 	}
 	if resp.StatusCode >= 400 {
 		return problem.RestoreHTTP(resp.StatusCode, raw)
@@ -152,12 +151,12 @@ func (c *UserHTTP) JSON(ctx context.Context, method, path string, in, out any) e
 }
 
 // unavailable classifies a transport failure: the caller's deadline → DEADLINE_EXCEEDED, anything
-// else UNAVAILABLE.
-func unavailable(err error, ctx context.Context) error {
+// else (refused, reset, no answer) DEPENDENCY_UNAVAILABLE naming the dependency (stage-B ruling).
+func (c *UserHTTP) unavailable(err error, ctx context.Context) error {
 	if ctx.Err() != nil {
 		return problem.From(ctx.Err())
 	}
-	return &problem.Error{Code: codes.Unavailable, Cause: err}
+	return problem.DependencyUnavailable(c.dep, err)
 }
 
 func newTransport(maxConns int) *http.Transport {

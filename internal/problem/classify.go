@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -36,6 +37,20 @@ func LogLevel(c codes.Code) (slog.Level, bool) {
 	return slog.LevelInfo, true
 }
 
+// AccessLogLevel is the level of a request's access-log line by the code it was answered with (P4.6,
+// rc.2 vectors errors access_log_level): ERROR for INTERNAL, UNKNOWN, DATA_LOSS (HTTP 500); WARN for
+// UNAVAILABLE and DEADLINE_EXCEEDED (503, 504); INFO for everything else, CANCELLED included. Unlike
+// LogLevel, the line is always written.
+func AccessLogLevel(c codes.Code) slog.Level {
+	switch c {
+	case codes.Internal, codes.Unknown, codes.DataLoss:
+		return slog.LevelError
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return slog.LevelWarn
+	}
+	return slog.LevelInfo
+}
+
 // ContextState is what the unit of work's context said when a statement failed.
 type ContextState int
 
@@ -58,6 +73,9 @@ type Classification struct {
 // ClassifySQLState decides what a failed attempt becomes (P10.4, vectors errors/sqlstate). attempt is
 // 1-based. mapped is the component's own mapping of a unique violation (23505), if any.
 func ClassifySQLState(state string, attempt int, ctx ContextState, mapped *Error) Classification {
+	if IsDBUnreachableState(state) {
+		return Classification{Err: DBUnavailable(nil)}
+	}
 	switch state {
 	case "40001", "40P01":
 		if attempt < MaxTxAttempts {
@@ -83,4 +101,27 @@ func ClassifySQLState(state string, attempt int, ctx ContextState, mapped *Error
 		}
 	}
 	return Classification{Err: Be("INTERNAL", nil)}
+}
+
+// DependencyDB is metadata.dependency of DEPENDENCY_UNAVAILABLE when the database cannot be reached.
+const DependencyDB = "db"
+
+// DependencyUnavailable is UNAVAILABLE / be DEPENDENCY_UNAVAILABLE naming what cannot be reached: "db",
+// a dependency's component ID, or "bus" (stage-B ruling). cause stays for the log.
+func DependencyUnavailable(dependency string, cause error) *Error {
+	return Wrap(cause, "DEPENDENCY_UNAVAILABLE", map[string]string{"dependency": dependency})
+}
+
+// DBUnavailable is DependencyUnavailable for the database: connection refused, a connect that timed
+// out, a lost connection, SQLSTATE class 08.
+func DBUnavailable(cause error) *Error { return DependencyUnavailable(DependencyDB, cause) }
+
+// IsDBUnreachableState reports the SQLSTATEs of a database that cannot be reached: class 08
+// (connection exception) and 57P01 / 57P02 / 57P03 (shutdown, crash, cannot connect now) (P4, rc.2).
+func IsDBUnreachableState(state string) bool {
+	switch state {
+	case "57P01", "57P02", "57P03":
+		return true
+	}
+	return strings.HasPrefix(state, "08")
 }

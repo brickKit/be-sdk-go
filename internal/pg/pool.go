@@ -161,13 +161,17 @@ func leadingInt(s string) (int, string) {
 }
 
 // connectError classifies a failure to obtain a connection: 53300 is DB_TOO_MANY_CONNECTIONS (P10.4);
-// the caller's cancellation or deadline is reported as such; anything else is INTERNAL.
+// the caller's cancellation or deadline is reported as such; an unreachable database is
+// DEPENDENCY_UNAVAILABLE {dependency: db} (stage-B ruling); anything else is INTERNAL.
 func connectError(ctx context.Context, err error) error {
 	if SQLState(err) == "53300" {
 		return problem.Wrap(err, "DB_TOO_MANY_CONNECTIONS", nil)
 	}
 	if ctx.Err() != nil {
 		return problem.From(ctx.Err())
+	}
+	if IsConnectionFailure(err) {
+		return problem.DBUnavailable(err)
 	}
 	return problem.Wrap(err, "INTERNAL", nil)
 }

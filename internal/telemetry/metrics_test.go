@@ -68,7 +68,7 @@ func TestProtocolMetricGroups(t *testing.T) {
 	gc.Inflight.WithLabelValues("erp/inventory").Inc()
 	db.PoolInUse.Set(3)
 	db.PoolWait.Observe(0.001)
-	db.TxRetries.WithLabelValues("serialization_failure").Inc()
+	db.TxRetries.WithLabelValues("40001").Inc()
 	db.IdentityOK.Set(1)
 	sm.ReloadFailures.WithLabelValues("PG_PASSWORD").Inc()
 	ev.OutboxPending.Set(2)
@@ -93,7 +93,7 @@ func TestProtocolMetricGroups(t *testing.T) {
 		"be_outbound_inflight":            "gauge target",
 		"be_db_pool_in_use":               "gauge ",
 		"be_db_pool_wait_seconds":         "histogram ",
-		"be_tx_retries_total":             "counter reason",
+		"be_tx_retries_total":             "counter sqlstate",
 		"be_db_identity_ok":               "gauge ",
 		"be_secret_reload_failures_total": "counter key",
 		"be_outbox_pending":               "gauge ",

@@ -86,9 +86,12 @@ func serviceAttrs(name, version string) []attribute.KeyValue {
 }
 
 // newTracerProvider returns a provider with its own batch span processor over the shared exporter (whose
-// Shutdown is a no-op, r1-01 S3), sampling every span so trace ids exist even without export (P18.1).
+// Shutdown is a no-op, r1-01 S3). Every root span is sampled, so trace ids exist even without export;
+// a span under an inbound unsampled traceparent follows its parent — kept trace ID, not recorded, flag
+// 0 propagated outbound (P18.1, stage-B ruling).
 func (p *Platform) newTracerProvider(res *resource.Resource) *sdktrace.TracerProvider {
-	opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(res), sdktrace.WithSampler(sdktrace.AlwaysSample())}
+	opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(res),
+		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.AlwaysSample()))}
 	if p.exporter != nil {
 		opts = append(opts, sdktrace.WithBatcher(sharedExporter{p.exporter}))
 	}

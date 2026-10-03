@@ -19,10 +19,11 @@ type value struct {
 }
 
 // resolve applies presence and default rules and parses one value strictly (P2.3, vectors
-// parse_value). present == false means the variable does not exist. A present value that does not
+// parse_value). present == false means the variable does not exist; an empty value counts as not set
+// for every format, plain strings included (P2.3, stage-B ruling: vectors rc.2 win). A present value that does not
 // parse is CONFIG_INVALID and never falls back to the default; a default that does not parse is too.
 func resolve(d Decl, raw string, present bool) (value, *Error) {
-	if present && raw == "" && !d.emptyIsValue() {
+	if present && raw == "" {
 		present = false
 	}
 	fromDefault := false

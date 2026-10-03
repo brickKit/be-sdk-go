@@ -18,7 +18,7 @@ type Decl struct {
 	Name         string   // the environment variable name
 	Type         string   // brickKit configSchema type: string, integer, boolean, object, array
 	Format       string   // protocol format, one of the Format* constants
-	Required     bool     // absent (or empty, for a typed key) is CONFIG_MISSING
+	Required     bool     // absent or empty is CONFIG_MISSING (P2.3)
 	Default      *string  // nil = no default; injected as written, parsed like a value
 	DefaultFrom  string   // when absent or empty: take this other declared key's value
 	ShellDefault *string  // the catalogue's default in a shell's own configuration (PG_POOL_MAX)
@@ -32,14 +32,10 @@ type Decl struct {
 	Protocol     bool     // a catalogue key (P2.8) rather than the component's own
 }
 
-// emptyIsValue reports whether an empty value is a value rather than "not set": only for plain strings
-// (vectors config README, "Presence"; brickKit's ${NAME:-}).
-func (d Decl) emptyIsValue() bool { return d.Format == FormatString }
-
-// defaultText returns the default to inject, if any. An empty default of a typed key means "no value"
-// (OTEL_BASE_URL, JOBS_OVERRIDES).
+// defaultText returns the default to inject, if any. An empty default means "no value", for every
+// format (P2.3: empty == not set; OTEL_BASE_URL, JOBS_OVERRIDES).
 func (d Decl) defaultText() (string, bool) {
-	if d.Default == nil || (*d.Default == "" && !d.emptyIsValue()) {
+	if d.Default == nil || *d.Default == "" {
 		return "", false
 	}
 	return *d.Default, true

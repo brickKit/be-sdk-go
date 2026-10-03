@@ -15,9 +15,9 @@ const DefaultAcquireTimeout = 5 * time.Second
 
 // Hooks report a store's events to the root's metrics; every hook is optional.
 type Hooks struct {
-	OnTxRetry  func(reason string) // be_tx_retries_total{reason}; reason is the SQLSTATE (P10.4)
-	OnPoolWait func(time.Duration) // be_db_pool_wait_seconds (P18)
-	OnInUse    func(delta int)     // be_db_pool_in_use, +1 on acquire and −1 on release
+	OnTxRetry  func(sqlstate string) // be_tx_retries_total{sqlstate}: 40001 or 40P01 (P10.4, P18.3)
+	OnPoolWait func(time.Duration)   // be_db_pool_wait_seconds (P18)
+	OnInUse    func(delta int)       // be_db_pool_in_use, +1 on acquire and −1 on release
 }
 
 // StoreConfig binds a store to one member's runtime identity and budget (P10.1, P10.5).
@@ -120,14 +120,17 @@ func (s *Store) acquire(ctx context.Context) (*sql.Conn, func(), error) {
 	}, nil
 }
 
-// acquireError: the caller's own cancellation stays CANCELLED, 53300 is DB_TOO_MANY_CONNECTIONS,
-// and a wait that ran out of time is DB_POOL_EXHAUSTED (P10.5).
+// acquireError: the caller's own cancellation stays CANCELLED, 53300 is DB_TOO_MANY_CONNECTIONS, a
+// connect that failed or timed out is DEPENDENCY_UNAVAILABLE {dependency: db} (stage-B ruling), and a
+// wait for a free connection that ran out of time is DB_POOL_EXHAUSTED (P10.5).
 func (s *Store) acquireError(ctx context.Context, err error) error {
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
 		return problem.From(ctx.Err())
 	case SQLState(err) == "53300":
 		return problem.Wrap(err, "DB_TOO_MANY_CONNECTIONS", nil)
+	case IsConnectionFailure(err):
+		return problem.DBUnavailable(err)
 	case errors.Is(err, context.DeadlineExceeded):
 		return problem.Wrap(err, "DB_POOL_EXHAUSTED", nil)
 	}

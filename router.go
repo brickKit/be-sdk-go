@@ -13,7 +13,6 @@ import (
 	"github.com/brickKit/be-sdk-go/internal/httpx"
 	"github.com/brickKit/be-sdk-go/internal/problem"
 	"github.com/gin-gonic/gin"
-	"google.golang.org/grpc/codes"
 )
 
 // DefaultBodyLimit is the request body limit of a route that declares none (P3.6).
@@ -144,12 +143,12 @@ func bodyTooLarge(limit int64) *problem.Error {
 }
 
 // Bind decodes the JSON body into T. A body over the route's limit answers BODY_TOO_LARGE (413); a
-// body that does not decode answers INVALID_ARGUMENT, reason INVALID_BODY of the component's own
-// domain, with one field violation (the component lists INVALID_BODY in its errors.yaml).
+// missing or undecodable body answers be/REQUEST_INVALID (INVALID_ARGUMENT, 400) with one field
+// violation (stage-B ruling: every malformed request the SDK detects is REQUEST_INVALID).
 func Bind[T any](c *gin.Context) (T, error) {
 	var v T
 	if c.Request.Body == nil {
-		return v, invalidBody(c, "body", "a JSON body is required")
+		return v, invalidBody("body", "a JSON body is required")
 	}
 	err := json.NewDecoder(c.Request.Body).Decode(&v)
 	var tooLarge *http.MaxBytesError
@@ -157,24 +156,20 @@ func Bind[T any](c *gin.Context) (T, error) {
 	case errors.As(err, &tooLarge):
 		return v, bodyTooLarge(tooLarge.Limit)
 	case errors.Is(err, io.EOF):
-		return v, invalidBody(c, "body", "a JSON body is required")
+		return v, invalidBody("body", "a JSON body is required")
 	case err != nil:
 		field := "body"
 		var te *json.UnmarshalTypeError
 		if errors.As(err, &te) && te.Field != "" {
 			field = te.Field
 		}
-		return v, invalidBody(c, field, err.Error())
+		return v, invalidBody(field, err.Error())
 	}
 	return v, nil
 }
 
-func invalidBody(c *gin.Context, field, desc string) error {
-	domain := ""
-	if cfg, ok := c.Get(ctxRouterKey); ok {
-		domain = cfg.(*routerConfig).componentID
-	}
-	e := problem.New(codes.InvalidArgument, domain, "INVALID_BODY", map[string]string{}, "the request body is not valid")
+func invalidBody(field, desc string) error {
+	e := problem.Be("REQUEST_INVALID", nil)
 	e.Violations = []problem.Violation{{Field: field, Reason: "INVALID", Description: desc}}
 	return e
 }

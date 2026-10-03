@@ -24,9 +24,10 @@ type bundleSource interface{ Current() *authz.Bundle }
 //
 //	Public → allow
 //	verify the token (P5) → 401 TOKEN_INVALID
-//	bundle loaded: token checks E2 (stale, revoked grant, delegation capabilities) → 401
+//	no bundle yet → 503 AUTHZ_NOT_READY for every non-Public route, Authenticated included
+//	  (P1.5, stage-B ruling: fail closed, after the token check)
+//	token checks E2 (stale, revoked grant, delegation capabilities) → 401
 //	Authenticated → allow
-//	no bundle yet → 503 AUTHZ_NOT_READY (P1.5)
 //	key not held (E3–E5, ceilings) → 403 MISSING_PERMISSION {permission}
 //	allow, with Access in the request context
 type authGuardian struct {
@@ -48,16 +49,14 @@ func (g *authGuardian) check(c *gin.Context, gd Guard) *problem.Error {
 		return g.deny(problem.Wrap(err, "TOKEN_INVALID", nil))
 	}
 	b := g.bundles.Current()
+	if b == nil {
+		return g.deny(problem.Be("AUTHZ_NOT_READY", nil))
+	}
 	tok := tokenFromClaims(claims)
-	if b != nil {
-		if reason := authz.CheckToken(b, tok); reason != "" {
-			return g.deny(problem.Be(reason, nil))
-		}
+	if reason := authz.CheckToken(b, tok); reason != "" {
+		return g.deny(problem.Be(reason, nil))
 	}
 	if key != Authenticated {
-		if b == nil {
-			return g.deny(problem.Be("AUTHZ_NOT_READY", nil))
-		}
 		if d := authz.Decide(b, tok, string(key), g.now()); !d.Allow {
 			meta := map[string]string(nil)
 			if d.Reason == authz.ReasonMissingPermission {

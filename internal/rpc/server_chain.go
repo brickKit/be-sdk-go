@@ -28,12 +28,20 @@ type serverChain struct {
 	inbound   func(ctx context.Context, requestID string, c Caller) context.Context
 	domain    string
 	batch     batchLimits
+	user      map[string]bool // full method names of user-facing rpcs (P7.3)
+	bad       malformed       // requests whose bytes did not decode (REQUEST_INVALID)
 }
 
 func newServerChain(c ServerConfig) *serverChain {
 	s := &serverChain{log: c.Logger, catalogue: c.Catalogue, locale: c.Locale, metrics: c.Metrics, inbound: c.Inbound, domain: c.Domain}
 	if s.log == nil {
 		s.log = discardLogger()
+	}
+	if len(c.UserFacing) > 0 {
+		s.user = make(map[string]bool, len(c.UserFacing))
+		for _, m := range c.UserFacing {
+			s.user[m] = true
+		}
 	}
 	if s.catalogue == nil {
 		s.catalogue = problem.NewCatalogue()
@@ -94,6 +102,7 @@ func (s *serverChain) reportUnary(ctx context.Context, req any, info *grpc.Unary
 	next grpc.UnaryHandler) (resp any, err error) {
 	start := time.Now()
 	defer func() {
+		s.bad.forget(req)
 		if r := recover(); r != nil {
 			resp, err = nil, recovered(r)
 		}
@@ -103,13 +112,17 @@ func (s *serverChain) reportUnary(ctx context.Context, req any, info *grpc.Unary
 }
 
 // principal reads the system principal and the request ID of an inbound call (P7.2, P7.3); a call
-// without be-caller is MISSING_CALLER, except to the health service.
+// without be-caller is MISSING_CALLER, except to the health service; a user-facing rpc is
+// TOKEN_INVALID, since a system call carries no user token.
 func (s *serverChain) principal(ctx context.Context, fullMethod string) (context.Context, error) {
 	md, _ := metadata.FromIncomingContext(ctx)
 	c := Caller{Caller: firstMD(md, MDCaller), ActorSub: firstMD(md, MDActorSub), Act: firstMD(md, MDActorAct)}
 	exempt := strings.HasPrefix(fullMethod, healthPrefix)
 	if c.Caller == "" && !exempt {
 		return ctx, problem.Be("MISSING_CALLER", nil)
+	}
+	if s.user[fullMethod] {
+		return ctx, problem.Be("TOKEN_INVALID", nil)
 	}
 	if !exempt {
 		ctx = withCallerValue(ctx, c)
@@ -157,6 +170,9 @@ func (s *serverChain) deadlineUnary(ctx context.Context, req any, _ *grpc.UnaryS
 
 func (s *serverChain) batchUnary(ctx context.Context, req any, _ *grpc.UnaryServerInfo,
 	next grpc.UnaryHandler) (any, error) {
+	if e := s.bad.take(req); e != nil {
+		return nil, e
+	}
 	if e := s.batch.check(req); e != nil {
 		return nil, e
 	}

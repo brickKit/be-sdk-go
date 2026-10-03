@@ -15,7 +15,7 @@ func gauge(name, help string) prometheus.Gauge {
 type DBMetrics struct {
 	PoolInUse  prometheus.Gauge       // be_db_pool_in_use
 	PoolWait   prometheus.Histogram   // be_db_pool_wait_seconds
-	TxRetries  *prometheus.CounterVec // be_tx_retries_total{reason}
+	TxRetries  *prometheus.CounterVec // be_tx_retries_total{sqlstate} (P18.3)
 	IdentityOK prometheus.Gauge       // be_db_identity_ok (1 when the runtime identity checks out)
 }
 
@@ -25,7 +25,7 @@ func NewDBMetrics(reg prometheus.Registerer) (*DBMetrics, error) {
 		PoolInUse: gauge("be_db_pool_in_use", "Database connections in use by this member."),
 		PoolWait: prometheus.NewHistogram(prometheus.HistogramOpts{Name: "be_db_pool_wait_seconds",
 			Help: "Time waited for a database connection in seconds.", Buckets: poolWaitBuckets()}),
-		TxRetries:  counterVec("be_tx_retries_total", "Transactions retried, by reason.", "reason"),
+		TxRetries:  counterVec("be_tx_retries_total", "Transactions retried, by the SQLSTATE that caused the retry.", "sqlstate"),
 		IdentityOK: gauge("be_db_identity_ok", "1 when the database identity check passed, else 0."),
 	}
 	return m, register(reg, m.PoolInUse, m.PoolWait, m.TxRetries, m.IdentityOK)

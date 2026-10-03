@@ -103,7 +103,12 @@ func LoadCatalogue() (*Catalogue, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config catalogue: %w", err)
 	}
-	return parseCatalogue(b)
+	c, err := parseCatalogue(b)
+	if err != nil {
+		return nil, err
+	}
+	applyRulings(c)
+	return c, nil
 }
 
 func parseCatalogue(b []byte) (*Catalogue, error) {

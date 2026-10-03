@@ -45,16 +45,17 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 | P1 process | one binary: serve, `migrate up / down <n> / status`, `job run <name>` (not offered yet: exit 64); exit codes 0 / 1 / 64 / 78; start order config → ports → background connections; supervised background work (1 s → 5 min); `/healthz`, latching `/readyz`; SIGTERM → `SHUTDOWN_GRACE` (25 s) |
 | P2 configuration | only `configSchema` keys of the embedded `component.yaml`, strictly typed, every error at once (exit 78); secrets only from `…_FILE` files, re-read within 30 s, last good value kept; family addresses `AUTHZ_URL`, `IAM_URL`, `*_GRPC_URL` |
 | P3 HTTP | Gin inside an outer layer: request ID, trace extraction, route deadline answered as 504 even when a handler ignores it, body limit (413), server timeouts 5 s / 30 s / deadline + 5 s / 120 s, dual-stack listen, access log |
-| P4 errors | problem+json with AIP-193 members, the 33 `be` reasons, gRPC `ErrorInfo` / `BadRequest` / `RetryInfo`, generic text for INTERNAL; `besdk.Errorf` |
-| P5, P6.1–P6.2 | JWT (RS256 / ES256 / EdDSA, `iss`, `aud`, `typ=access`), JWKS from `{IAM_URL}/.well-known/jwks.json`; bundle v2 polling, the route chain with feature keys; `besdk.AccessFrom` |
+| P4 errors | problem+json with AIP-193 members, the `be` reasons (33 of rc.1 plus `REQUEST_INVALID` and `DEPENDENCY_UNAVAILABLE`, ruled after rc.1), gRPC `ErrorInfo` / `BadRequest` / `RetryInfo`, generic text for INTERNAL; `besdk.Errorf`. A body `Bind` cannot decode and a gRPC request that does not decode answer `REQUEST_INVALID` with violations; an unreachable database (refused, timed-out or lost connection, SQLSTATE class `08`, `57P01`–`57P03`), `rt.Conn` or `rt.UserHTTP` dependency answers `DEPENDENCY_UNAVAILABLE` with `metadata.dependency` = `db` or the component ID |
+| P5, P6.1–P6.2 | JWT (RS256 / ES256 / EdDSA, `iss`, `aud`, `typ=access`), JWKS from `{IAM_URL}/.well-known/jwks.json`; bundle v2 polling, the route chain with feature keys (token first: 401 `TOKEN_INVALID`; then, until the first bundle, 503 `AUTHZ_NOT_READY` on every non-Public route, Authenticated included); `besdk.AccessFrom` |
 | P7, P8 | gRPC server limits and interceptors, batch limits from `(be.v1.max_items)`; `rt.Conn` (one connection per dependency, retries from `idempotency_level`, maxAttempts 3, budget per ClientConn, bulkhead 64); `rt.UserHTTP`, `rt.ExternalHTTP`; no network inside a transaction |
-| P10, P11 | `rt.Store()`: per-transaction `SET LOCAL ROLE / search_path / application_name / timeouts`, `/* be:<schema> */` statement prefix, retries of 40001 / 40P01, SQLSTATE mapping, pool budget; migrations as the owner role with golang-migrate (`schema_migrations_<schema>`), then the platform migration (`besdk_migrations_<schema>`) |
-| P12 | outbox in the business transaction, pump with PubAck, JetStream durables created only when absent, runtime-side redelivery delays and dead letters, aggregate-stream cursor |
-| P18 | JSON logs with redaction and 2 KiB lines, `be_` metrics with the `component` label, per-member tracer and meter providers, explicit propagator |
+| P10, P11 | `rt.Store()`: per-transaction `SET LOCAL ROLE / search_path / application_name / timeouts`, `/* be:<schema> */` statement prefix, retries of 40001 / 40P01, SQLSTATE mapping, pool budget; migrations as the owner role with golang-migrate (`schema_migrations_<schema>`), then the platform migration (`besdk_migrations_<schema>`); the authorization projection (`besdk_authz_acl`, `besdk_authz_cursor`) only when `Spec.Catalog` declares resource types |
+| P12 | outbox in the business transaction (a payload over 64 KiB is refused at publish), pump with PubAck, JetStream durables created only when absent, runtime-side redelivery delays and dead letters, aggregate-stream cursor |
+| P18 | JSON logs with redaction and lines of at most 2048 bytes including the newline; the access-log line at ERROR for 500, WARN for 503 / 504, INFO otherwise, ops endpoints at DEBUG; `be_` metrics with the `component` label (`be_tx_retries_total{sqlstate}`); per-member tracer and meter providers, explicit propagator; an unsampled inbound `traceparent` is propagated with its flag and not recorded |
 
 Go-specific notes the protocol asks every runtime to state: the gRPC server enforces keepalive `MinTime`
 20 s (P7.5); the retry budget is per ClientConn, one per member, dependency and port, refilled on resolver
-updates (P7.8); `PG_POOL_MIN_IDLE` is accepted but `database/sql` keeps no idle floor.
+updates (P7.8); `PG_POOL_MIN_IDLE` is not a protocol key: a Go component may declare it in its own
+`configSchema` (default 2), but `database/sql` keeps no idle floor, so it is only validated.
 
 ## Packages
 

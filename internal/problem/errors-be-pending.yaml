@@ -1,0 +1,22 @@
+# Reasons ruled into domain `be` after be-protocol rc.1 (stage-B review: 33 → 35 reasons). They are
+# merged into the be catalogue only while the pinned schemas/errors-be.yaml lacks them. Texts are
+# those of the rc.2 draft of errors-be.yaml.
+# Delete this file (and pending.go) when be-protocol rc.2 is pinned.
+domain: be
+reasons:
+  - reason: REQUEST_INVALID
+    code: INVALID_ARGUMENT
+    http: 400
+    params: []
+    title:   { en: "Invalid request", zh: "请求无效" }
+    message: { en: "The request could not be read or does not match what this operation accepts.", zh: "请求无法解析，或者不符合这个操作接受的格式。" }
+    since: "1.0"
+    deprecated: false
+  - reason: DEPENDENCY_UNAVAILABLE
+    code: UNAVAILABLE
+    http: 503
+    params: [dependency]
+    title:   { en: "Temporarily unavailable", zh: "暂时不可用" }
+    message: { en: "A service this request needs ({dependency}) cannot be reached right now. Try again shortly.", zh: "这个请求依赖的服务（{dependency}）暂时连不上，请稍后再试。" }
+    since: "1.0"
+    deprecated: false

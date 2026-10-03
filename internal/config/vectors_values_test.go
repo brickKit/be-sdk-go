@@ -90,11 +90,22 @@ func runParseValue(t *testing.T, c vectors.Case) {
 		raw = *in.Value
 	}
 	v, err := resolve(d, raw, present)
+	if want, superseded := supersededValues[c.ID]; superseded {
+		// still run, against the ruled expectation (no skip)
+		c.Expected, c.ExpectedError = json.RawMessage(want), nil
+	}
 	if err != nil {
 		vectors.RequireReason(t, c, err.Reason)
 		return
 	}
 	vectors.RequireJSON(t, c, renderValue(d, v))
+}
+
+// supersededValues holds the expected output of rc.1 cases a stage-B ruling reversed. P2.3: an empty
+// value counts as not set for every format, plain strings included (rc.2 renames the case to
+// config.values.empty-string-is-absent). Delete when be-protocol rc.2 is pinned.
+var supersededValues = map[string]string{
+	"config.values.empty-string-is-value": `{"set": true, "value": "x"}`,
 }
 
 func runReadUndeclared(t *testing.T, c vectors.Case) {
