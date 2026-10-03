@@ -2,6 +2,7 @@ package besdk
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -70,6 +71,9 @@ func bootstrap(ctx context.Context, s Spec, pe processEnv) (*boot, error) {
 	b.locale = optString(vals, "DEFAULT_LOCALE", "zh-CN")
 	if b.catalogue, err = loadCatalogue(s.Contracts); err != nil {
 		return nil, &configFailure{errs: []*config.Error{{Reason: config.ReasonInvalid, Key: "contracts/errors.yaml", Detail: err.Error()}}}
+	}
+	if s.Catalog != "" && !json.Valid([]byte(s.Catalog)) {
+		return nil, &configFailure{errs: []*config.Error{{Reason: config.ReasonInvalid, Key: "Spec.Catalog", Detail: "not valid JSON (authzgen.CatalogJSON)"}}}
 	}
 	if err := b.initTelemetry(ctx, pe); err != nil {
 		return nil, err

@@ -21,6 +21,7 @@ type Spec struct {
 	Manifest   []byte // the component's own component.yaml (go:embed): configSchema, ports, events
 	Migrations fs.FS  // <version>_<name>.up.sql / .down.sql + lifecycle.yaml; nil = no database
 	Contracts  fs.FS  // contracts/: errors.yaml, events/*.events.json; nil = none
+	Catalog    string // authzgen.CatalogJSON: the component's keys and resource types; "" = none
 	New        func(ctx context.Context, rt *Runtime) (*Module, error)
 }
 

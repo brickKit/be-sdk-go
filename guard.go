@@ -37,7 +37,7 @@ type authGuardian struct {
 }
 
 func (g *authGuardian) check(c *gin.Context, gd Guard) *problem.Error {
-	key, _ := gd.(PermKey)
+	key := guardKey(gd)
 	if key == Public {
 		return nil
 	}

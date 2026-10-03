@@ -124,3 +124,15 @@ func TestAccessFromWithoutUser(t *testing.T) {
 		t.Fatal("no user must be an error")
 	}
 }
+
+func TestResourceGuardDecidesItsKey(t *testing.T) {
+	const salesView PermKey = "erp.sales.view"
+	const order ResourceType = "erp.sales.order"
+	claims := &authn.Claims{Sub: "u1", Roles: []string{"dev_sales_rep"}, IssuedAt: time.Unix(1699999990, 0)}
+	eng, _ := guardEngine(t, exampleBundle(t), claims)
+	_ = eng
+	g := salesView.On(order, "id")
+	if g.Key != salesView || g.Type != order || g.Param != "id" || guardKey(salesView.List(order)) != salesView {
+		t.Fatalf("%+v", g)
+	}
+}

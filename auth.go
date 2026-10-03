@@ -79,7 +79,7 @@ func (a *authSetup) run(sup *supervisor, ready *readiness) {
 type noAuthGuardian struct{}
 
 func (noAuthGuardian) check(c *gin.Context, g Guard) *problem.Error {
-	if k, _ := g.(PermKey); k == Public {
+	if guardKey(g) == Public {
 		return nil
 	}
 	return problem.Wrap(fmt.Errorf("protected route %s without AUTHZ_URL / IAM_URL in configSchema", c.FullPath()),

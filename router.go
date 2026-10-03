@@ -102,7 +102,7 @@ func (r *Router) handle(method, path string, g Guard, h gin.HandlerFunc, opts []
 	if g == nil {
 		panic(fmt.Sprintf("besdk: route %s %s has no guard; declare a permission key, Public or Authenticated", method, path))
 	}
-	if _, noAuth := r.cfg.guardian.(noAuthGuardian); noAuth && g != Public {
+	if _, noAuth := r.cfg.guardian.(noAuthGuardian); noAuth && guardKey(g) != Public {
 		panic(&config.Error{Reason: config.ReasonMissing, Key: "AUTHZ_URL",
 			Detail: fmt.Sprintf("route %s %s is protected: declare the auth profile keys (AUTHZ_URL, IAM_URL, IAM_ISSUER, TENANT_ID)", method, path)})
 	}

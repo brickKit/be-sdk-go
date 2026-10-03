@@ -69,9 +69,9 @@ func (c *Config) Has(key string) bool { return c.vals.Has(key) }
 
 // Secret is a file-delivered secret (P2.7, P2.9): read when used, re-read when the file changes.
 type Secret interface {
-	Current() string           // the text value, one trailing newline removed
-	Bytes() []byte             // the file's bytes, for a component's own binary secret
-	Changed() <-chan struct{}  // closed at the next successful change
+	Current() string          // the text value, one trailing newline removed
+	Bytes() []byte            // the file's bytes, for a component's own binary secret
+	Changed() <-chan struct{} // closed at the next successful change
 }
 
 // Secret returns a declared secret key (`…_FILE`, P2.12); String on such a key returns its path.

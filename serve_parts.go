@@ -176,7 +176,7 @@ func (p *process) info() Info {
 		ports["grpc"] = portOf(p.grpcLn)
 	}
 	return Info{ComponentID: p.b.id, ComponentVersion: p.b.version, Protocol: ProtocolVersion,
-		SDK: &SDKInfo{Name: "be-sdk-go", Version: Version},
+		SDK:      &SDKInfo{Name: "be-sdk-go", Version: Version},
 		Language: LanguageInfo{Name: "go", Version: strings.TrimPrefix(runtime.Version(), "go")},
 		Profiles: p.profiles(), Ports: ports, Migrations: p.migrationsInfo()}
 }
