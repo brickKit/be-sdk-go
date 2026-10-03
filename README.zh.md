@@ -7,8 +7,9 @@ BrickEnterprise 组件协议 **be-protocol 1.0**（`github.com/brickKit/be-proto
 每个面都归 SDK，组件拿到的是一个 `Runtime`。它不是 brickKit 组件，不含业务逻辑。
 
 **版本 0.6.0（进行中）。** 已实现协议 1.0 的运行时、配置、HTTP 面、错误、令牌验证与功能键判定、
-可观测、出站调用、数据库与迁移、事件（任务 G1–G3）。命令幂等、后台工作、数据范围与资源契约、
-生命周期引擎、日历与金额、`besdktest` 包和外壳启动器在后续波次；它们的协议面暂未提供（`/_be/info` 列出已提供的）。
+可观测、出站调用、数据库与迁移、事件（任务 G1–G3），以及命令幂等、后台工作、数据范围与资源契约和 ACL
+投影、热/温两层的生命周期引擎（G4–G7）。日历与金额、快照、PostgreSQL 总线适配器、`besdktest` 包和外壳启动器
+在后续波次；它们的协议面暂未提供（`/_be/info` 列出已提供的）。
 
 ## 一个组件
 
@@ -38,10 +39,14 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 
 | 章节 | 这里 |
 |---|---|
-| P1 进程 | 一个二进制：服务、`migrate up / down <n> / status`、`job run <name>`（暂未提供：退出 64）；退出码 0 / 1 / 64 / 78；启动顺序 配置 → 端口 → 后台连接；后台工作受监督（1 s → 5 min）；`/healthz`、锁定式 `/readyz`；SIGTERM → `SHUTDOWN_GRACE`（25 s） |
+| P1 进程 | 一个二进制：服务、`migrate up / down <n> / status`、`job run <name>`（能力 `job_run`；任务名不存在退出 64）；退出码 0 / 1 / 64 / 78；启动顺序 配置 → 端口 → 后台连接；后台工作受监督（1 s → 5 min）；`/healthz`、锁定式 `/readyz`；SIGTERM → `SHUTDOWN_GRACE`（25 s） |
 | P2 配置 | 只读嵌入的 `component.yaml` 里 `configSchema` 声明的键，严格类型，错误一次报全（退出 78）；密钥只来自 `…_FILE` 文件，30 s 内重读，失败保留上一个有效值；族地址 `AUTHZ_URL`、`IAM_URL`、`*_GRPC_URL` |
 | P3 HTTP | Gin 外面一层：请求 ID、trace 提取、路由截止时间（处理器不理会也答 504）、请求体上限（413）、服务端超时 5 s / 30 s / 截止 + 5 s / 120 s、双栈监听、访问日志 |
-| P4 错误 | problem+json 带 AIP-193 成员、`be` reason（rc.1 的 33 个，加上 rc.1 之后裁决新增的 `REQUEST_INVALID` 和 `DEPENDENCY_UNAVAILABLE`）、gRPC `ErrorInfo` / `BadRequest` / `RetryInfo`、INTERNAL 只给通用文案；`besdk.Errorf`。`Bind` 解不开的请求体、解码失败的 gRPC 请求答 `REQUEST_INVALID` 并带 violations；连不上数据库（连接被拒、连接超时或断开、SQLSTATE `08` 类、`57P01`–`57P03`）或 `rt.Conn` / `rt.UserHTTP` 的依赖时答 `DEPENDENCY_UNAVAILABLE`，`metadata.dependency` 为 `db` 或依赖的组件 ID |
+| P4 错误 | problem+json 带 AIP-193 成员、rc.2 的 36 个 `be` reason、gRPC `ErrorInfo` / `BadRequest` / `RetryInfo`、INTERNAL 只给通用文案；`besdk.Errorf`。`Bind` 解不开的请求体、解码失败的 gRPC 请求答 `REQUEST_INVALID` 并带 violations；连不上数据库（连接被拒、连接超时或断开、SQLSTATE `08` 类、`57P01`–`57P03`）或 `rt.Conn` / `rt.UserHTTP` 的依赖时答 `DEPENDENCY_UNAVAILABLE`，`metadata.dependency` 为 `db` 或依赖的组件 ID |
+| P6.3–P6.15 | 按 contract-infra-authz EVALUATION E1–E12 求值档位 × 维度、主体集合、关系、天花板与字段（62 条判定向量逐成员比对）；`Access.Scope` / `ListScope` 给出规范谓词（`Where`、三个互斥分支），`Access.Can`（看不见答 404）、`RowActions`、`Mask`、`CheckWritable` / `CheckSortable`；`PermKey.On` 经 `Module.Sharing` 在处理函数之前判定记录；资源契约 `_authz/check`、`_authz/explain`、`_shares`（没有能力答 501，写入经 `AUTHZ_GRPC_URL` 的 `WriteTuples`）；ACL 投影（`be.authz.changes`、410 重建、`infra.authz.changed.v1` poke）。Go 特有：`Can` 接受命令的 `*Tx`（ACL 行在库里） |
+| P13 | `besdk.Idempotent[T]`、`Tx.IdemLookup / IdemClaim / IdemComplete / IdemRelease`：RFC 8785 指纹、调用方命名空间（`user:` / `svc:` / `system`）、原子认领、按存下的状态码重放、30 天过期 |
+| P14 | `Module.Jobs`（every、带租约与 epoch 的 singleton、`@every` 或按 `BUSINESS_TIMEZONE` 求值的 5 字段 cron）、`Module.Workers` + `tx.Enqueue`、`besdk.NewReconciler`；`JOBS_OVERRIDES`；运行时任务 `be.cleanup`（done 队列行 7 天、槽位 30 天、幂等键、游标）与 `be.lifecycle`；`job run <name>` 走同一批表 |
+| P16（P0） | 启动时校验 `migrations/lifecycle.yaml`；平台迁移建出每张声明表的分区窗口（`<table>_<YYYY>w<WW>` / `m<MM>` / `<YYYY>`）；`be.lifecycle` 保持窗口超前、按规范单元摘要链封存、删除过期的 outbox 与 queue 分区；`tx.Seal`、`tx.OpenListPartition`；`-- be:contract after=` 在旧版本的会话（每个进程常驻的 `<id>@<version>`）还连着时停住迁移。不提供冷层 |
 | P5、P6.1–P6.2 | JWT（RS256 / ES256 / EdDSA、`iss`、`aud`、`typ=access`），JWKS 取 `{IAM_URL}/.well-known/jwks.json`；bundle v2 轮询、按功能键的路由判定链（先验 token：401 `TOKEN_INVALID`；拿到第一份 bundle 之前，所有非 Public 路由——Authenticated 也算——答 503 `AUTHZ_NOT_READY`）；`besdk.AccessFrom` |
 | P7、P8 | gRPC 服务端参数与拦截器、按 `(be.v1.max_items)` 的批量上限；`rt.Conn`（每个依赖一条连接、按 `idempotency_level` 重试、maxAttempts 3、预算按 ClientConn、舱壁 64）；`rt.UserHTTP`、`rt.ExternalHTTP`；事务里不许网络调用 |
 | P10、P11 | `rt.Store()`：每个事务 `SET LOCAL ROLE / search_path / application_name / 超时`、`/* be:<schema> */` 语句前缀、40001 / 40P01 重试、SQLSTATE 映射、池预算；迁移以属主角色跑 golang-migrate（`schema_migrations_<schema>`），再跑平台迁移（`besdk_migrations_<schema>`）；授权投影表（`besdk_authz_acl`、`besdk_authz_cursor`）只在 `Spec.Catalog` 声明了资源类型时才建 |
@@ -56,7 +61,7 @@ ClientConn 计，每个（成员，依赖，端口）一个，resolver 更新时
 
 `besdk`（根包：全部公开 API）· `proto/be/v1`（`be/v1/limits.proto` 的生成代码；映射
 `Mbe/v1/limits.proto=github.com/brickKit/be-sdk-go/proto/be/v1`）· `internal/…`：`config`、`problem`、
-`logx`、`telemetry`、`httpx`、`authn`、`authz`、`rpc`、`pg`、`envelope`、`bus/jetstream`、`events`。
+`logx`、`telemetry`、`httpx`、`authn`、`authz`、`rpc`、`pg`、`envelope`、`bus/jetstream`、`events`、`idem`、`jobs`、`jobs/schedule`、`authz/acl`、`lifecycle`。
 
 ## 测试
 
