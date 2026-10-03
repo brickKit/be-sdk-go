@@ -3,7 +3,6 @@ package besdk
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -37,34 +36,18 @@ type Events struct {
 // (inside the cursor's transaction, local writes only) and Run (outside any transaction, may call the
 // network, idempotent on a business key) is set (P12.7).
 type Subscription struct {
-	Subject     string
-	Consumer    string                                            // cursor name (projection), default ""
-	Apply       func(ctx context.Context, tx *Tx, ev Event) error // local writes, in the cursor's tx
-	Run         func(ctx context.Context, ev Event) error         // outside any transaction
-	MaxDeliver  int                                               // 0 = EVENTS_MAX_DELIVER or 8; counted by the SDK
-	Backoff     []time.Duration                                   // nak delays; EVENTS_BACKOFF overrides
-	Concurrency int                                               // default 4
-}
-
-// permanentError marks a handler error that redelivery cannot fix: the event goes to the dead
-// letters at once (P12.7).
-type permanentError struct{ err error }
-
-func (p *permanentError) Error() string { return "permanent: " + p.err.Error() }
-func (p *permanentError) Unwrap() error { return p.err }
-
-// Permanent wraps err so the event is dead-lettered at once instead of redelivered.
-func Permanent(err error) error {
-	if err == nil {
-		return nil
-	}
-	return &permanentError{err: err}
-}
-
-// IsPermanent reports whether err was wrapped by Permanent.
-func IsPermanent(err error) bool {
-	var p *permanentError
-	return errors.As(err, &p)
+	Subject  string
+	Consumer string // cursor name (projection), default ""
+	// AggregateType and TransactionDocument are the producer contract's x-aggregate-type and
+	// x-transaction-document: when set, ce-aggregatetype must equal it and a missing legal entity is
+	// dead-lettered (P11.8); empty takes any well-formed aggregate type.
+	AggregateType       string
+	TransactionDocument bool
+	Apply               func(ctx context.Context, tx *Tx, ev Event) error // local writes, in the cursor's tx
+	Run                 func(ctx context.Context, ev Event) error         // outside any transaction
+	MaxDeliver          int                                               // 0 = EVENTS_MAX_DELIVER or 8; counted by the SDK
+	Backoff             []time.Duration                                   // nak delays; EVENTS_BACKOFF overrides
+	Concurrency         int                                               // default 4
 }
 
 // Decode unmarshals an event's payload into T; a payload that does not decode is permanent.

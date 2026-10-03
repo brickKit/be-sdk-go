@@ -24,6 +24,5 @@ func (p *process) wireDeps(ctx context.Context) error {
 // superviseDeps starts the dependency loops (probe, outbox window; pump and consumers with events).
 func (p *process) superviseDeps() {
 	p.superviseStore()
+	p.superviseEvents()
 }
-
-func (p *process) eventProfiles() []string { return nil }

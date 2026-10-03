@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/brickKit/be-sdk-go/internal/bus/jetstream"
 	"github.com/brickKit/be-sdk-go/internal/config"
 	"github.com/brickKit/be-sdk-go/internal/httpx"
 	"github.com/brickKit/be-sdk-go/internal/telemetry"
@@ -37,6 +38,8 @@ type process struct {
 	grace    time.Duration
 	closers  []func(ctx context.Context)
 	dbm      *telemetry.DBMetrics
+	evm      *telemetry.EventMetrics
+	bus      *jetstream.Bus
 	fatal    chan error // a fatal condition found in the background (P1.8)
 }
 
@@ -137,6 +140,9 @@ func (p *process) build(bg context.Context) int {
 	p.mod, err = callNew(bg, p.b.spec, p.rt)
 	if err != nil {
 		return p.failCode("component New failed", err)
+	}
+	if err := p.wireEvents(); err != nil {
+		return p.failCode("events", err)
 	}
 	if err := p.assembleHTTP(); err != nil {
 		return p.failCode("routes", err)

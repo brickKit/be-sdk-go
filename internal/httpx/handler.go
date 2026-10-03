@@ -148,7 +148,7 @@ func (h *Handler) accessLog(ctx context.Context, r *http.Request, route string, 
 		slog.Int("http.response.status_code", status), slog.Int64("duration_ms", d.Milliseconds())}
 	all = append(all, attrs...)
 	if perr != nil {
-		if l, logged := problem.LogLevel(perr.Code); logged && l > level {
+		if l, logged := problem.LogLevel(perr.Code); logged && l > level && level != slog.LevelDebug {
 			level = l
 		}
 		all = append(all, slog.String("error", perr.Error()), slog.String("error.code", problem.CodeName(perr.Code)),

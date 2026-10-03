@@ -62,7 +62,3 @@ func migrateConfig(b *boot) (pg.MigrateConfig, error) {
 		Owner: optString(v, "PG_OWNER_USER", ""), OwnerPassword: sec.Current(), Schema: optString(v, "PG_SCHEMA", ""),
 		ComponentID: b.id, Component: b.spec.Migrations, Logger: b.log}, nil
 }
-
-// ensureEventTopology creates the event streams and durables at migration time (P11.3, P12.4);
-// filled in by the events wave.
-func ensureEventTopology(ctx context.Context, b *boot) error { return nil }
