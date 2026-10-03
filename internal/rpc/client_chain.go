@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync/atomic"
@@ -76,7 +77,14 @@ func (ch *clientChain) deadlineUnary(ctx context.Context, method string, req, re
 	if err != nil {
 		return err
 	}
-	return ch.restore(invoker(ctx, method, req, reply, cc, opts...))
+	err = invoker(ctx, method, req, reply, cc, opts...)
+	// At the end of the budget gRPC does not always report DEADLINE_EXCEEDED: a stream reset at
+	// that moment comes back as CANCELLED, INTERNAL or UNAVAILABLE. The budget ran out either
+	// way (P7.7), so the answer is 504 and not 499, 500 or 503.
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return problem.Wrap(err, "DEADLINE_BUDGET_EXHAUSTED", nil)
+	}
+	return ch.restore(err)
 }
 
 func (ch *clientChain) bulkheadUnary(ctx context.Context, method string, req, reply any,
