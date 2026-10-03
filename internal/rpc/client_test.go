@@ -186,7 +186,10 @@ func TestClientRefusesANetworkCallInsideATransaction(t *testing.T) {
 	c := newTestConns(t, func(cfg *ClientConfig) {
 		cfg.InTx = func(context.Context) bool { return true }
 	})
-	_, err := probeClient(t, c, "d", ts.addr).Read(context.Background(), &probepb.ProbeRequest{})
+	err := problem.Catch(func() error {
+		_, err := probeClient(t, c, "d", ts.addr).Read(context.Background(), &probepb.ProbeRequest{})
+		return err
+	})
 	require.True(t, problem.Is(err, "be", "NETWORK_IN_TX"), "got %v", err)
 	require.Equal(t, codes.Internal, problem.From(err).Code)
 	require.Zero(t, ts.probe.calls.Load())

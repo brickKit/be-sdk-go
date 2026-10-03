@@ -59,7 +59,7 @@ func (s *Store) Role() string { return s.cfg.Role }
 // SQLSTATE with the original error as Cause.
 func (s *Store) Run(ctx context.Context, o TxOptions, fn func(ctx context.Context, tx *Tx) error) error {
 	if InTx(ctx) {
-		return problem.Be("NESTED_TX", nil)
+		return problem.Abort(problem.Be("NESTED_TX", nil))
 	}
 	if err := ctx.Err(); err != nil {
 		return problem.From(err)

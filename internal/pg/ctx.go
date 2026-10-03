@@ -26,5 +26,5 @@ func GuardNetwork(ctx context.Context, what string) error {
 	if !InTx(ctx) {
 		return nil
 	}
-	return problem.Wrap(fmt.Errorf("outbound call %s inside an open transaction", what), "NETWORK_IN_TX", nil)
+	return problem.Abort(problem.Wrap(fmt.Errorf("outbound call %s inside an open transaction", what), "NETWORK_IN_TX", nil))
 }

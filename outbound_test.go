@@ -97,7 +97,7 @@ func TestUserHTTPBudgetBulkheadAndTx(t *testing.T) {
 	if err := c.JSON(short, "GET", "/x", nil, nil); !problem.Is(err, "be", "DEADLINE_BUDGET_EXHAUSTED") {
 		t.Fatalf("budget: %v", err)
 	}
-	if err := c.JSON(context.WithValue(user, "tx", 1), "GET", "/x", nil, nil); !problem.Is(err, "be", "NETWORK_IN_TX") {
+	if err := problem.Catch(func() error { return c.JSON(context.WithValue(user, "tx", 1), "GET", "/x", nil, nil) }); !problem.Is(err, "be", "NETWORK_IN_TX") {
 		t.Fatalf("tx: %v", err)
 	}
 	var wg sync.WaitGroup

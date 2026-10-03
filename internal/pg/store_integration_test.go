@@ -90,7 +90,7 @@ func TestRunRefusesNestedTransaction(t *testing.T) {
 	_, s := standalone(t, id, 2)
 	var inner error
 	require.NoError(t, s.Run(within(t, 10e9), TxOptions{}, func(ctx context.Context, tx *Tx) error {
-		inner = s.Run(ctx, TxOptions{}, func(context.Context, *Tx) error { return nil })
+		inner = problem.Catch(func() error { return s.Run(ctx, TxOptions{}, func(context.Context, *Tx) error { return nil }) })
 		return nil
 	}))
 	require.True(t, problem.Is(inner, problem.DomainBe, "NESTED_TX"), "%v", inner)

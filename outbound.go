@@ -117,7 +117,7 @@ func budget(ctx context.Context) (time.Duration, error) {
 func networkInTx(what string) error {
 	e := problem.Be("NETWORK_IN_TX", map[string]string{"call": what})
 	e.Cause = fmt.Errorf("outbound call %s inside a transaction (P8.4)", what)
-	return e
+	return problem.Abort(e)
 }
 
 func outboundLimit(dep string) error {

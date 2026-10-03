@@ -150,7 +150,7 @@ func (ch *clientChain) inTx(ctx context.Context, method string) error {
 	ch.log.LogAttrs(ctx, slog.LevelError, "grpc call inside a transaction refused",
 		slog.String("rpc.target", ch.dep), slog.String("rpc.method", strings.TrimPrefix(method, "/")),
 		slog.String("error.reason", "NETWORK_IN_TX"))
-	return problem.Be("NETWORK_IN_TX", nil)
+	return problem.Abort(problem.Be("NETWORK_IN_TX", nil))
 }
 
 func (ch *clientChain) txGuardUnary(ctx context.Context, method string, req, reply any,

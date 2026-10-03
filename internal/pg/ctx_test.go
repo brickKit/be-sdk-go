@@ -22,7 +22,7 @@ func TestInTxMarker(t *testing.T) {
 
 func TestGuardNetwork(t *testing.T) {
 	require.NoError(t, GuardNetwork(context.Background(), "grpc erp/inventory"))
-	err := GuardNetwork(markInTx(context.Background()), "grpc erp/inventory")
+	err := problem.Catch(func() error { return GuardNetwork(markInTx(context.Background()), "grpc erp/inventory") })
 	var pe *problem.Error
 	require.ErrorAs(t, err, &pe)
 	require.Equal(t, "NETWORK_IN_TX", pe.Reason)
