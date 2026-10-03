@@ -14,12 +14,13 @@ import (
 const thingCatalog = `{"resource_types": [{"type": "test.thing.thing", "owner_component": "test/thing",
   "view_key": "test.thing.view", "keys": ["test.thing.view", "test.thing.edit"], "dimensions": ["owner"],
   "relations": {"viewer": {"grants": ["test.thing.view"]}},
+  "share": {"key": "test.thing.share", "relations": ["viewer"], "subjects": ["user", "role", "dept", "dept_tree"]},
   "fields": [{"set": "pricing", "columns": ["price"], "read": "test.thing.price", "edit": "test.thing.price_edit"}],
   "derivation": "direct"}]}`
 
 const thingBundle = `{"contract": "authz/2.0", "revision": "7", "catalog_digest": "sha256:00",
   "capabilities": {"core": true, "sharing": true, "relation_sync": true, "delegation": false},
-  "roles": {"rep": ["test.thing.view", "test.thing.edit"]}, "grants": {}, "profiles": {},
+  "roles": {"rep": ["test.thing.view", "test.thing.edit", "test.thing.share"]}, "grants": {}, "profiles": {},
   "delegations": [], "stale_since": {}, "revoked_grants": {}}`
 
 type thing struct {

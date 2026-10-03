@@ -41,24 +41,15 @@ func (p *process) defaultDeadline() time.Duration {
 
 // assembleHTTP builds the main port: outer layer (httpx) → operations endpoints → gin with the
 // component's routes.
-func (p *process) assembleHTTP() (err error) {
+func (p *process) assembleHTTP() error {
 	eng := gin.New()
 	eng.HandleMethodNotAllowed = false
 	cfg := routerConfig{componentID: p.b.id, errorDomain: p.b.spec.errorDomain(), catalogue: p.b.catalogue, locale: p.b.locale,
 		defaultDeadline: p.defaultDeadline(), guardian: p.auth.guardian(p.rt)}
 	notFound := func(c *gin.Context) { fail(c, &cfg, problem.Be("NOT_FOUND", nil)) }
 	eng.NoRoute(notFound)
-	if p.mod.HTTP != nil {
-		defer func() {
-			if r := recover(); r != nil {
-				if ce, ok := config.AsError(r); ok {
-					err = ce
-					return
-				}
-				err = fmt.Errorf("registering routes: %v", r)
-			}
-		}()
-		p.mod.HTTP(newRouter(eng, cfg))
+	if err := registerRoutes(eng, cfg, p.mod, p.rt); err != nil {
+		return err
 	}
 	httpM, err := telemetry.NewHTTPServerMetrics(p.b.member.Registerer())
 	if err != nil {
@@ -70,6 +61,25 @@ func (p *process) assembleHTTP() (err error) {
 		Logger: p.b.log, Catalogue: p.b.catalogue, Locale: p.b.locale, DefaultDeadline: p.defaultDeadline(),
 		Observe: httpObserver(httpM), Fields: logx.WithFields, Quiet: isOpsPath}
 	p.httpSrv = httpx.NewServer(outer, p.defaultDeadline())
+	return nil
+}
+
+// registerRoutes registers the component's routes and the resource contract (P6.10); a configuration
+// panic of a registration (a protected route without the auth keys) comes back as its error.
+func registerRoutes(eng *gin.Engine, cfg routerConfig, mod *Module, rt *Runtime) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if ce, ok := config.AsError(r); ok {
+				err = ce
+				return
+			}
+			err = fmt.Errorf("registering routes: %v", r)
+		}
+	}()
+	if mod.HTTP != nil {
+		mod.HTTP(newRouter(eng, cfg))
+	}
+	mountResourceContract(newRouter(eng, cfg), rt, mod.Sharing)
 	return nil
 }
 
@@ -94,6 +104,7 @@ func (p *process) assembleGRPC() error {
 		Logger:           p.b.log, Catalogue: p.b.catalogue, Locale: p.b.locale,
 		TracerProvider: p.b.member.TracerProvider(), MeterProvider: p.b.member.MeterProvider(),
 		Propagator: p.b.member.Propagator(), Metrics: grpcServerMetrics{gm}, Domain: p.b.spec.errorDomain(),
+		UserFacing: p.mod.UserFacing,
 		Inbound: func(ctx context.Context, reqID string, c rpc.Caller) context.Context {
 			ctx = httpx.WithRequestID(ctx, reqID)
 			return logx.WithFields(ctx, slog.String("request_id", reqID), slog.String("caller", c.Caller))
@@ -114,6 +125,7 @@ func (p *process) superviseBackground() {
 	}
 	p.superviseDeps()
 	p.superviseJobs()
+	p.superviseAuthz()
 }
 
 func (p *process) startServers() {

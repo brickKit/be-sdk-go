@@ -158,6 +158,9 @@ func (p *process) build(bg context.Context) int {
 	if err := p.wireLifecycle(); err != nil {
 		return p.failCode("lifecycle", err)
 	}
+	if err := p.wireProjection(); err != nil {
+		return p.failCode("authorization projection", err)
+	}
 	if err := p.wireJobs(); err != nil {
 		return p.failCode("jobs", err)
 	}

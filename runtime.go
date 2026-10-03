@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/brickKit/be-sdk-go/internal/authz"
+	"github.com/brickKit/be-sdk-go/internal/authz/acl"
 	"github.com/brickKit/be-sdk-go/internal/events"
 	"github.com/brickKit/be-sdk-go/internal/jobs"
 	"github.com/brickKit/be-sdk-go/internal/lifecycle"
@@ -58,9 +59,11 @@ func (rt *Runtime) Now() time.Time { return rt.clock() }
 
 // runtimeDeps holds what the serving process wires into a Runtime after the configuration loaded.
 type runtimeDeps struct {
-	out       *outbound
-	store     *pg.Store
-	producer  *events.Producer
-	jobs      *jobs.Engine
-	lifecycle *lifecycle.Engine
+	out        *outbound
+	store      *pg.Store
+	producer   *events.Producer
+	jobs       *jobs.Engine
+	lifecycle  *lifecycle.Engine
+	projection *acl.Projection // the ACL projection (P6.12); nil without resource types
+	authzGRPC  string          // AUTHZ_GRPC_URL's dial target; "" when not declared
 }

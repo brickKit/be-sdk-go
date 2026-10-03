@@ -32,11 +32,13 @@ type Spec struct {
 type Module struct {
 	HTTP        func(r *Router)                 // user-plane routes; the engine and middleware are the SDK's (P3)
 	GRPC        func(s *grpc.Server)            // system-plane services (P7)
+	UserFacing  []string                        // full method names of rpcs that act for a user (P7.3): no user token = TOKEN_INVALID
 	Events      Events                          // published and consumed events (P12)
 	Jobs        []Job                           // scheduled jobs: every, singleton, cron (P14)
 	Workers     []Worker                        // consumers of tx.Enqueue's queued jobs (P14 "queue")
 	Reconcilers []ReconcilerRunner              // NewReconciler's results (P14 "reconciler")
 	Lifecycle   LifecycleHooks                  // the component's seal guards (P16)
+	Sharing     []SharingLoader                 // record loaders of the resource contract (P6.10)
 	Start       func(ctx context.Context) error // one-time initialisation, at most 30 s; never a loop
 	Stop        func(ctx context.Context) error // called once on shutdown, after the servers stopped
 }
