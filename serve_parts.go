@@ -93,7 +93,7 @@ func (p *process) assembleGRPC() error {
 		MaxConnectionAge: optDuration(p.b.vals, "GRPC_MAX_CONNECTION_AGE", rpc.DefaultMaxConnectionAge),
 		Logger:           p.b.log, Catalogue: p.b.catalogue, Locale: p.b.locale,
 		TracerProvider: p.b.member.TracerProvider(), MeterProvider: p.b.member.MeterProvider(),
-		Propagator: p.b.member.Propagator(), Metrics: grpcServerMetrics{gm},
+		Propagator: p.b.member.Propagator(), Metrics: grpcServerMetrics{gm}, Domain: p.b.id,
 		Inbound: func(ctx context.Context, reqID string, c rpc.Caller) context.Context {
 			ctx = httpx.WithRequestID(ctx, reqID)
 			return logx.WithFields(ctx, slog.String("request_id", reqID), slog.String("caller", c.Caller))

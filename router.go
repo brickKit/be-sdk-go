@@ -194,6 +194,7 @@ func fail(c *gin.Context, cfg *routerConfig, e *problem.Error) {
 	cat, locale := problem.NewCatalogue(), "zh-CN"
 	if cfg != nil {
 		cat, locale = cfg.catalogue, cfg.locale
+		e = problem.WithDomain(e, cfg.componentID)
 	}
 	httpx.WriteProblem(c.Writer, c.Request, cat, locale, e)
 }

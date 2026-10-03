@@ -49,6 +49,8 @@ type ServerConfig struct {
 	// Inbound, when set, derives the context component code runs in from the call's request ID
 	// (x-request-id, or a new one) and system principal, e.g. to add request-scoped log fields.
 	Inbound func(ctx context.Context, requestID string, c Caller) context.Context
+	// Domain is the member's component ID: an error with a reason but no domain (besdk.Errorf) is its.
+	Domain string
 }
 
 // NewServer returns the gRPC server of one member with the parameters of P7.5 and the interceptor

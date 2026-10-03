@@ -146,3 +146,14 @@ func StringMetadata(m map[string]any) (map[string]string, error) {
 	}
 	return out, nil
 }
+
+// WithDomain returns e with domain filled in when e has a reason but no domain: an error a component
+// raised with Errorf belongs to that component (P4.1). Other errors are returned unchanged.
+func WithDomain(e *Error, domain string) *Error {
+	if e == nil || e.Reason == "" || e.Domain != "" || domain == "" {
+		return e
+	}
+	c := *e
+	c.Domain = domain
+	return &c
+}

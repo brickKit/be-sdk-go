@@ -26,11 +26,12 @@ type serverChain struct {
 	locale    string
 	metrics   ServerMetrics
 	inbound   func(ctx context.Context, requestID string, c Caller) context.Context
+	domain    string
 	batch     batchLimits
 }
 
 func newServerChain(c ServerConfig) *serverChain {
-	s := &serverChain{log: c.Logger, catalogue: c.Catalogue, locale: c.Locale, metrics: c.Metrics, inbound: c.Inbound}
+	s := &serverChain{log: c.Logger, catalogue: c.Catalogue, locale: c.Locale, metrics: c.Metrics, inbound: c.Inbound, domain: c.Domain}
 	if s.log == nil {
 		s.log = discardLogger()
 	}
@@ -70,7 +71,7 @@ func (s *serverChain) finish(ctx context.Context, fullMethod string, start time.
 	var out error
 	code, level, logged := codes.OK, slog.LevelInfo, true
 	if err != nil {
-		pe := problem.From(err)
+		pe := problem.WithDomain(problem.From(err), s.domain)
 		st := s.catalogue.ToStatus(pe, s.locale)
 		out, code = st.Err(), st.Code()
 		level, logged = problem.LogLevel(code)
