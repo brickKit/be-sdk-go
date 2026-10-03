@@ -1,0 +1,26 @@
+// be-protocol 1.0: field options of the component protocol (P7.10).
+//
+// Import this file and annotate a repeated field of IDs with its batch limit:
+//   repeated string ids = 1 [(be.v1.max_items) = 100];
+// Without the option the limit is 500. A request above the limit answers INVALID_ARGUMENT with
+// ErrorInfo{reason: BATCH_TOO_LARGE, domain: be, metadata: {field, max, got}} plus BadRequest.
+//
+// Short names: some generators (ts-proto among them) expose a custom option by its short name,
+// without its package. Every option of the be.* packages therefore has a short name unique across
+// every option a component's protos can see: `max_items` is taken, and a later option never reuses
+// the short name of any option, ours or another package's (P7.10).
+//
+// No go_package is set: this repository ships no generated code. Every official SDK ships the
+// generated code of this file (Go: the SDK's package, mapped with M be/v1/limits.proto=<package>;
+// Python: an importable be.v1.limits_pb2; TypeScript: the SDK's module), so a component's
+// generated code links to one copy.
+syntax = "proto3";
+
+package be.v1;
+
+import "google/protobuf/descriptor.proto";
+
+extend google.protobuf.FieldOptions {
+  // Maximum number of items a repeated field accepts in one request.
+  int32 max_items = 51001;
+}

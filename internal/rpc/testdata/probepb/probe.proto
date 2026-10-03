@@ -1,0 +1,39 @@
+// Test service of be-sdk-go internal/rpc: one method per idempotency level and a request with
+// batch limits (explicit, default, nested, map). Not part of the SDK's public surface.
+syntax = "proto3";
+
+package betest.rpc.v1;
+
+import "be/v1/limits.proto";
+
+service Probe {
+  rpc Read(ProbeRequest) returns (ProbeReply) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc Touch(ProbeRequest) returns (ProbeReply) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  rpc Create(ProbeRequest) returns (ProbeReply);
+  rpc BatchGet(BatchRequest) returns (ProbeReply) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+message ProbeRequest {
+  string id = 1;
+}
+
+message ProbeReply {
+  string note = 1;
+}
+
+message Filter {
+  repeated string sku_ids = 1 [(be.v1.max_items) = 2];
+}
+
+message BatchRequest {
+  repeated string ids = 1 [(be.v1.max_items) = 3];
+  repeated string tags = 2;
+  Filter filter = 3;
+  map<string, string> labels = 4;
+}
