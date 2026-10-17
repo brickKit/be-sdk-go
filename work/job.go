@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	_ "time/tzdata" // images need not ship a zone database
 
 	"github.com/brickKit/be-sdk-go/v3/db"
 )
