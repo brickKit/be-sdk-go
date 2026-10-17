@@ -51,18 +51,18 @@ func Parse(s string) (*apd.Decimal, error) {
 	return d, nil
 }
 
-// ParseAmount reads an amount of a currency with scale decimal places; more significant places are refused, never
-// rounded away.
+// ParseAmount reads an amount of a currency with scale decimal places and returns it at exactly that scale; more
+// significant places are refused, never rounded away.
 func ParseAmount(s string, scale int32) (*apd.Decimal, error) {
 	d, err := Parse(s)
 	if err != nil {
 		return nil, err
 	}
-	var r apd.Decimal
-	if _, err := ctx.Quantize(&r, d, -scale); err != nil || r.Cmp(d) != 0 {
+	r := Round(d, scale, HalfAwayFromZero)
+	if r.Cmp(d) != 0 {
 		return nil, invalid(s, fmt.Sprintf("more than %d decimal places", scale))
 	}
-	return d, nil
+	return r, nil // exactly scale places
 }
 
 // Format writes d with exactly scale decimal places, rounding half away from zero; zero has no sign.
@@ -81,12 +81,16 @@ func rounder(m Mode) apd.Rounder {
 	return apd.RoundHalfUp // apd rounds half up by magnitude: away from zero
 }
 
-// Round rounds d to scale decimal places by mode.
+// Round rounds d (finite) to scale decimal places by mode. The precision follows d's own digits, so no amount is
+// too large to round.
 func Round(d *apd.Decimal, scale int32, mode Mode) *apd.Decimal {
-	c := ctx.WithPrecision(80)
+	digits := d.NumDigits() + int64(max(d.Exponent, 0)) + int64(max(scale, 0)) + 2
+	c := apd.BaseContext.WithPrecision(uint32(min(digits, int64(apd.MaxExponent))))
 	c.Rounding = rounder(mode)
 	var r apd.Decimal
-	_, _ = c.Quantize(&r, d, -scale)
+	if _, err := c.Quantize(&r, d, -scale); err != nil {
+		panic(fmt.Sprintf("money: rounding %s to %d places: %v", d, scale, err)) // only for a non-finite d
+	}
 	return &r
 }
 

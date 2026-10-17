@@ -151,9 +151,16 @@ func TestCleanupRemovesOnlyExpiredRecords(t *testing.T) { // P4.25, CK-IDEM-04
 		require.NoError(t, err)
 	}
 	pgtest.Exec(t, admin, "UPDATE be_idempotency SET expires_at = now() - interval '1 second' WHERE key LIKE 'old-%'")
+	// an expired record counts as gone even before the cleanup: the key is claimed afresh, not refused as reused
+	_, replayed, err := create(d, idem.Request{Principal: alice, Key: "old-2", Operation: "demo.note.create",
+		Target: "POST /api/notes", Body: []byte("another request")}, &runs, 0)
+	require.NoError(t, err)
+	assert.False(t, replayed)
+	assert.EqualValues(t, 4, runs.Load())
+	pgtest.Exec(t, admin, "UPDATE be_idempotency SET expires_at = now() - interval '1 second' WHERE key LIKE 'old-%'")
 	n, err := idem.Cleanup(context.Background(), d)
 	require.NoError(t, err)
-	assert.Equal(t, 2, n)
+	assert.EqualValues(t, 2, n)
 	var left []string
 	rows, err := admin.Query(context.Background(), "SELECT key FROM be_idempotency")
 	require.NoError(t, err)

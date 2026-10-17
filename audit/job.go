@@ -55,7 +55,7 @@ func (g GRPCSender) Watermark(ctx context.Context) (Watermark, error) {
 // local and the backlog grows (and is alerted on).
 func (a *Auditor) Job(sender *GRPCSender, log *slog.Logger) work.Job {
 	return work.Job{Name: "be.audit.transfer", Kind: work.Singleton, Effect: work.IdempotentExternal,
-		Interval: TransferEvery, Handle: func(ctx context.Context, _ *work.Run) error {
+		Interval: TransferEvery, MaxAttempts: work.Unlimited, Handle: func(ctx context.Context, _ *work.Run) error {
 			if _, err := a.Number(ctx); err != nil {
 				return fmt.Errorf("numbering audit records: %w", err)
 			}

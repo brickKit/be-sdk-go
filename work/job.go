@@ -39,9 +39,12 @@ const (
 const (
 	DefaultLease       = 30 * time.Second
 	DefaultMaxAttempts = 10
-	DefaultTimeout     = 5 * time.Minute
-	BackoffStart       = time.Second
-	BackoffCap         = 5 * time.Minute
+	// Unlimited is the attempt limit of jobs that must never stop for good, such as the SDK's own maintenance: their
+	// failures keep retrying with the capped backoff and stay visible in the logs.
+	Unlimited      = 1<<31 - 1
+	DefaultTimeout = 5 * time.Minute
+	BackoffStart   = time.Second
+	BackoffCap     = 5 * time.Minute
 )
 
 // Job declares one job of a module.

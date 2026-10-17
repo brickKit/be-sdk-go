@@ -208,22 +208,19 @@ func (f *Forwarder) markPublished(ctx context.Context, ords, claimed []int64) er
 	})
 }
 
-// Purge deletes published rows older than the redelivery retention (P6.12); unpublished rows are never deleted.
+// Purge deletes published rows older than the redelivery retention, in batches (P6.12); unpublished rows are never
+// deleted.
 func Purge(ctx context.Context, d *db.DB, retention time.Duration) (int64, error) {
-	var n int64
-	err := d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
-		tag, err := tx.Exec(ctx, `DELETE FROM be_outbox WHERE published_at IS NOT NULL
-			AND published_at < now() - make_interval(secs => $1)`, retention.Seconds())
-		n = tag.RowsAffected()
-		return err
-	})
-	return n, err
+	return db.DeleteInBatches(ctx, d, `DELETE FROM be_outbox WHERE ord IN (SELECT ord FROM be_outbox
+		WHERE published_at IS NOT NULL AND published_at < now() - make_interval(secs => $1)
+		LIMIT $2 FOR UPDATE SKIP LOCKED)`, retention.Seconds())
 }
 
 // PurgeJob is the hourly purge every member with a database runs (P6.12): published rows past the redelivery
 // retention go; unpublished rows stay.
 func PurgeJob(d *db.DB) work.Job {
 	return work.Job{Name: "be.outbox.purge", Kind: work.Singleton, Effect: work.Local, Interval: time.Hour,
+		MaxAttempts: work.Unlimited,
 		Handle: func(ctx context.Context, run *work.Run) error {
 			if _, err := Purge(ctx, d, RedeliveryRetention); err != nil {
 				return err

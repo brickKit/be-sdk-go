@@ -71,3 +71,16 @@ func TestAllocateRefusesBadInput(t *testing.T) {
 	_, err = RoundCash(dec(t, "1"), dec(t, "0"), 2, HalfEven)
 	assert.Error(t, err)
 }
+
+func TestRoundingNeverOverflows(t *testing.T) {
+	product := dec(t, strings.Repeat("9", 38)+".9999")
+	var sq apd.Decimal
+	_, err := apd.BaseContext.WithPrecision(200).Mul(&sq, product, product)
+	require.NoError(t, err)
+	r := Round(&sq, 4, HalfAwayFromZero)
+	assert.Equal(t, int32(-4), r.Exponent)
+	assert.Equal(t, 0, r.Cmp(Round(r, 4, HalfEven)), "rounding a 77-digit product keeps every digit")
+	a, err := ParseAmount("12.340", 2)
+	require.NoError(t, err)
+	assert.Equal(t, "12.34", a.Text('f'), "an amount comes back at the currency's scale")
+}

@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	protocol "github.com/brickKit/be-protocol/v3"
@@ -35,40 +36,47 @@ const (
 
 // Transport is the adapter.
 type Transport struct {
-	pool   *pgxpool.Pool
-	cfg    *pgx.ConnConfig
-	schema string
-	poll   time.Duration
-	// OnError receives the errors of the background readers (logged by the runtime); nil: dropped.
-	OnError func(error)
+	pool    *pgxpool.Pool
+	cfg     *pgx.ConnConfig
+	schema  string
+	poll    time.Duration
+	onError atomic.Pointer[func(error)]
 	stop    context.CancelFunc
 	purged  chan struct{}
 }
 
-// PurgeEvery is how often an open transport removes delivered messages past the retention (P6.27); every process
-// with the transport does it, and the deletes are idempotent.
-const PurgeEvery = time.Hour
+// SetOnError sets where the errors of the background readers and the purge go (logged by the runtime); unset:
+// dropped. It may be called while the transport runs.
+func (t *Transport) SetOnError(fn func(error)) { t.onError.Store(&fn) }
+
+// Purge timing (P6.27): every process with the transport purges soon after it opens and then every PurgeEvery, so
+// even processes restarted more often than hourly purge; the deletes are idempotent.
+const (
+	FirstPurgeAfter = time.Minute
+	PurgeEvery      = time.Hour
+)
 
 func (t *Transport) purgeLoop(ctx context.Context) {
 	defer close(t.purged)
-	tick := time.NewTicker(PurgeEvery)
-	defer tick.Stop()
+	wait := time.NewTimer(FirstPurgeAfter)
+	defer wait.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-tick.C:
+		case <-wait.C:
 			_, err := t.Purge(ctx, events.TransportRetention)
 			if ctx.Err() == nil {
 				t.report(err)
 			}
+			wait.Reset(PurgeEvery)
 		}
 	}
 }
 
 func (t *Transport) report(err error) {
-	if err != nil && t.OnError != nil {
-		t.OnError(err)
+	if fn := t.onError.Load(); err != nil && fn != nil && *fn != nil {
+		(*fn)(err)
 	}
 }
 
@@ -323,8 +331,10 @@ func (t *Transport) advance(ctx context.Context, s events.SubscriptionSpec) erro
 // claim takes one due delivery: ready and past its backoff, or in flight past its lease with deliveries left.
 // Exhausted deliveries whose lease expired are given up.
 func (t *Transport) claim(ctx context.Context, s events.SubscriptionSpec) (*events.Delivery, string, error) {
-	if _, err := t.pool.Exec(ctx, "DELETE FROM "+t.t("be_bus_delivery")+` WHERE durable = $1 AND in_flight
-		AND lease_until < clock_timestamp() AND attempts >= $2`, s.Durable, s.MaxDeliver); err != nil {
+	// exhausted leases go, and so do deliveries whose message the retention purge removed (P6.27)
+	if _, err := t.pool.Exec(ctx, "DELETE FROM "+t.t("be_bus_delivery")+` d WHERE durable = $1 AND (
+			(in_flight AND lease_until < clock_timestamp() AND attempts >= $2) OR
+			NOT EXISTS (SELECT 1 FROM `+t.t("be_bus_message")+` m WHERE m.seq = d.seq))`, s.Durable, s.MaxDeliver); err != nil {
 		return nil, "", err
 	}
 	token := ids.New().String()

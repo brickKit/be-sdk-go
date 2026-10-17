@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/internal/dbtest"
@@ -97,12 +98,17 @@ func get(t *testing.T, d *db.DB, p projection.Projection, id string) row {
 
 func apply(t *testing.T, d *db.DB, p projection.Projection, in projection.Input) bool {
 	t.Helper()
-	var fetch bool
+	return applyOut(t, d, p, in).Fetch
+}
+
+func applyOut(t *testing.T, d *db.DB, p projection.Projection, in projection.Input) projection.Outcome {
+	t.Helper()
+	var out projection.Outcome
 	require.NoError(t, d.BackgroundTx(context.Background(), func(ctx context.Context, tx db.Tx) (err error) {
-		fetch, err = p.Apply(ctx, tx, in)
+		out, err = p.Apply(ctx, tx, in)
 		return err
 	}))
-	return fetch
+	return out
 }
 
 func status(t *testing.T, d *db.DB, name string) string {
@@ -148,6 +154,17 @@ func TestAlignMatchesSource(t *testing.T) {
 	in := projection.Input{RecordID: "a", Kind: projection.Full, Version: 3, Impl: "impl-2", Epoch: "1.1", Data: json.RawMessage(`{"n":"x"}`)}
 	apply(t, d, p, in)
 	require.Equal(t, row{projection.Complete, 3, `{"n": "a3"}`}, get(t, d, p, "a"), "the same version is ignored")
+
+	// late inputs of the previous instance or of another epoch never touch the aligned rows
+	late := func(impl, epoch, kind string) projection.Outcome {
+		return applyOut(t, d, p, projection.Input{RecordID: "a", Kind: kind, Version: 99, Impl: impl, Epoch: epoch,
+			Data: json.RawMessage(`{"n":"late"}`)})
+	}
+	require.Equal(t, projection.OtherInstance, late("impl-1", "1.1", projection.Full).Skipped)
+	require.Equal(t, projection.OtherInstance, late("impl-1", "1.1", projection.Delete).Skipped)
+	require.Equal(t, projection.OlderEpoch, late("impl-2", "1.0", projection.Full).Skipped)
+	require.Equal(t, projection.NewerEpoch, late("impl-2", "2.1", projection.Full).Skipped)
+	require.Equal(t, row{projection.Complete, 3, `{"n": "a3"}`}, get(t, d, p, "a"))
 }
 
 func TestOlderAlignmentDiscarded(t *testing.T) {
@@ -201,14 +218,17 @@ func TestApplyAndRepair(t *testing.T) {
 	require.Equal(t, row{projection.Incomplete, 2, `{"x": 1, "y": 2}`}, get(t, d, p, "a"), "partial fields merge")
 	require.True(t, apply(t, d, p, in("b", projection.Partial, 6, `{"y":6}`)))
 	require.True(t, apply(t, d, p, in("c", projection.Partial, 2, `{"y":2}`)))
+	require.True(t, apply(t, d, p, in("e", projection.Partial, 4, `{"y":4}`)))
 
 	src := newSource()
 	src.put("a", 3, `{"x":3,"y":3}`)
 	src.put("b", 6, `{"x":6,"y":6}`)
 	src.gone["c"] = 3
+	src.purged["e"] = true
 	n, err := p.Repair(context.Background(), d, src)
 	require.NoError(t, err)
-	require.Equal(t, 3, n)
+	require.Equal(t, 4, n)
+	require.Equal(t, row{projection.Tombstone, 0, ""}, get(t, d, p, "e"), "purged at the source: a version-0 tombstone from incomplete")
 	require.Equal(t, row{projection.Complete, 3, `{"x": 3, "y": 3}`}, get(t, d, p, "a"))
 	require.Equal(t, row{projection.Complete, 6, `{"x": 6, "y": 6}`}, get(t, d, p, "b"))
 	require.Equal(t, row{projection.Tombstone, 3, ""}, get(t, d, p, "c"))
@@ -221,4 +241,28 @@ func TestApplyAndRepair(t *testing.T) {
 	require.False(t, apply(t, d, p, in("a", projection.Full, 2, `{"x":0}`)))
 	require.Equal(t, row{projection.Tombstone, 3, ""}, get(t, d, p, "c"))
 	require.Equal(t, row{projection.Complete, 3, `{"x": 3, "y": 3}`}, get(t, d, p, "a"))
+}
+
+func TestInputsForANewRecordAreSerialized(t *testing.T) { // P9.11: a delete is not undone by a concurrent older full
+	d, _ := dbtest.Schema(t, "proj_race", nil)
+	p := projection.Projection{Name: "partners"}
+	held := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- d.BackgroundTx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+			if _, err := p.Apply(ctx, tx, projection.Input{RecordID: "n", Kind: projection.Delete, Version: 2,
+				Impl: "impl-2", Epoch: "1.1"}); err != nil {
+				return err
+			}
+			close(held)
+			time.Sleep(500 * time.Millisecond) // the older full arrives while the delete is uncommitted
+			return nil
+		})
+	}()
+	<-held
+	out := applyOut(t, d, p, projection.Input{RecordID: "n", Kind: projection.Full, Version: 1, Impl: "impl-2", Epoch: "1.1",
+		Data: json.RawMessage(`{"n":"n1"}`)})
+	require.NoError(t, <-done)
+	require.False(t, out.Changed)
+	require.Equal(t, row{projection.Tombstone, 2, ""}, get(t, d, p, "n"))
 }

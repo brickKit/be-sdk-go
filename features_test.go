@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ type feature struct {
 }
 
 // TestFeatureMatrix keeps features.json honest: exactly the SDK-owned capabilities of the pinned protocol, known
-// statuses, evidence that names real tests, and pending rules that belong to their capability.
+// statuses, evidence that names real tests by package directory and name, and pending rules that belong to their capability.
 func TestFeatureMatrix(t *testing.T) {
 	var caps struct {
 		Protocol     string
@@ -99,7 +100,7 @@ func testNames(t *testing.T) map[string]bool {
 		}
 		b, err := fs.ReadFile(os.DirFS("."), path)
 		for _, m := range re.FindAllStringSubmatch(string(b), -1) {
-			names[m[1]] = true
+			names[filepath.Dir(path)+"."+m[1]] = true // package directory and name: same-named tests stay apart
 		}
 		return err
 	})

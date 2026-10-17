@@ -172,7 +172,9 @@ func (p Projection) Align(ctx context.Context, d *db.DB, src Source) error {
 	})
 }
 
-// Repair fetches the incomplete rows' current state and applies it (protocol 02, "repairing incomplete rows").
+// Repair fetches the incomplete rows' current state and applies it (protocol 02, "repairing incomplete rows"); it
+// returns how many rows changed. A source answering for another instance or epoch than the adopted one changes
+// nothing: align first.
 func (p Projection) Repair(ctx context.Context, d *db.DB, src Source) (int, error) {
 	impl, epoch, err := src.Identity(ctx)
 	if err != nil {
@@ -205,14 +207,17 @@ func (p Projection) Repair(ctx context.Context, d *db.DB, src Source) (int, erro
 	err = d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
 		n = 0
 		for _, r := range results {
-			in := Input{RecordID: r.ID, Version: r.Version, Impl: impl, Epoch: epoch, Data: r.Data, Kind: Full}
-			if r.State != Exists {
-				in.Kind = Delete
+			kind, ok := map[string]string{Exists: Full, Gone: Delete, Purged: Purged}[r.State]
+			if !ok {
+				return errors.New("projection: the source answered " + r.State)
 			}
-			if _, err := p.Apply(ctx, tx, in); err != nil {
+			out, err := p.Apply(ctx, tx, Input{RecordID: r.ID, Version: r.Version, Impl: impl, Epoch: epoch, Data: r.Data, Kind: kind})
+			if err != nil {
 				return err
 			}
-			n++
+			if out.Changed {
+				n++
+			}
 		}
 		return nil
 	})

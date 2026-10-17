@@ -50,25 +50,20 @@ const (
 	CronRetention  = 30 * 24 * time.Hour
 )
 
-// Purge deletes finished items past their retention; dead and paused items are never deleted. Cron items go only
-// when their slot is behind the watermark, so the slot is never materialized again.
+// Purge deletes finished items past their retention, in batches (P7.19); dead and paused items are never deleted.
+// Cron items go only when their slot is behind the watermark, so the slot is never materialized again.
 func Purge(ctx context.Context, d *db.DB) (int64, error) {
-	var n int64
-	err := d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
-		tag, err := tx.Exec(ctx, `DELETE FROM be_work_item w WHERE state IN ('done', 'resolved') AND (
+	return db.DeleteInBatches(ctx, d, `DELETE FROM be_work_item WHERE id IN (SELECT id FROM be_work_item w
+		WHERE state IN ('done', 'resolved') AND (
 			(kind = 'queue' AND finished_at < now() - make_interval(secs => $1)) OR
 			(kind = 'cron' AND finished_at < now() - make_interval(secs => $2)
-				AND run_at <= (SELECT watermark_at FROM be_cron_watermark m WHERE m.job = w.job)))`,
-			QueueRetention.Seconds(), CronRetention.Seconds())
-		n = tag.RowsAffected()
-		return err
-	})
-	return n, err
+				AND run_at <= (SELECT watermark_at FROM be_cron_watermark m WHERE m.job = w.job)))
+		LIMIT $3 FOR UPDATE SKIP LOCKED)`, QueueRetention.Seconds(), CronRetention.Seconds())
 }
 
 // PurgeJob is the hourly cleanup every member with a database runs (P7.19).
 func PurgeJob(d *db.DB) Job {
-	return Job{Name: "be.work.cleanup", Kind: Singleton, Effect: Local, Interval: time.Hour,
+	return Job{Name: "be.work.cleanup", Kind: Singleton, Effect: Local, Interval: time.Hour, MaxAttempts: Unlimited,
 		Handle: func(ctx context.Context, run *Run) error {
 			if _, err := Purge(ctx, d); err != nil {
 				return err

@@ -2,20 +2,20 @@
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
   "protocol": "3.0.0-alpha.1",
-  "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。",
+  "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
       "status": "verified",
       "evidence": [
-        "TestServeReadyAndGracefulStop",
-        "TestUnknownEntry",
-        "TestConfigurationErrorsAllAtOnce",
-        "TestModuleFailuresDoNotCrash",
-        "TestPlatformEndpoints",
-        "TestDatabaseStartChecks",
-        "TestBootClockAdvances",
-        "TestServesTheSystemSurfaceAndStopsItGracefully",
-        "TestSDKIsMergeSafe"
+        "launcher.TestServeReadyAndGracefulStop",
+        "launcher.TestUnknownEntry",
+        "launcher.TestConfigurationErrorsAllAtOnce",
+        "launcher.TestModuleFailuresDoNotCrash",
+        "httpx.TestPlatformEndpoints",
+        "launcher.TestDatabaseStartChecks",
+        "clock.TestBootClockAdvances",
+        "launcher.TestServesTheSystemSurfaceAndStopsItGracefully",
+        "mergesafety.TestSDKIsMergeSafe"
       ],
       "pending": [
         {
@@ -27,15 +27,15 @@
     "shell": {
       "status": "verified",
       "evidence": [
-        "TestHostsMembersOnTheirOwnPorts",
-        "TestRefusesMemberNotCompiledIn",
-        "TestRefusesOtherVersionInBuildInfo",
-        "TestRefusesReplaceUnlessAllowed",
-        "TestRefusesVersionMismatchAndBadConfigAllAtOnce",
-        "TestRefusesProcessKeysThatDisagree",
-        "TestMembersShareOnePoolAndNeverEachOthersSchema",
-        "TestSameSQLOfTwoMembersNeverSharesACachedStatement",
-        "TestEachMemberServesItsSystemSurfaceOnItsOwnPort"
+        "shell.TestHostsMembersOnTheirOwnPorts",
+        "shell.TestRefusesMemberNotCompiledIn",
+        "shell.TestRefusesOtherVersionInBuildInfo",
+        "shell.TestRefusesReplaceUnlessAllowed",
+        "shell.TestRefusesVersionMismatchAndBadConfigAllAtOnce",
+        "shell.TestRefusesProcessKeysThatDisagree",
+        "shell.TestMembersShareOnePoolAndNeverEachOthersSchema",
+        "db.TestSameSQLOfTwoMembersNeverSharesACachedStatement",
+        "shell.TestEachMemberServesItsSystemSurfaceOnItsOwnPort"
       ],
       "pending": [
         {
@@ -51,24 +51,24 @@
     "config": {
       "status": "verified",
       "evidence": [
-        "TestConfigParseVectors",
-        "TestAllProblemsAtOnceAndNoSecretValues",
-        "TestDeclarationRules",
-        "TestSecretFromFileAndRefresh",
-        "TestSecretValueAndFileConflict",
-        "TestRangeAndAccessorMisuse"
+        "config.TestConfigParseVectors",
+        "config.TestAllProblemsAtOnceAndNoSecretValues",
+        "config.TestDeclarationRules",
+        "config.TestSecretFromFileAndRefresh",
+        "config.TestSecretValueAndFileConflict",
+        "config.TestRangeAndAccessorMisuse"
       ]
     },
     "errors": {
       "status": "verified",
       "evidence": [
-        "TestErrorsVectors",
-        "TestInternalNeverLeaks",
-        "TestUnknownReasonIsInternal",
-        "TestWriteHTTP",
-        "TestDeclaredComponentReason",
-        "TestErrorsPanicsBodiesAndUnknownRoutes",
-        "TestGRPCComponentErrorsPassThroughUnchanged"
+        "errs.TestErrorsVectors",
+        "errs.TestInternalNeverLeaks",
+        "errs.TestUnknownReasonIsInternal",
+        "errs.TestWriteHTTP",
+        "errs.TestDeclaredComponentReason",
+        "httpx.TestErrorsPanicsBodiesAndUnknownRoutes",
+        "grpcx.TestGRPCComponentErrorsPassThroughUnchanged"
       ],
       "pending": [
         {
@@ -80,94 +80,96 @@
     "calls": {
       "status": "verified",
       "evidence": [
-        "TestOutboundTimeoutVectors",
-        "TestRetryDecisionVectors",
-        "TestRetryBudgetVectors",
-        "TestCircuitBreakerVectors",
-        "TestCallOutcomesVectors",
-        "TestRetriesOnlyIdempotentCallsAtMostThreeTimes",
-        "TestRelayedFailuresAreNeitherRetriedNorCounted",
-        "TestBreakerOpensAndFailsFastWithoutSending",
-        "TestOutboundLimit",
-        "TestDeadlines",
-        "TestGRPCChainRetriesAtOneLayerOnly",
-        "TestHTTPChainRetriesAtOneLayerOnlyAndForwardsTheUser",
-        "TestNoCallsInsideATransaction",
-        "TestRequestIDAndDeadline"
+        "calls.TestOutboundTimeoutVectors",
+        "calls.TestRetryDecisionVectors",
+        "calls.TestRetryBudgetVectors",
+        "calls.TestCircuitBreakerVectors",
+        "calls.TestCallOutcomesVectors",
+        "calls.TestRetriesOnlyIdempotentCallsAtMostThreeTimes",
+        "calls.TestRelayedFailuresAreNeitherRetriedNorCounted",
+        "calls.TestBreakerOpensAndFailsFastWithoutSending",
+        "calls.TestOutboundLimit",
+        "calls.TestDeadlines",
+        "grpcx.TestGRPCChainRetriesAtOneLayerOnly",
+        "grpcx.TestHTTPChainRetriesAtOneLayerOnlyAndForwardsTheUser",
+        "calls.TestNoCallsInsideATransaction",
+        "httpx.TestRequestIDAndDeadline"
       ]
     },
     "idempotency": {
       "status": "verified",
       "evidence": [
-        "TestIdempotencyVectors",
-        "TestOnceAndReplayed",
-        "TestAFailedCommandLeavesNoClaim",
-        "TestConcurrentUsesRunOnce",
-        "TestInProgressWhenTheFirstUseOutlastsTheLockWait",
-        "TestCleanupRemovesOnlyExpiredRecords",
-        "TestIdempotentCommandsOnBothSurfaces"
+        "idem.TestIdempotencyVectors",
+        "idem.TestOnceAndReplayed",
+        "idem.TestAFailedCommandLeavesNoClaim",
+        "idem.TestConcurrentUsesRunOnce",
+        "idem.TestInProgressWhenTheFirstUseOutlastsTheLockWait",
+        "idem.TestCleanupRemovesOnlyExpiredRecords",
+        "launcher.TestIdempotentCommandsOnBothSurfaces"
       ]
     },
     "database": {
       "status": "verified",
       "evidence": [
-        "TestRoleAndSchemaArePerTransactionAndNeverLeak",
-        "TestTimeoutsNestingAndRetries",
-        "TestForegroundBudgetAndDurableCheck",
-        "TestManyMembersConcurrentlyOnOnePool",
-        "TestDBErrorsVectors",
-        "TestMigrationLintVectors",
-        "TestSDKMigrationsPassTheLint",
-        "TestMigrateTwiceAndStateInTheComponentSchema",
-        "TestAFailedFileLeavesNoTraceAndTheEntryStaysRerunnable",
-        "TestLockWaitReportsTheBlocker",
-        "TestTwoInstancesMigrateAtOnce",
-        "TestRefusedMigrationsChangeNothing",
-        "TestServeNeverParsesTheOwnerRole",
-        "TestDatabaseComponentMigratesAndServes",
-        "TestDatabaseStartChecks",
-        "TestNewIsVersion7AndOrdered",
-        "TestRefusesMembersOfOneTargetThatDisagreeOnPreparedStatements"
+        "db.TestRoleAndSchemaArePerTransactionAndNeverLeak",
+        "db.TestTimeoutsNestingAndRetries",
+        "db.TestForegroundBudgetAndDurableCheck",
+        "db.TestManyMembersConcurrentlyOnOnePool",
+        "db.TestDBErrorsVectors",
+        "db.TestMigrationLintVectors",
+        "db.TestSDKMigrationsPassTheLint",
+        "db.TestMigrateTwiceAndStateInTheComponentSchema",
+        "db.TestAFailedFileLeavesNoTraceAndTheEntryStaysRerunnable",
+        "db.TestLockWaitReportsTheBlocker",
+        "db.TestTwoInstancesMigrateAtOnce",
+        "db.TestRefusedMigrationsChangeNothing",
+        "db.TestServeNeverParsesTheOwnerRole",
+        "launcher.TestDatabaseComponentMigratesAndServes",
+        "launcher.TestDatabaseStartChecks",
+        "ids.TestNewIsVersion7AndOrdered",
+        "shell.TestRefusesMembersOfOneTargetThatDisagreeOnPreparedStatements"
       ]
     },
     "document-numbers": {
       "status": "verified",
       "evidence": [
-        "TestDocumentNumbers"
+        "db.TestDocumentNumbers"
       ]
     },
     "partitions": {
       "status": "verified",
       "evidence": [
-        "TestMonthlyPartitions",
-        "TestOnlyRangePartitionedTablesAreDeclared",
-        "TestPartitionsAreKeptAheadInTheComponent"
+        "db.TestMonthlyPartitions",
+        "db.TestOnlyRangePartitionedTablesAreDeclared",
+        "launcher.TestPartitionsAreKeptAheadInTheComponent",
+        "db.TestDroppingADeclaredTableNeedsUndeclaring"
       ]
     },
     "money": {
       "status": "verified",
       "evidence": [
-        "TestMoneyVectors",
-        "TestAllocateRefusesBadInput"
+        "money.TestMoneyVectors",
+        "money.TestAllocateRefusesBadInput",
+        "money.TestRoundingNeverOverflows"
       ]
     },
     "business-dates": {
       "status": "verified",
       "evidence": [
-        "TestBusinessDateVectors"
+        "bizdate.TestBusinessDateVectors"
       ]
     },
     "outbox": {
       "status": "verified",
       "evidence": [
-        "TestEmitOnlyWithTheBusinessCommit",
-        "TestTwoNumberersNeverShareAPosition",
-        "TestALongTransactionDelaysOnlyItsOwnRows",
-        "TestANewEpochRestartsPositionsAndRecordsTheFork",
-        "TestForwarderPublishesInOrderOnceNumbered",
-        "TestPurgeKeepsUnpublishedAndRecentRows",
-        "TestPartitionVectors",
-        "TestEventsFlowBetweenComponentsOnBothTransports"
+        "events.TestEmitOnlyWithTheBusinessCommit",
+        "events.TestTwoNumberersNeverShareAPosition",
+        "events.TestALongTransactionDelaysOnlyItsOwnRows",
+        "events.TestANewEpochRestartsPositionsAndRecordsTheFork",
+        "events.TestForwarderPublishesInOrderOnceNumbered",
+        "events.TestPurgeKeepsUnpublishedAndRecentRows",
+        "events.TestPartitionVectors",
+        "launcher.TestEventsFlowBetweenComponentsOnBothTransports"
       ],
       "pending": [
         {
@@ -179,47 +181,47 @@
     "envelope": {
       "status": "verified",
       "evidence": [
-        "TestEnvelopeVectors",
-        "TestTooManyHopsIsAFailure"
+        "events.TestEnvelopeVectors",
+        "events.TestTooManyHopsIsAFailure"
       ]
     },
     "claim-check": {
       "status": "verified",
       "evidence": [
-        "TestLargePayloadsTravelByClaimCheck"
+        "events.TestLargePayloadsTravelByClaimCheck"
       ]
     },
     "transport": {
       "status": "verified",
       "evidence": [
-        "TestMemoryTransportPassesTheSuite",
-        "TestTheSuiteFailsAnAdapterThatLosesAcks",
-        "TestJetStreamPassesTheSuite",
-        "TestPostgresQueuePassesTheSuite",
-        "TestAnInFlightRowWithASmallerSequenceIsNotSkipped",
-        "TestPurgeDropsMessagesPastTheRetention",
-        "TestStreamsKeepMessagesForTheTransportRetention"
+        "events.TestMemoryTransportPassesTheSuite",
+        "events.TestTheSuiteFailsAnAdapterThatLosesAcks",
+        "events/jetstream.TestJetStreamPassesTheSuite",
+        "events/pgqueue.TestPostgresQueuePassesTheSuite",
+        "events/pgqueue.TestAnInFlightRowWithASmallerSequenceIsNotSkipped",
+        "events/pgqueue.TestPurgeDropsMessagesPastTheRetention",
+        "events/jetstream.TestStreamsKeepMessagesForTheTransportRetention"
       ]
     },
     "consumers": {
       "status": "verified",
       "evidence": [
-        "TestARedeliveryTakesEffectOnce",
-        "TestTheLastFailureBecomesOneDeadLetter"
+        "events.TestARedeliveryTakesEffectOnce",
+        "events.TestTheLastFailureBecomesOneDeadLetter"
       ],
       "note": "收件表不清理：P6.26 只禁止提前清理；按覆盖它的版本或墓碑证明的清理随水位与对账加入"
     },
     "work": {
       "status": "verified",
       "evidence": [
-        "TestStopReleasesTheLeaseForAnotherReplica",
-        "TestATakenOverHolderCanCommitNothing",
-        "TestNonIdempotentCallsAreNeverSentTwice",
-        "TestRetriesThenDeadWithItsDeadLetter",
-        "TestASingletonContinuesFromItsCommittedProgress",
-        "TestARunPastItsDeadlineIsRetried",
-        "TestPurgeKeepsWhatIsNotYetDue",
-        "TestQueuedWorkRunsInTheComponent"
+        "work.TestStopReleasesTheLeaseForAnotherReplica",
+        "work.TestATakenOverHolderCanCommitNothing",
+        "work.TestNonIdempotentCallsAreNeverSentTwice",
+        "work.TestRetriesThenDeadWithItsDeadLetter",
+        "work.TestASingletonContinuesFromItsCommittedProgress",
+        "work.TestARunPastItsDeadlineIsRetried",
+        "work.TestPurgeKeepsWhatIsNotYetDue",
+        "launcher.TestQueuedWorkRunsInTheComponent"
       ],
       "pending": [
         {
@@ -239,26 +241,26 @@
     "cron": {
       "status": "verified",
       "evidence": [
-        "TestCronSlotVectors",
-        "TestCronRejectsBadExpressions",
-        "TestTwoReplicasRunACronSlotOnce"
+        "work.TestCronSlotVectors",
+        "work.TestCronRejectsBadExpressions",
+        "work.TestTwoReplicasRunACronSlotOnce"
       ]
     },
     "user-credentials": {
       "status": "verified",
       "evidence": [
-        "TestJWTVerifyVectors",
-        "TestUnknownKIDRefreshIsRateLimited",
-        "TestStaleKeysAreNotUsed",
-        "TestOthersSeeNothingAndFieldsFollowTheSegments"
+        "identity.TestJWTVerifyVectors",
+        "identity.TestUnknownKIDRefreshIsRateLimited",
+        "identity.TestStaleKeysAreNotUsed",
+        "launcher.TestOthersSeeNothingAndFieldsFollowTheSegments"
       ]
     },
     "call-modes": {
       "status": "verified",
       "evidence": [
-        "TestRouteValidation",
-        "TestUndeclaredMethodsAreRefused",
-        "TestOthersSeeNothingAndFieldsFollowTheSegments"
+        "httpx.TestRouteValidation",
+        "grpcx.TestUndeclaredMethodsAreRefused",
+        "launcher.TestOthersSeeNothingAndFieldsFollowTheSegments"
       ],
       "pending": [
         {
@@ -270,61 +272,61 @@
     "service-identity": {
       "status": "verified",
       "evidence": [
-        "TestOnlyPermittedComponentsMayCall",
-        "TestConnectionsWithoutAValidIdentityAreRefused"
+        "grpcx.TestOnlyPermittedComponentsMayCall",
+        "grpcx.TestConnectionsWithoutAValidIdentityAreRefused"
       ]
     },
     "authz-definitions": {
       "status": "verified",
       "evidence": [
-        "TestARouteWithAnUndeclaredOperationStopsTheStart",
-        "TestProtectedRoutesNeedTheSecurityConfiguration",
-        "TestCanonicalVectors",
-        "TestSegmentCanonicalVectors"
+        "launcher.TestARouteWithAnUndeclaredOperationStopsTheStart",
+        "launcher.TestProtectedRoutesNeedTheSecurityConfiguration",
+        "canon.TestCanonicalVectors",
+        "authz.TestSegmentCanonicalVectors"
       ]
     },
     "authz-view": {
       "status": "verified",
       "evidence": [
-        "TestNoViewAfterStart",
-        "TestValidityCountsFromTheRequest",
-        "TestAnswersThatDoNotRenew",
-        "TestAStallInvalidatesEveryShard",
-        "TestDisabledAccountsHaveNoSegments",
-        "TestAWriteWhoseCutoffPassedIsRolledBack"
+        "authz.TestNoViewAfterStart",
+        "authz.TestValidityCountsFromTheRequest",
+        "authz.TestAnswersThatDoNotRenew",
+        "authz.TestAStallInvalidatesEveryShard",
+        "authz.TestDisabledAccountsHaveNoSegments",
+        "db.TestAWriteWhoseCutoffPassedIsRolledBack"
       ]
     },
     "authz-evaluation": {
       "status": "verified",
       "evidence": [
-        "TestSegmentEvalVectors",
-        "TestCompiledListsMatchTheVectors",
-        "TestOthersSeeNothingAndFieldsFollowTheSegments"
+        "authz.TestSegmentEvalVectors",
+        "authz.TestCompiledListsMatchTheVectors",
+        "launcher.TestOthersSeeNothingAndFieldsFollowTheSegments"
       ]
     },
     "audit": {
       "status": "verified",
       "evidence": [
-        "TestChangesAreAuditedWithTheirTransaction",
-        "TestDenialsPastTheBudgetAreCountedNotLost",
-        "TestNumberingTransferAndDeletion",
-        "TestOthersSeeNothingAndFieldsFollowTheSegments"
+        "audit.TestChangesAreAuditedWithTheirTransaction",
+        "audit.TestDenialsPastTheBudgetAreCountedNotLost",
+        "audit.TestNumberingTransferAndDeletion",
+        "launcher.TestOthersSeeNothingAndFieldsFollowTheSegments"
       ]
     },
     "lists": {
       "status": "verified",
       "evidence": [
-        "TestListPagesVectors",
-        "TestCursorsBindTheirFilterAndPlan",
-        "TestRestrictedFieldsAndSearch"
+        "list.TestListPagesVectors",
+        "list.TestCursorsBindTheirFilterAndPlan",
+        "list.TestRestrictedFieldsAndSearch"
       ]
     },
     "search": {
       "status": "verified",
       "evidence": [
-        "TestSearchVectors",
-        "TestChineseSearchByPinyin",
-        "TestRestrictedFieldsAndSearch"
+        "search.TestSearchVectors",
+        "list.TestChineseSearchByPinyin",
+        "list.TestRestrictedFieldsAndSearch"
       ],
       "pending": [
         {
@@ -336,11 +338,12 @@
     "projections": {
       "status": "verified",
       "evidence": [
-        "TestProjectionApplyVectors",
-        "TestAlignMatchesSource",
-        "TestOlderAlignmentDiscarded",
-        "TestWrittenDuringAlignment",
-        "TestApplyAndRepair"
+        "projection.TestProjectionApplyVectors",
+        "projection.TestAlignMatchesSource",
+        "projection.TestOlderAlignmentDiscarded",
+        "projection.TestWrittenDuringAlignment",
+        "projection.TestApplyAndRepair",
+        "projection.TestInputsForANewRecordAreSerialized"
       ]
     },
     "call-mode-service-proxy": {

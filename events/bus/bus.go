@@ -34,7 +34,7 @@ func Open(ctx context.Context, url, name string, log *slog.Logger) (events.Trans
 		if err != nil {
 			return nil, err
 		}
-		t.OnError = func(err error) { log.Warn("bus", "error", err.Error()) }
+		t.SetOnError(func(err error) { log.Warn("bus", "error", err.Error()) })
 		return t, nil
 	}
 	return nil, fmt.Errorf("BUS_URL: the scheme must be nats:// or pgqueue://")

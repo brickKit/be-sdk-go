@@ -132,6 +132,7 @@ func (m *Member) auditTransfer(a *audit.Auditor, values *config.Values) error {
 // partitionJob keeps the declared tables' monthly partitions ahead (P5.24); a boundary anomaly fails the run.
 func partitionJob(log *slog.Logger) work.Job {
 	return work.Job{Name: "be.partitions.maintain", Kind: work.Singleton, Effect: work.Local, Interval: time.Hour,
+		MaxAttempts: work.Unlimited,
 		Handle: func(ctx context.Context, run *work.Run) error {
 			return run.Complete(ctx, func(ctx context.Context, tx db.Tx) error {
 				created, err := db.MaintainPartitions(ctx, tx)

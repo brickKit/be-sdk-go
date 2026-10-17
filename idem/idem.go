@@ -115,7 +115,8 @@ type Outcome struct {
 	Result json.RawMessage
 }
 
-// Do runs fn once per key (P4.23): in one transaction it claims the key, runs fn and stores its outcome. A stored
+// Do runs fn once per key (P4.23): in one transaction it claims the key, runs fn and stores its outcome; an expired
+// record not yet cleaned up counts as gone, so the key is claimed afresh (P4.25). A stored
 // outcome for the same request is returned with replayed=true and fn does not run; a different request under the
 // key is IDEMPOTENCY_KEY_REUSED; a first use not yet committed is IDEMPOTENCY_IN_PROGRESS. When fn fails, nothing
 // is kept and the key can be used again.
@@ -127,7 +128,10 @@ func Do(ctx context.Context, d *db.DB, r Request, fn func(ctx context.Context, t
 	err = d.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
 		out, replayed = Outcome{}, false
 		tag, err := tx.Exec(ctx, `INSERT INTO be_idempotency (principal, key, fingerprint, operation, status, expires_at)
-			VALUES ($1, $2, $3, $4, 0, now() + make_interval(secs => $5)) ON CONFLICT DO NOTHING`,
+			VALUES ($1, $2, $3, $4, 0, now() + make_interval(secs => $5))
+			ON CONFLICT (principal, key) DO UPDATE SET fingerprint = excluded.fingerprint, operation = excluded.operation,
+				status = 0, result = NULL, created_at = now(), expires_at = excluded.expires_at
+			WHERE be_idempotency.expires_at <= now()`,
 			r.Principal, r.Key, fp, r.Operation, Retention.Seconds())
 		var pg *pgconn.PgError
 		if errors.As(err, &pg) && pg.Code == "55P03" {
