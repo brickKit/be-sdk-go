@@ -120,6 +120,11 @@ func (t *Transport) Subscribe(ctx context.Context, spec events.SubscriptionSpec,
 	runCtx, cancel := context.WithCancel(context.Background())
 	sub := &subscription{cancel: cancel}
 	for _, stream := range spec.Streams {
+		// the subscriber may start before any producer: the stream is ensured here too, with the same settings (P6.17)
+		if err := t.EnsureStream(ctx, events.Stream{Name: stream, Partitions: 1}); err != nil {
+			_ = sub.Stop()
+			return nil, err
+		}
 		cons, err := t.consumer(ctx, stream, spec)
 		if err != nil {
 			_ = sub.Stop()

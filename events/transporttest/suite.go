@@ -342,6 +342,19 @@ var Cases = []Case{
 			fail(t, "%d deliveries", len(rec.got))
 		}
 	}},
+	{"a subscriber may start before any producer", func(t T, f Factory) {
+		tr, stream := f(t) // no EnsureStream: the subscription comes first (P6.17)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		t.Cleanup(cancel)
+		rec := newRecorder()
+		subscribe(t, tr, ctx, spec(stream, "early"), func(_ context.Context, d *events.Delivery) events.Outcome {
+			rec.add(d)
+			return events.Ack
+		})
+		must(t, tr.EnsureStream(ctx, events.Stream{Name: stream, Partitions: 4})) // the producer starts later
+		must(t, tr.Publish(ctx, msg(stream, 1, "demo.thing_happened.v1", "late")))
+		eventually(t, 10*time.Second, func() bool { return rec.count() == 1 }, "delivered to the early subscriber")
+	}},
 	{"notifications are neither stored nor redelivered", func(t T, f Factory) {
 		tr, stream, ctx := setup(t, f)
 		subject := "be.notify." + stream
