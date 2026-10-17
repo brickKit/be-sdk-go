@@ -173,6 +173,16 @@ func (w *World) Grant(principal string, segs ...authz.Segment) {
 	w.gen++
 }
 
+// Revoke removes every segment a principal holds; the next view the component verifies no longer has them.
+func (w *World) Revoke(principal string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	e := w.subjects[principal]
+	e.Segments = nil
+	w.subjects[principal] = e
+	w.gen++
+}
+
 // GrantAll gives a principal every declared operation on every record (no dimension restricts it), reading all
 // non-secret fields.
 func (w *World) GrantAll(principal string, defs *authz.Definitions) {

@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,8 @@ type Context struct {
 	requestID string
 	traceID   string
 	logger    *slog.Logger
+	body      []byte
+	bodyRead  bool
 }
 
 // Ctx is the request's context: it carries the deadline and the trace; pass it to every call.
@@ -46,18 +49,33 @@ func (c *Context) Operation() string { return c.route.Operation }
 // Logger is the member's logger with request_id and trace_id.
 func (c *Context) Logger() *slog.Logger { return c.logger }
 
+// Body returns the request body's bytes, read once (up to the route's limit; over it is BODY_TOO_LARGE).
+func (c *Context) Body() ([]byte, error) {
+	if !c.bodyRead {
+		b, err := io.ReadAll(c.gin.Request.Body)
+		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				return nil, errs.New(errs.ReasonBodyTooLarge, "the request body is too large")
+			}
+			return nil, errs.New(errs.ReasonRequestInvalid, "the request body could not be read")
+		}
+		c.body, c.bodyRead = b, true
+	}
+	return c.body, nil
+}
+
 // BindJSON decodes the body into v. A body over the route's limit is BODY_TOO_LARGE; anything that does not decode
 // is REQUEST_INVALID. Unknown fields are accepted (contracts only grow, protocol 19).
 func (c *Context) BindJSON(v any) error {
-	dec := json.NewDecoder(c.gin.Request.Body)
-	if err := dec.Decode(v); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			return errs.New(errs.ReasonBodyTooLarge, "the request body is too large")
-		}
-		if errors.Is(err, io.EOF) {
-			return errs.New(errs.ReasonRequestInvalid, "the request body is empty")
-		}
+	body, err := c.Body()
+	if err != nil {
+		return err
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return errs.New(errs.ReasonRequestInvalid, "the request body is empty")
+	}
+	if err := json.Unmarshal(body, v); err != nil {
 		var typeErr *json.UnmarshalTypeError
 		if errors.As(err, &typeErr) {
 			return errs.New(errs.ReasonRequestInvalid, "a field has the wrong type").WithViolations(errs.Violation{
@@ -67,6 +85,9 @@ func (c *Context) BindJSON(v any) error {
 	}
 	return nil
 }
+
+// Header returns a request header.
+func (c *Context) Header(name string) string { return c.gin.GetHeader(name) }
 
 // JSON writes a JSON response.
 func (c *Context) JSON(status int, v any) error {

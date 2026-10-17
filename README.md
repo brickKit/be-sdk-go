@@ -21,6 +21,8 @@ func main() { launcher.Main(sales.Definition) }
 
 模块从 `rt` 取一切：配置（`rt.Config`）、依赖地址（`rt.Dependency`，可选依赖缺席时返回“不存在”）、数据库（`rt.DB`，只经 `rt.DB.Tx` 与 `BackgroundTx` 进入事务）、调用其他组件（`rt.HTTP` 走用户面、`rt.GRPC` 走系统面）、日志、指标注册器、追踪器。声明了 `Migrations` 的组件自动带上数据库的键；镜像的 `migrate` 入口先执行 SDK 自己的表（来自 `be-protocol` 的 `migrations/`），再执行组件的。模块在 `Routes` 里登记路由，每条路由声明它的操作（`httpx.Route.Operation`），公开接口显式标 `Public`；有系统面的模块实现 `Services`，用 `grpcx.Services.Register` 登记服务，每个方法同样声明操作，定义里写 `GRPCPort`（`component.yaml` 中 `grpc` 额外端口）。
 
+有副作用的命令用幂等键：处理函数先 `idem.FromHTTP(c)`（系统面 `idem.FromGRPC`）得到请求，再把业务写入放进 `idem.Do`，返回命令的决定（例如新记录的身份）；同键同请求重放这个决定，处理函数按调用者当前的授权重新读取后回答。
+
 调用其他组件只经运行时的客户端：每个（成员，依赖）一个并发上限、熔断器与重试预算；每次调用的时限逐跳缩短，只有声明为幂等的方法（gRPC 加 `calls.Idempotent()`，HTTP 的 `GET` 或 `Request.Idempotent`）在依赖自己不可用时重试，最多 3 次；依赖转述的更下游故障不重试，所以一条调用链只有一层重试。最终失败按协议向上答（`DEPENDENCY_UNAVAILABLE`、`DEADLINE_EXCEEDED`、非幂等时 `RESULT_UNKNOWN`），业务错误原样穿透。替用户读取用 `Request.ForwardUser` 转发原凭据。事务内的调用被拒绝。
 
 产生事件的组件在定义里声明 `Streams`，在业务事务内调用 `rt.Events.Emit`；SDK 负责编号、转发与信封。消费事件的组件声明 `Subscribes` 并实现 `Subscriptions`，处理函数在 SDK 开的事务里执行，收件表与业务写入同时提交，重复投递只生效一次，最后一次仍失败的记为死信。两者都需要数据库与 `BUS_URL`。
@@ -49,6 +51,7 @@ func main() { launcher.Main(sales.Definition) }
 | `ids` | 记录身份 UUIDv7 | 第 5 章 P5.17 |
 | `calls` | 出站调用：出站时限、重试决定与预算、熔断、并发上限、结果分类与向上报告；HTTP 与 gRPC 客户端 | 第 4 章 |
 | `grpcx` | 系统面：每个成员一个 gRPC 服务端与拦截器链，方法必须声明操作 | 第 1、3、4 章 |
+| `idem` | 命令的幂等键：键的校验与作用域、请求指纹、认领与业务写入与结果同一事务、重放与冲突、过期清理（SDK 自带的每小时作业） | 第 4 章 P4.21–P4.25 |
 | `reqctx` | 出站调用转发的请求范围的值（请求 ID、用户凭据） | 第 4 章 P4.2 |
 | `events` | 事件：流与分区、发件表（`rt.Events.Emit` 在业务事务内写）、锁内编号与纪元、转发、信封、运输端口与内存参考实现、消费者（收件表去重、死信、大消息凭证、跳数） | 第 6 章 |
 | `identity` | 用户访问凭据的核验（`at+jwt`，三种算法，公钥集合每进程一个、刷新与限速）；服务身份（部署 mTLS，URI SAN）与调用方 | 第 8 章 P8.1–P8.6 |

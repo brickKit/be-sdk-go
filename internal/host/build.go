@@ -19,6 +19,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/grpcx"
 	"github.com/brickKit/be-sdk-go/v3/guard"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
+	"github.com/brickKit/be-sdk-go/v3/idem"
 	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
@@ -83,6 +84,9 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 			return nil, err
 		}
 		if err := m.runner.Add(partitionJob(m.Logger)); err != nil {
+			return nil, err
+		}
+		if err := m.runner.Add(idem.Job(sh.DB)); err != nil {
 			return nil, err
 		}
 	}

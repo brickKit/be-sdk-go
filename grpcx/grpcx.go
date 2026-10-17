@@ -131,6 +131,14 @@ func (s *Services) Operations() []string {
 	return out
 }
 
+type callerKey struct{}
+
+// Caller is the component a system-surface call came from, as its verified certificate says (P8.5, P8.6).
+func Caller(ctx context.Context) (string, bool) {
+	c, ok := ctx.Value(callerKey{}).(string)
+	return c, ok
+}
+
 var requestIDRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
 // NewServer builds the member's system-surface server.
@@ -174,10 +182,12 @@ func interceptor(d Deps, s *Services, duration *prometheus.HistogramVec) grpc.Un
 		ctx, cancel := context.WithTimeout(ctx, decl.deadline())
 		defer cancel()
 
-		if caller, ok := identity.Caller(ctx, d.TLS.Deployment); !ok || !slices.Contains(decl.Callers, caller) {
+		caller, ok := identity.Caller(ctx, d.TLS.Deployment)
+		if !ok || !slices.Contains(decl.Callers, caller) {
 			log.Warn("a system call from a component not allowed to call this method", "method", info.FullMethod, "caller", caller)
 			return nil, errs.New(errs.ReasonPermissionDenied, "this component may not call this method").GRPCStatus().Err()
 		}
+		ctx = context.WithValue(ctx, callerKey{}, caller)
 		func() {
 			defer func() {
 				if p := recover(); p != nil {
