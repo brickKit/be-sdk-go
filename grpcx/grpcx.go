@@ -150,7 +150,7 @@ func NewServer(d Deps, s *Services) (*grpc.Server, error) {
 		return nil, errors.New("system surface: no service identity (SERVICE_TLS_CERT_FILE, SERVICE_TLS_KEY_FILE, SERVICE_TLS_CA_FILE)")
 	}
 	duration := prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "be_grpc_server_duration_seconds",
-		Help: "System-surface call duration by method and code.", Buckets: prometheus.DefBuckets}, []string{"method", "code"})
+		Help: "System-surface call duration by method and code.", Buckets: obs.DurationBuckets}, []string{"method", "code"})
 	if err := d.Registry.Register(duration); err != nil {
 		return nil, fmt.Errorf("register grpc metrics: %w", err)
 	}

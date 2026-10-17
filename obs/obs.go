@@ -37,9 +37,22 @@ func ParseLevel(s string) slog.Level {
 
 // NewLogger returns the member's JSON logger: every line carries the component ID and version.
 func NewLogger(m Member, level slog.Level, w io.Writer) *slog.Logger {
-	h := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level})
+	h := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level, ReplaceAttr: utcTime})
 	return slog.New(h).With("component", m.ID, "version", m.Version)
 }
+
+// TimeFormat is the log lines' time: RFC 3339 in UTC to the millisecond (P10.2), whatever the host's time zone.
+const TimeFormat = "2006-01-02T15:04:05.000Z"
+
+func utcTime(groups []string, a slog.Attr) slog.Attr {
+	if len(groups) == 0 && a.Key == slog.TimeKey && a.Value.Kind() == slog.KindTime {
+		a.Value = slog.StringValue(a.Value.Time().UTC().Format(TimeFormat))
+	}
+	return a
+}
+
+// DurationBuckets are the upper bounds of every duration histogram, the same in every language (P10.6).
+var DurationBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 
 // NewRegistry returns the member's own metrics registry; the launcher or shell serves it with a component label.
 func NewRegistry() *prometheus.Registry { return prometheus.NewRegistry() }

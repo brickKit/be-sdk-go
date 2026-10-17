@@ -71,7 +71,7 @@ func NewEngine(d Deps, routes *Routes) (*gin.Engine, error) {
 	}
 	duration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "be_http_server_duration_seconds", Help: "User-surface request duration by route and status.",
-		Buckets: prometheus.DefBuckets,
+		Buckets: obs.DurationBuckets,
 	}, []string{"method", "route", "status"})
 	if err := d.Registry.Register(duration); err != nil {
 		return nil, fmt.Errorf("register http metrics: %w", err)
