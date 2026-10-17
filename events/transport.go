@@ -17,6 +17,13 @@ type Message struct {
 // ID returns the message's event ID.
 func (m Message) ID() string { return m.Headers[HeaderID] }
 
+// Retentions (protocol 15's parameters): published outbox rows are kept for redelivery (P6.12), and the transport
+// buffers messages as long (P6.27); a consumer away longer recovers through redelivery and alignment.
+const (
+	RedeliveryRetention = 7 * 24 * time.Hour
+	TransportRetention  = 7 * 24 * time.Hour
+)
+
 // Defaults of P6.19 and P6.20.
 const (
 	DefaultMaxDeliver   = 3

@@ -86,8 +86,10 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		if err := m.runner.Add(partitionJob(m.Logger)); err != nil {
 			return nil, err
 		}
-		if err := m.runner.Add(idem.Job(sh.DB)); err != nil {
-			return nil, err
+		for _, j := range []work.Job{idem.Job(sh.DB), events.PurgeJob(sh.DB), work.PurgeJob(sh.DB)} {
+			if err := m.runner.Add(j); err != nil {
+				return nil, err
+			}
 		}
 	}
 	rt := runtime.New(runtime.Parts{Member: member, Config: values, Logger: m.Logger, Metrics: m.Registry,

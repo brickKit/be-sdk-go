@@ -41,6 +41,29 @@ type Transport struct {
 	poll   time.Duration
 	// OnError receives the errors of the background readers (logged by the runtime); nil: dropped.
 	OnError func(error)
+	stop    context.CancelFunc
+	purged  chan struct{}
+}
+
+// PurgeEvery is how often an open transport removes delivered messages past the retention (P6.27); every process
+// with the transport does it, and the deletes are idempotent.
+const PurgeEvery = time.Hour
+
+func (t *Transport) purgeLoop(ctx context.Context) {
+	defer close(t.purged)
+	tick := time.NewTicker(PurgeEvery)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			_, err := t.Purge(ctx, events.TransportRetention)
+			if ctx.Err() == nil {
+				t.report(err)
+			}
+		}
+	}
 }
 
 func (t *Transport) report(err error) {
@@ -96,7 +119,11 @@ func Connect(ctx context.Context, busURL, name string, maxConns int32) (*Transpo
 	if err != nil {
 		return nil, fmt.Errorf("bus %s: %w", redact(busURL), err)
 	}
-	return &Transport{pool: pool, cfg: cfg, schema: schema, poll: DefaultPoll}, nil
+	t := &Transport{pool: pool, cfg: cfg, schema: schema, poll: DefaultPoll, purged: make(chan struct{})}
+	var purgeCtx context.Context
+	purgeCtx, t.stop = context.WithCancel(context.Background())
+	go t.purgeLoop(purgeCtx)
+	return t, nil
 }
 
 // t qualifies a table name with the bus schema.
@@ -392,17 +419,19 @@ func (t *Transport) Listen(ctx context.Context, subject string, fn func([]byte))
 	return l, nil
 }
 
-// Purge deletes messages older than retention that no subscription still has to deliver.
+// Purge deletes messages older than retention whether or not every subscription read them, with their deliveries
+// (P6.27): the queue is a transport buffer, and a subscriber away longer recovers through redelivery and alignment.
 func (t *Transport) Purge(ctx context.Context, retention time.Duration) (int64, error) {
-	tag, err := t.pool.Exec(ctx, "DELETE FROM "+t.t("be_bus_message")+` m WHERE published_at < now() - make_interval(secs => $1)
-		AND NOT EXISTS (SELECT 1 FROM `+t.t("be_bus_delivery")+` d WHERE d.seq = m.seq)
-		AND NOT EXISTS (SELECT 1 FROM `+t.t("be_bus_subscription")+` s WHERE (s.pos_xid, s.pos_seq) < (m.xid, m.seq))`,
-		retention.Seconds())
-	return tag.RowsAffected(), err
+	var n int64
+	err := t.pool.QueryRow(ctx, `WITH gone AS (DELETE FROM `+t.t("be_bus_message")+`
+			WHERE published_at < now() - make_interval(secs => $1) RETURNING seq),
+		deliveries AS (DELETE FROM `+t.t("be_bus_delivery")+` WHERE seq IN (SELECT seq FROM gone))
+		SELECT count(*) FROM gone`, retention.Seconds()).Scan(&n)
+	return n, err
 }
 
 // Close implements events.Transport.
-func (t *Transport) Close() error { t.pool.Close(); return nil }
+func (t *Transport) Close() error { t.stop(); <-t.purged; t.pool.Close(); return nil }
 
 // Migrate creates or updates the queue's tables in the bus schema, as the bus owner (provisioning, tests).
 func Migrate(ctx context.Context, ownerURL string, log *slog.Logger) error {

@@ -111,6 +111,13 @@ SELECT be_declare_monthly_partitions('ledger', 1);`)}},
 			"ledger_p"+next).Scan(&n)
 		return n == 1
 	}, 10*time.Second, 50*time.Millisecond, "the maintenance job recreates next month's partition")
+	require.Eventually(t, func() bool {
+		var n int
+		_ = admin.QueryRow(context.Background(), `SELECT count(*) FROM ledgers.be_work_item WHERE kind = 'singleton'
+			AND state = 'pending' AND run_at > now() + interval '30 minutes' AND job IN
+			('be.partitions.maintain', 'be.idempotency.cleanup', 'be.outbox.purge', 'be.work.cleanup')`).Scan(&n)
+		return n == 4
+	}, 10*time.Second, 50*time.Millisecond, "every cleanup job the SDK brings has run once and waits for the next hour")
 	cancel()
 	assert.Equal(t, ExitOK, <-done)
 	assert.Contains(t, out.String(), `"event":"partitions_created"`)

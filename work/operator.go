@@ -65,3 +65,14 @@ func Purge(ctx context.Context, d *db.DB) (int64, error) {
 	})
 	return n, err
 }
+
+// PurgeJob is the hourly cleanup every member with a database runs (P7.19).
+func PurgeJob(d *db.DB) Job {
+	return Job{Name: "be.work.cleanup", Kind: Singleton, Effect: Local, Interval: time.Hour,
+		Handle: func(ctx context.Context, run *Run) error {
+			if _, err := Purge(ctx, d); err != nil {
+				return err
+			}
+			return run.Complete(ctx, nil)
+		}}
+}

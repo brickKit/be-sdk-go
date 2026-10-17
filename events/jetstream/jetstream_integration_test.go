@@ -10,6 +10,8 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/events/transporttest"
 	"github.com/brickKit/be-sdk-go/v3/ids"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // The tests need a JetStream-enabled NATS server in BE_SDK_TEST_NATS_URL (the assembly project's be-nats).
@@ -33,3 +35,11 @@ func factory(t transporttest.T) (events.Transport, string) {
 }
 
 func TestJetStreamPassesTheSuite(t *testing.T) { transporttest.Run(t, factory) }
+
+func TestStreamsKeepMessagesForTheTransportRetention(t *testing.T) { // P6.27
+	tr, stream := factory(t)
+	require.NoError(t, tr.EnsureStream(context.Background(), events.Stream{Name: stream, Partitions: 1}))
+	info, err := tr.(*Transport).js.Stream(context.Background(), events.JetStreamName(stream))
+	require.NoError(t, err)
+	assert.Equal(t, events.TransportRetention, info.CachedInfo().Config.MaxAge)
+}

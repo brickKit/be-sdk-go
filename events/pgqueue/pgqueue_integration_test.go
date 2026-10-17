@@ -16,6 +16,8 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/events/transporttest"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var migrateOnce sync.Once
@@ -113,4 +115,37 @@ func TestAnInFlightRowWithASmallerSequenceIsNotSkipped(t *testing.T) { // P6.23,
 	case <-time.After(10 * time.Second):
 		t.Fatal("the row that committed later with a smaller sequence was skipped")
 	}
+}
+
+func TestPurgeDropsMessagesPastTheRetention(t *testing.T) { // P6.27, CK-BUS-09
+	tr, stream := factory(t)
+	ctx := context.Background()
+	require.NoError(t, tr.EnsureStream(ctx, events.Stream{Name: stream, Partitions: 1}))
+	// a subscription that has read nothing yet: before P6.27 it held every message back
+	sub, err := tr.Subscribe(ctx, events.SubscriptionSpec{Durable: "purge_" + stream[9:], Streams: []string{stream}},
+		func(context.Context, *events.Delivery) events.Outcome { return events.Nak })
+	require.NoError(t, err)
+	require.NoError(t, sub.Stop())
+	subject := "be." + stream + ".0.x.v1"
+	for range 2 {
+		require.NoError(t, tr.Publish(ctx, events.Message{Subject: subject,
+			Headers: map[string]string{events.HeaderID: ids.New().String()}, Data: []byte("{}")}))
+	}
+	admin := pgtest.Admin(t, pgtest.Database)
+	var oldest, newest string
+	require.NoError(t, admin.QueryRow(ctx, `SELECT min(msg_id), max(msg_id) FROM be_bus_test.be_bus_message
+		WHERE subject = $1`, subject).Scan(&oldest, &newest))
+	pgtest.Exec(t, admin, "UPDATE be_bus_test.be_bus_message SET published_at = now() - interval '8 days' WHERE msg_id = '"+oldest+"'")
+	n, err := tr.(*Transport).Purge(ctx, events.TransportRetention)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, n, "the subscription never read it, yet past the retention it goes")
+	var left []string
+	rows, err := admin.Query(ctx, "SELECT msg_id FROM be_bus_test.be_bus_message WHERE subject = $1", subject)
+	require.NoError(t, err)
+	for rows.Next() {
+		var id string
+		require.NoError(t, rows.Scan(&id))
+		left = append(left, id)
+	}
+	assert.Equal(t, []string{newest}, left)
 }

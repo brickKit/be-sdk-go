@@ -9,6 +9,7 @@ import (
 
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/ids"
+	"github.com/brickKit/be-sdk-go/v3/work"
 )
 
 // Forwarder defaults.
@@ -217,4 +218,16 @@ func Purge(ctx context.Context, d *db.DB, retention time.Duration) (int64, error
 		return err
 	})
 	return n, err
+}
+
+// PurgeJob is the hourly purge every member with a database runs (P6.12): published rows past the redelivery
+// retention go; unpublished rows stay.
+func PurgeJob(d *db.DB) work.Job {
+	return work.Job{Name: "be.outbox.purge", Kind: work.Singleton, Effect: work.Local, Interval: time.Hour,
+		Handle: func(ctx context.Context, run *work.Run) error {
+			if _, err := Purge(ctx, d, RedeliveryRetention); err != nil {
+				return err
+			}
+			return run.Complete(ctx, nil)
+		}}
 }

@@ -61,7 +61,7 @@ func (t *Transport) EnsureStream(ctx context.Context, s events.Stream) error {
 		return err
 	}
 	_, err := t.js.CreateStream(ctx, js.StreamConfig{Name: name, Subjects: []string{"be." + s.Name + ".>"},
-		Storage: js.FileStorage, Duplicates: DuplicateWindow})
+		Storage: js.FileStorage, Duplicates: DuplicateWindow, MaxAge: events.TransportRetention})
 	if errors.Is(err, js.ErrStreamNameAlreadyInUse) {
 		return nil // created concurrently by another replica
 	}
