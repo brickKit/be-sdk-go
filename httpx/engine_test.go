@@ -1,0 +1,189 @@
+package httpx
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/brickKit/be-sdk-go/v3/errs"
+	"github.com/brickKit/be-sdk-go/v3/obs"
+	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+)
+
+func init() { gin.SetMode(gin.ReleaseMode) }
+
+type harness struct {
+	engine http.Handler
+	logs   *bytes.Buffer
+	ready  bool
+}
+
+func newHarness(t *testing.T, routes *Routes) *harness {
+	t.Helper()
+	h := &harness{logs: &bytes.Buffer{}}
+	m := obs.Member{ID: "demo/alpha", Version: "3.0.0"}
+	d := Deps{Member: m, Logger: obs.NewLogger(m, slog.LevelDebug, h.logs), Registry: prometheus.NewRegistry(),
+		Tracer: sdktrace.NewTracerProvider().Tracer("test"),
+		Platform: Platform{
+			Ready:    func() (bool, string, []string) { return h.ready, "starting", []string{"demo/beta"} },
+			Describe: func() any { return map[string]string{"component_id": m.ID} },
+		}}
+	e, err := NewEngine(d, routes)
+	require.NoError(t, err)
+	h.engine = e
+	return h
+}
+
+func (h *harness) do(method, path string, body io.Reader, header map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, body)
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	h.engine.ServeHTTP(rec, req)
+	return rec
+}
+
+func problem(t *testing.T, rec *httptest.ResponseRecorder) errs.Problem {
+	t.Helper()
+	assert.Equal(t, errs.ProblemContentType, rec.Header().Get("Content-Type"))
+	var p errs.Problem
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &p))
+	return p
+}
+
+func TestRouteValidation(t *testing.T) {
+	var rs Routes
+	h := func(*Context) error { return nil }
+	rs.GET("/api/a", "", h)
+	rs.Add(Route{Method: "GET", Path: "/api/b", Public: true, Operation: "x", Handle: h})
+	rs.GET("/healthz", "op", h)
+	rs.GET("/api/c", "op", h)
+	rs.GET("/api/c", "op", h)
+	rs.GET("/api/d", "op", nil)
+	err := rs.Validate()
+	require.Error(t, err)
+	for _, want := range []string{"/api/a: declares no operation", "/api/b: a public route", "/healthz belongs to the platform",
+		"/api/c: registered twice", "/api/d: no handler"} {
+		assert.Contains(t, err.Error(), want)
+	}
+	var ok Routes
+	ok.GET("/api/x", "demo.alpha.read", h)
+	ok.Add(Route{Method: "GET", Path: "/api/open", Public: true, Handle: h})
+	assert.NoError(t, ok.Validate())
+}
+
+func TestRequestIDAndDeadline(t *testing.T) {
+	var seen time.Duration
+	var rs Routes
+	rs.GET("/api/x", "op", func(c *Context) error {
+		dl, ok := c.Ctx().Deadline()
+		require.True(t, ok)
+		seen = time.Until(dl)
+		return c.JSON(200, map[string]string{"request_id": c.RequestID(), "trace_id": c.TraceID()})
+	})
+	rs.Add(Route{Method: "GET", Path: "/api/long", Operation: "op", Orchestration: true, Handle: func(c *Context) error {
+		dl, _ := c.Ctx().Deadline()
+		seen = time.Until(dl)
+		return c.NoContent(204)
+	}})
+	h := newHarness(t, &rs)
+
+	rec := h.do("GET", "/api/x", nil, map[string]string{HeaderRequestID: "abc-123"})
+	assert.Equal(t, 200, rec.Code)
+	assert.Equal(t, "abc-123", rec.Header().Get(HeaderRequestID))
+	assert.InDelta(t, DefaultDeadline.Seconds(), seen.Seconds(), 0.5, "no header: the route's default")
+
+	rec = h.do("GET", "/api/x", nil, map[string]string{HeaderRequestID: "bad id with spaces", HeaderTimeoutMs: "1500"})
+	assert.NotEqual(t, "bad id with spaces", rec.Header().Get(HeaderRequestID), "an invalid request ID is replaced")
+	assert.Len(t, rec.Header().Get(HeaderRequestID), 36)
+	assert.InDelta(t, 1.5, seen.Seconds(), 0.3, "a shorter remaining time wins")
+
+	h.do("GET", "/api/x", nil, map[string]string{HeaderTimeoutMs: "60000"})
+	assert.InDelta(t, DefaultDeadline.Seconds(), seen.Seconds(), 0.5, "a deadline never grows")
+
+	h.do("GET", "/api/long", nil, nil)
+	assert.InDelta(t, OrchestrationDeadline.Seconds(), seen.Seconds(), 0.5)
+
+	rec = h.do("GET", "/api/x", nil, map[string]string{HeaderTimeoutMs: "-5"})
+	assert.Equal(t, 400, rec.Code)
+	assert.Equal(t, errs.ReasonRequestInvalid, problem(t, rec).Reason)
+}
+
+func TestErrorsPanicsBodiesAndUnknownRoutes(t *testing.T) {
+	var rs Routes
+	rs.GET("/api/busy", "op", func(*Context) error {
+		return errs.New(errs.ReasonServiceBusy, "busy").WithRetryAfter(2 * time.Second)
+	})
+	rs.GET("/api/boom", "op", func(*Context) error { panic("db password is hunter2") })
+	rs.Add(Route{Method: "POST", Path: "/api/small", Operation: "op", MaxBody: 16, Handle: func(c *Context) error {
+		var v map[string]any
+		if err := c.BindJSON(&v); err != nil {
+			return err
+		}
+		return c.NoContent(204)
+	}})
+	h := newHarness(t, &rs)
+
+	rec := h.do("GET", "/api/busy", nil, nil)
+	assert.Equal(t, 503, rec.Code)
+	assert.Equal(t, "2", rec.Header().Get("Retry-After"))
+	p := problem(t, rec)
+	assert.Equal(t, errs.ReasonServiceBusy, p.Reason)
+	assert.Len(t, p.TraceID, 32)
+
+	rec = h.do("GET", "/api/boom", nil, nil)
+	assert.Equal(t, 500, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "hunter2")
+	assert.Contains(t, h.logs.String(), "panic while serving a request")
+
+	rec = h.do("POST", "/api/small", strings.NewReader(`{"a":"0123456789abcdef"}`), nil)
+	assert.Equal(t, 413, rec.Code)
+	assert.Equal(t, errs.ReasonBodyTooLarge, problem(t, rec).Reason)
+
+	rec = h.do("POST", "/api/small", strings.NewReader(`{"a":`), nil)
+	assert.Equal(t, 400, rec.Code)
+	assert.Equal(t, errs.ReasonRequestInvalid, problem(t, rec).Reason)
+
+	rec = h.do("GET", "/api/nothing", nil, nil)
+	assert.Equal(t, 404, rec.Code)
+	assert.Equal(t, errs.ReasonNotFound, problem(t, rec).Reason)
+}
+
+func TestPlatformEndpoints(t *testing.T) {
+	var rs Routes
+	rs.GET("/api/x", "op", func(c *Context) error { return c.NoContent(204) })
+	h := newHarness(t, &rs)
+
+	assert.Equal(t, 200, h.do("GET", "/healthz", nil, nil).Code)
+	assert.Equal(t, 200, h.do("HEAD", "/healthz", nil, nil).Code)
+
+	rec := h.do("GET", "/readyz", nil, nil)
+	assert.Equal(t, 503, rec.Code)
+	p := problem(t, rec)
+	assert.Equal(t, errs.ReasonNotReady, p.Reason)
+	assert.Equal(t, map[string]string{"state": "starting", "waiting": "demo/beta"}, p.Metadata)
+	h.ready = true
+	assert.Equal(t, 200, h.do("GET", "/readyz", nil, nil).Code)
+
+	assert.Contains(t, h.do("GET", "/.well-known/be-component", nil, nil).Body.String(), "demo/alpha")
+
+	before := h.logs.Len()
+	h.do("GET", "/healthz", nil, nil)
+	assert.Equal(t, before, h.logs.Len(), "platform endpoints are not access-logged")
+
+	h.do("GET", "/api/x", nil, nil)
+	metrics := h.do("GET", "/metrics", nil, nil).Body.String()
+	assert.Contains(t, metrics, `be_http_server_duration_seconds_count{method="GET",route="/api/x",status="204"} 1`)
+	assert.Contains(t, h.logs.String(), `"msg":"access"`)
+}
