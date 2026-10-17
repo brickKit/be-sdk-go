@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
+	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/audit"
 	"github.com/brickKit/be-sdk-go/v3/authz"
@@ -80,6 +82,9 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		if err := m.auditTransfer(auditor, values); err != nil {
 			return nil, err
 		}
+		if err := m.runner.Add(partitionJob(m.Logger)); err != nil {
+			return nil, err
+		}
 	}
 	rt := runtime.New(runtime.Parts{Member: member, Config: values, Logger: m.Logger, Metrics: m.Registry,
 		Tracer: tp.Tracer(def.ID), Addresses: sh.Addresses, DB: sh.DB, Outbound: m.Outbound, Events: producer,
@@ -116,6 +121,23 @@ func (m *Member) auditTransfer(a *audit.Auditor, values *config.Values) error {
 	}
 	m.hasJobs = true
 	return nil
+}
+
+// partitionJob keeps the declared tables' monthly partitions ahead (P5.24); a boundary anomaly fails the run.
+func partitionJob(log *slog.Logger) work.Job {
+	return work.Job{Name: "be.partitions.maintain", Kind: work.Singleton, Effect: work.Local, Interval: time.Hour,
+		Handle: func(ctx context.Context, run *work.Run) error {
+			return run.Complete(ctx, func(ctx context.Context, tx db.Tx) error {
+				created, err := db.MaintainPartitions(ctx, tx)
+				if err != nil {
+					return fmt.Errorf("maintaining partitions: %w", err)
+				}
+				if len(created) > 0 {
+					log.Info("partitions created", "event", "partitions_created", "partitions", created)
+				}
+				return nil
+			})
+		}}
 }
 
 // serviceIdentity loads the member's mTLS identity when its certificate is configured (P8.5).

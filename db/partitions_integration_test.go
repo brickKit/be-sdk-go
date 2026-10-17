@@ -1,0 +1,113 @@
+//go:build integration
+
+package db_test
+
+import (
+	"context"
+	"testing"
+	"testing/fstest"
+	"time"
+
+	"github.com/brickKit/be-sdk-go/v3/db"
+	"github.com/brickKit/be-sdk-go/v3/ids"
+	"github.com/brickKit/be-sdk-go/v3/internal/dbtest"
+	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
+	"github.com/jackc/pgx/v5"
+	"github.com/stretchr/testify/require"
+)
+
+// partitioned is a component migration with a table partitioned by business date, declared for two months ahead.
+var partitioned = fstest.MapFS{"0001_orders.up.sql": {Data: []byte(`
+CREATE TABLE orders (id uuid NOT NULL, business_date date NOT NULL, amount numeric NOT NULL CHECK (amount >= 0),
+    PRIMARY KEY (id, business_date)) PARTITION BY RANGE (business_date);
+SELECT be_declare_monthly_partitions('orders', 2);`)}}
+
+func months(from time.Time, n int) []string {
+	var out []string
+	for m := 0; m <= n; m++ {
+		out = append(out, "orders_p"+time.Date(from.Year(), from.Month()+time.Month(m), 1, 0, 0, 0, 0, time.UTC).Format("200601"))
+	}
+	return out
+}
+
+func partitions(t *testing.T, admin *pgx.Conn, schema string) []string {
+	t.Helper()
+	rows, err := admin.Query(context.Background(), `SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+		WHERE i.inhparent = $1::regclass ORDER BY 1`, schema+".orders")
+	require.NoError(t, err)
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	require.NoError(t, err)
+	return names
+}
+
+func TestMonthlyPartitions(t *testing.T) { // P5.21-P5.23, CK-DB-08
+	d, admin := dbtest.Schema(t, "part_a", partitioned)
+	ctx := context.Background()
+	require.Equal(t, months(time.Now().UTC(), 2), partitions(t, admin, "part_a"), "declaring creates this month and two ahead")
+
+	require.NoError(t, d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+		created, err := db.MaintainPartitions(ctx, tx)
+		require.Empty(t, created, "maintaining again creates nothing")
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, "INSERT INTO orders VALUES ($1, current_date, 1)", ids.New())
+		return err
+	}))
+
+	// the runtime role cannot change the plan, and a temporary table of the same name is not read
+	require.Error(t, d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+		_, err := tx.Exec(ctx, "UPDATE be_partition_plan SET months_ahead = 24")
+		return err
+	}))
+	require.NoError(t, d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+		if _, err := tx.Exec(ctx, `CREATE TEMP TABLE be_partition_plan (table_name text, key_type text, months_ahead int) ON COMMIT DROP;
+			INSERT INTO pg_temp.be_partition_plan VALUES ('orders', 'date', 20)`); err != nil {
+			return err
+		}
+		created, err := db.MaintainPartitions(ctx, tx)
+		require.Empty(t, created)
+		return err
+	}))
+
+	// another component's runtime role may not run this schema's maintenance even with access to the schema
+	pgtest.Member(t, "part_b", "")
+	pgtest.Exec(t, admin, "GRANT USAGE ON SCHEMA part_a TO sdk_part_b_rw", "SET ROLE sdk_part_b_rw")
+	_, err := admin.Exec(ctx, "SELECT part_a.be_maintain_partitions()")
+	require.ErrorContains(t, err, "permission denied")
+	pgtest.Exec(t, admin, "RESET ROLE", "SET search_path = part_a")
+
+	// a detached partition of the expected name, or an overlapping one, fails the maintenance
+	last := months(time.Now().UTC(), 2)[2]
+	pgtest.Exec(t, admin, "ALTER TABLE orders DETACH PARTITION "+last)
+	maintain := func() error {
+		return d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+			_, err := db.MaintainPartitions(ctx, tx)
+			return err
+		})
+	}
+	require.ErrorContains(t, maintain(), "detached")
+	pgtest.Exec(t, admin, "DROP TABLE "+last)
+	start := time.Date(time.Now().UTC().Year(), time.Now().UTC().Month()+2, 15, 0, 0, 0, 0, time.UTC)
+	pgtest.Exec(t, admin, "CREATE TABLE orders_odd PARTITION OF orders FOR VALUES FROM ('"+start.Format(time.DateOnly)+
+		"') TO ('"+start.AddDate(0, 1, 0).Format(time.DateOnly)+"')")
+	require.ErrorContains(t, maintain(), "overlap")
+	pgtest.Exec(t, admin, "DROP TABLE orders_odd")
+	require.NoError(t, maintain())
+	require.Equal(t, months(time.Now().UTC(), 2), partitions(t, admin, "part_a"))
+}
+
+func TestOnlyRangePartitionedTablesAreDeclared(t *testing.T) { // P5.21
+	_, admin := dbtest.Schema(t, "part_c", nil)
+	for _, sql := range []string{
+		"CREATE TABLE plain (id uuid PRIMARY KEY)",
+		"CREATE TABLE by_list (id uuid, region text) PARTITION BY LIST (region)",
+		"CREATE TABLE by_text (id uuid, k text) PARTITION BY RANGE (k)",
+	} {
+		pgtest.Exec(t, admin, sql)
+	}
+	for _, table := range []string{"plain", "by_list", "by_text", "missing"} {
+		_, err := admin.Exec(context.Background(), "SELECT be_declare_monthly_partitions($1)", table)
+		require.Error(t, err, table)
+	}
+}

@@ -86,7 +86,10 @@ func Member(t testing.TB, name, shellRole string) {
 		"GRANT CONNECT ON DATABASE "+Database+" TO "+owner+", "+rw,
 		"CREATE SCHEMA "+name+" AUTHORIZATION "+owner,
 		"GRANT USAGE ON SCHEMA "+name+" TO "+rw,
-		"ALTER DEFAULT PRIVILEGES FOR ROLE "+owner+" IN SCHEMA "+name+" GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "+rw)
+		"ALTER DEFAULT PRIVILEGES FOR ROLE "+owner+" IN SCHEMA "+name+" GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "+rw,
+		// functions the owner creates run only for the member's runtime role (protocol 14, partition maintenance)
+		"ALTER DEFAULT PRIVILEGES FOR ROLE "+owner+" REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC",
+		"ALTER DEFAULT PRIVILEGES FOR ROLE "+owner+" IN SCHEMA "+name+" GRANT EXECUTE ON FUNCTIONS TO "+rw)
 	if shellRole != "" {
 		Exec(t, c, "GRANT "+rw+" TO "+shellRole+" WITH INHERIT FALSE, SET TRUE")
 	}

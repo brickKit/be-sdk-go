@@ -83,3 +83,35 @@ func TestQueuedWorkRunsInTheComponent(t *testing.T) {
 	cancel()
 	assert.Equal(t, ExitOK, <-done)
 }
+
+func TestPartitionsAreKeptAheadInTheComponent(t *testing.T) { // P5.24
+	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
+	pgtest.Member(t, "ledgers", "")
+	vars := pgtest.MemberEnv(host, port, "ledgers")
+	def := component.Definition{ID: "demo/ledgers", Version: "3.0.0",
+		Authz: sectest.Defs("demo/ledgers", "demo.reports", "demo.reports.read", "demo.reports.create"),
+		Migrations: fstest.MapFS{"0001_ledger.up.sql": {Data: []byte(`
+CREATE TABLE ledger (id uuid NOT NULL, posted_at timestamptz NOT NULL, PRIMARY KEY (id, posted_at)) PARTITION BY RANGE (posted_at);
+SELECT be_declare_monthly_partitions('ledger', 1);`)}},
+		New: func(rt *runtime.Runtime) (component.Module, error) { return &reports{rt: rt}, nil }}
+	var out syncBuffer
+	require.Equal(t, ExitOK, Run(context.Background(), def, Options{Args: []string{"migrate"}, Env: env(vars), Stdout: &out, Stderr: &out}), out.String())
+	next := time.Now().UTC().AddDate(0, 0, -time.Now().UTC().Day()+1).AddDate(0, 1, 0).Format("200601")
+	admin := pgtest.Admin(t, pgtest.Database)
+	pgtest.Exec(t, admin, "DROP TABLE ledgers.ledger_p"+next)
+	httpPort := freePort(t)
+	serve := maps.Clone(vars)
+	maps.Copy(serve, map[string]string{"COMPONENT_ID": def.ID, "COMPONENT_VERSION": def.Version, "PORT": strconv.Itoa(httpPort), "STOP_DRAIN_DELAY": "50ms"})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- Run(ctx, def, Options{Env: env(secured(t, def, serve)), Stdout: &out, Stderr: &out}) }()
+	require.Eventually(t, func() bool {
+		var n int
+		_ = admin.QueryRow(context.Background(), "SELECT count(*) FROM pg_class WHERE relname = $1 AND relnamespace = 'ledgers'::regnamespace",
+			"ledger_p"+next).Scan(&n)
+		return n == 1
+	}, 10*time.Second, 50*time.Millisecond, "the maintenance job recreates next month's partition")
+	cancel()
+	assert.Equal(t, ExitOK, <-done)
+	assert.Contains(t, out.String(), `"event":"partitions_created"`)
+}
