@@ -13,16 +13,16 @@ import (
 
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/config"
-	"github.com/gin-gonic/gin"
+	"github.com/brickKit/be-sdk-go/v3/internal/host"
 )
 
 // Exit codes (protocol chapter 01).
 const (
-	ExitOK            = 0
-	ExitFailure       = 1
-	ExitUsage         = 64
-	ExitStartupCheck  = 69
-	ExitConfiguration = 78
+	ExitOK            = host.ExitOK
+	ExitFailure       = host.ExitFailure
+	ExitUsage         = host.ExitUsage
+	ExitStartupCheck  = host.ExitStartupCheck
+	ExitConfiguration = host.ExitConfiguration
 )
 
 // Options are the process-facing inputs of Run.
@@ -59,16 +59,6 @@ func Run(ctx context.Context, def component.Definition, o Options) int {
 	return ExitUsage
 }
 
-// sdkKeys are the keys the SDK reads for every component, on top of its own (P1.14, P1.15, protocol chapter 02).
-func sdkKeys() []config.Key {
-	return []config.Key{
-		{Name: "LOG_LEVEL", Type: config.Enum, Values: []string{"debug", "info", "warn", "error"}, Default: "info"},
-		{Name: "OTEL_URL", Type: config.String, Process: true},
-		{Name: "STOP_DRAIN_DELAY", Type: config.Duration, Default: defaultDrainDelay},
-		{Name: "STOP_TIMEOUT", Type: config.Duration, Default: defaultStopTimeout},
-	}
-}
-
 // platformKeys are injected by BrickKit; the launcher reads them, the module never does.
 var platformKeys = []config.Key{
 	{Name: "COMPONENT_ID", Type: config.String, Required: true},
@@ -78,8 +68,7 @@ var platformKeys = []config.Key{
 
 // parseAll reads the component's keys and the SDK's keys; the platform keys are checked against the definition.
 func parseAll(def component.Definition, src config.Source) (*config.Values, *config.Values, []config.Problem) {
-	keys := append(append([]config.Key(nil), def.Keys...), sdkKeys()...)
-	values, problems := config.Parse(keys, src)
+	values, problems := config.Parse(host.Keys(def), src)
 	plat, pp := parsePlatform(src)
 	problems = append(problems, pp...)
 	// compared on the raw values, so a mismatch is reported even when another platform key is missing
@@ -97,4 +86,3 @@ func parsePlatform(src config.Source) (*config.Values, []config.Problem) {
 	return config.ParsePlatform(platformKeys, src)
 }
 
-func init() { gin.SetMode(gin.ReleaseMode) } // process-level Gin mode: set once by the SDK, never by a module

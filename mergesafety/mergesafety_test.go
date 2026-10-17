@@ -52,9 +52,9 @@ func TestFindsEveryKind(t *testing.T) {
 }
 
 // TestSDKIsMergeSafe holds the SDK to the rule it enforces: only the launcher (and config.ProcessEnv, which only the
-// launcher calls) may touch the process.
+// launcher calls) may touch the process; the shell and internal/host are the launcher's other half.
 func TestSDKIsMergeSafe(t *testing.T) {
-	findings, err := CheckTree("..", "launcher", "mergesafety")
+	findings, err := CheckTree("..", "launcher", "shell", "internal/host", "mergesafety")
 	require.NoError(t, err)
 	var left []string
 	for _, f := range findings {
