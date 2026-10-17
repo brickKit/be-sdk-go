@@ -85,4 +85,3 @@ func parseAll(def component.Definition, src config.Source) (*config.Values, *con
 func parsePlatform(src config.Source) (*config.Values, []config.Problem) {
 	return config.ParsePlatform(platformKeys, src)
 }
-
