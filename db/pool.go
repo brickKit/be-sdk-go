@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/jackc/pgx/v5"
@@ -15,8 +16,9 @@ import (
 // Pool is one physical connection pool to a target. The launcher opens it with the member's runtime role; the shell
 // opens one per target with the shell's login role, which holds the members' roles WITH INHERIT FALSE.
 type Pool struct {
-	Target Target
-	pool   *pgxpool.Pool
+	Target  Target
+	pool    *pgxpool.Pool
+	version atomic.Int64 // server_version_num, read once
 }
 
 // PoolConfig opens a pool.
@@ -64,6 +66,20 @@ func Open(ctx context.Context, c PoolConfig) (*Pool, error) {
 
 // Close closes the pool (the launcher or the shell, after every member has stopped).
 func (p *Pool) Close() { p.pool.Close() }
+
+// serverVersion returns server_version_num (0 when it cannot be read).
+func (p *Pool) serverVersion(ctx context.Context) int64 {
+	if v := p.version.Load(); v != 0 {
+		return v
+	}
+	var s string
+	if err := p.pool.QueryRow(ctx, "SELECT current_setting('server_version_num')").Scan(&s); err != nil {
+		return 0
+	}
+	v, _ := strconv.ParseInt(s, 10, 64)
+	p.version.Store(v)
+	return v
+}
 
 // Ping checks connectivity (used at start, not by health checks).
 func (p *Pool) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }

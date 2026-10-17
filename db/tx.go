@@ -69,6 +69,10 @@ type TxOption func(*txOptions)
 type txOptions struct {
 	serializable bool
 	statement    time.Duration
+	lock         time.Duration
+	idle         time.Duration
+	total        time.Duration
+	native       bool // the server has transaction_timeout (PostgreSQL 17+)
 }
 
 // Serializable runs the transaction at SERIALIZABLE (declared per transaction, protocol 14).
@@ -76,6 +80,13 @@ func Serializable() TxOption { return func(o *txOptions) { o.serializable = true
 
 // StatementTimeout overrides the statement timeout of this transaction (reports, background work).
 func StatementTimeout(d time.Duration) TxOption { return func(o *txOptions) { o.statement = d } }
+
+// LockTimeout overrides the lock wait of this transaction.
+func LockTimeout(d time.Duration) TxOption { return func(o *txOptions) { o.lock = d } }
+
+// TransactionTimeout bounds the whole transaction: transaction_timeout on PostgreSQL 17 and later; earlier versions
+// get the statement and idle-in-transaction timeouts capped at d instead (protocol P6.5).
+func TransactionTimeout(d time.Duration) TxOption { return func(o *txOptions) { o.total = d } }
 
 // Tx runs fn in a foreground transaction (a user request).
 func (d *DB) Tx(ctx context.Context, fn func(context.Context, Tx) error, opts ...TxOption) error {
@@ -92,9 +103,15 @@ func (d *DB) run(ctx context.Context, budget chan struct{}, foreground bool, fn 
 	if InTx(ctx) {
 		return errs.New(errs.ReasonInternal, "").Wrap(errors.New("NESTED_TX: a transaction was opened inside another"))
 	}
-	o := txOptions{statement: d.settings.Timeouts.Statement}
+	o := txOptions{statement: d.settings.Timeouts.Statement, lock: d.settings.Timeouts.Lock, idle: d.settings.Timeouts.IdleInTx}
 	for _, f := range opts {
 		f(&o)
+	}
+	if o.total > 0 {
+		// whole-transaction limit: native from PostgreSQL 17, otherwise the statement and idle timeouts capped at it
+		if o.native = d.pool.serverVersion(ctx) >= 170000; !o.native {
+			o.statement, o.idle = min(o.statement, o.total), min(o.idle, o.total)
+		}
 	}
 	if err := acquire(ctx, budget, foreground); err != nil {
 		return err
@@ -156,9 +173,14 @@ func (d *DB) once(ctx context.Context, fn func(context.Context, Tx) error, o txO
 	if _, err = tx.Exec(ctx, d.prefix+`SELECT set_config('role', $1, true), set_config('search_path', $2, true),
 		set_config('statement_timeout', $3, true), set_config('lock_timeout', $4, true),
 		set_config('idle_in_transaction_session_timeout', $5, true), set_config('application_name', $6, true)`,
-		d.settings.User, pgx.Identifier{d.settings.Schema}.Sanitize(), ms(o.statement), ms(d.settings.Timeouts.Lock),
-		ms(d.settings.Timeouts.IdleInTx), d.member); err != nil {
+		d.settings.User, pgx.Identifier{d.settings.Schema}.Sanitize(), ms(o.statement), ms(o.lock), ms(o.idle),
+		d.member); err != nil {
 		return err
+	}
+	if o.total > 0 && o.native {
+		if _, err = tx.Exec(ctx, d.prefix+"SELECT set_config('transaction_timeout', $1, true)", ms(o.total)); err != nil {
+			return err
+		}
 	}
 	if err = fn(context.WithValue(ctx, txKey{}, true), Tx{tx: tx, prefix: d.prefix}); err != nil {
 		return err
