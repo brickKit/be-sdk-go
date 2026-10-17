@@ -25,6 +25,8 @@ func main() { launcher.Main(sales.Definition) }
 
 产生事件的组件在定义里声明 `Streams`，在业务事务内调用 `rt.Events.Emit`；SDK 负责编号、转发与信封。消费事件的组件声明 `Subscribes` 并实现 `Subscriptions`，处理函数在 SDK 开的事务里执行，收件表与业务写入同时提交，重复投递只生效一次，最后一次仍失败的记为死信。两者都需要数据库与 `BUS_URL`。
 
+受保护的路由与系统方法都要在定义的 `Authz` 中声明操作（未声明则启动失败）。用户面的请求由 SDK 核验凭据并取得授权视图，处理函数用 `authz.From(ctx)` 得到请求的 `Subject`：单条记录用 `Check`（看不见答 404、看得见无权答 403、无法证明答 503），列表用 `List` 得到要与自己的筛选相与的谓词与逐行命中位图，输出用 `authz.Mask` 按可读字段裁剪。写事务在提交前自动再查一次截止时间。系统面只接受部署 mTLS，每个方法声明允许的调用组件。
+
 有后台工作的模块实现 `Jobs`，每个作业声明种类（queue、cron、singleton、every）与副作用种类；queue 作业在业务事务内用 `rt.Work.Enqueue` 排入。处理函数拿到 `*work.Run`：`local` 作业用 `Complete` 把效果与完成标记一起提交；非幂等外部调用先 `BeforeCall` 再发出；singleton 用 `Checkpoint` 分段提交进度。返回 `work.Permanent`、`work.NotEffective`、`work.Wait` 区分失败，其余错误按退避重试。
 
 ## 包
@@ -45,12 +47,16 @@ func main() { launcher.Main(sales.Definition) }
 | `grpcx` | 系统面：每个成员一个 gRPC 服务端与拦截器链，方法必须声明操作 | 第 1、3、4 章 |
 | `reqctx` | 出站调用转发的请求范围的值（请求 ID、用户凭据） | 第 4 章 P4.2 |
 | `events` | 事件：流与分区、发件表（`rt.Events.Emit` 在业务事务内写）、锁内编号与纪元、转发、信封、运输端口与内存参考实现、消费者（收件表去重、死信、大消息凭证、跳数） | 第 6 章 |
+| `identity` | 用户访问凭据的核验（`at+jwt`，三种算法，公钥集合每进程一个、刷新与限速）；服务身份（部署 mTLS，URI SAN）与调用方 | 第 8 章 P8.1–P8.6 |
+| `authz` | 资源、操作与字段的声明；授权视图的持有与核验（有效期从发出请求起算、恢复代次、停顿检测）；单对象三值求值与字段；列表编译成 SQL 与命中位图；请求级的 `Subject` | 第 8 章 P8.7–P8.18 |
+| `guard` | 用户面的准入：核验凭据、操作必须已声明、视图有效，请求带上主体与截止时间 | 第 8 章 |
+| `canon` | 安全记录的规范编码与摘要（RFC 8785、十进制、时刻、NFC） | 第 8 章 P8.8 |
 | `work` | 后台工作项：原子认领、租约与代次、停止时释放租约、副作用种类、重试与死信、cron 时间槽与物化水位、singleton、每副本计时器、运维动作与清理 | 第 7 章 |
 | `events/jetstream`、`events/pgqueue`、`events/bus` | 两个运输适配器与按 `BUS_URL` 选择；`events/transporttest` 是两者共跑的运输检查 | 第 6 章 P6.16–P6.24 |
 | `shell` | 外壳启动器：按构建信息核对成员、拒绝 `replace`、每个成员独立的端口与运行时、共享池 | 协议 17 的外壳义务 |
 | `mergesafety` | 合并安全检查：读进程环境、初始化进程级的东西、退出进程、绕过 SDK 建引擎与连接 | 组件实现约定的合并安全 |
 
-身份与授权、列表与投影随实验计划第 2 步的后续任务加入（装配项目 `dev/rebuild/step2-plan.md`）。
+审计客户端、列表与投影随实验计划第 2 步的后续任务加入（装配项目 `dev/rebuild/step2-plan.md`）。
 
 ## 测试
 

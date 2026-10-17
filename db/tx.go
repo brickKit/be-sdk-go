@@ -7,7 +7,9 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"github.com/brickKit/be-sdk-go/v3/clock"
 	"github.com/brickKit/be-sdk-go/v3/errs"
+	"github.com/brickKit/be-sdk-go/v3/reqctx"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/puddle/v2"
@@ -185,8 +187,23 @@ func (d *DB) once(ctx context.Context, fn func(context.Context, Tx) error, o txO
 	if err = fn(context.WithValue(ctx, txKey{}, true), Tx{tx: tx, prefix: d.prefix}); err != nil {
 		return err
 	}
+	if cutoff, ok := reqctx.Cutoff(ctx); ok {
+		// P8.12: the database ends the transaction if COMMIT does not follow the check within C_commit; then the
+		// check itself, on the suspend-aware clock
+		if _, err = tx.Exec(ctx, d.prefix+"SELECT set_config('idle_in_transaction_session_timeout', $1, true)",
+			ms(CommitWindow)); err != nil {
+			return err
+		}
+		if clock.Boot() >= cutoff {
+			err = errs.New(errs.ReasonAuthorizationViewExpired, "the authorization expired before the change could be committed")
+			return err
+		}
+	}
 	return tx.Commit(ctx)
 }
+
+// CommitWindow is C_commit: the longest time from the pre-commit cutoff check to COMMIT.
+const CommitWindow = 2 * time.Second
 
 func ms(d time.Duration) string { return fmt.Sprintf("%dms", d.Milliseconds()) }
 

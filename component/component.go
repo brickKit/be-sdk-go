@@ -6,6 +6,7 @@ import (
 	"context"
 	"io/fs"
 
+	"github.com/brickKit/be-sdk-go/v3/authz"
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/grpcx"
@@ -31,6 +32,9 @@ type Definition struct {
 	Streams []events.Stream
 	// Subscribes says the module implements events.Subscriber; it needs Migrations (the inbox).
 	Subscribes bool
+	// Authz declares the resources, operations and fields the component owns (protocol P8.7). Every protected
+	// route and every system method uses one of its operations.
+	Authz *authz.Definitions
 	// New builds the module from its runtime. It must not read the process environment, start listeners, initialise
 	// process-wide state or exit the process: everything comes from rt.
 	New func(rt *runtime.Runtime) (Module, error)

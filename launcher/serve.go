@@ -2,6 +2,7 @@ package launcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -55,7 +56,17 @@ func serve(ctx context.Context, def component.Definition, o Options) int {
 		}
 		defer transport.Close()
 	}
-	m, err := host.Build(ctx, def, values, o.Env, o.Env.ReadFile, o.Stdout, database, transport)
+	keys, err := host.OpenKeys(ctx, values)
+	if err != nil {
+		fmt.Fprintf(o.Stdout, "{\"level\":\"WARN\",\"component\":%q,\"msg\":%q}\n", def.ID, err.Error())
+	}
+	m, err := host.Build(ctx, def, values, host.Shared{Addresses: o.Env, Read: o.Env.ReadFile, Out: o.Stdout,
+		DB: database, Transport: transport, Keys: keys})
+	var cfgErr *host.ConfigError
+	if errors.As(err, &cfgErr) {
+		host.ReportConfig(o.Stderr, def.ID, cfgErr.Problems)
+		return ExitConfiguration
+	}
 	if err != nil {
 		fmt.Fprintf(o.Stdout, "{\"level\":\"ERROR\",\"component\":%q,\"msg\":%q}\n", def.ID, err.Error())
 		return ExitFailure

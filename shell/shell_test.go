@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,14 +39,16 @@ func (s *syncBuffer) String() string { s.mu.Lock(); defer s.mu.Unlock(); return 
 type greeter struct{ id, greeting string }
 
 func (g *greeter) Routes(r *httpx.Routes) error {
-	r.GET("/api/hello", g.id+".read", func(c *httpx.Context) error {
+	r.GET("/api/hello", opKey(g.id), func(c *httpx.Context) error {
 		return c.JSON(200, map[string]string{"from": g.id, "greeting": g.greeting})
 	})
 	return nil
 }
 
+func opKey(id string) string { return strings.ReplaceAll(id, "/", ".") + ".read" }
+
 func def(id, version string) component.Definition {
-	return component.Definition{ID: id, Version: version,
+	return component.Definition{ID: id, Version: version, Authz: sectest.Defs(id, strings.ReplaceAll(id, "/", ".")+".greeting", opKey(id)),
 		Keys: []config.Key{{Name: "GREETING", Type: config.String, Required: true}},
 		New: func(rt *runtime.Runtime) (component.Module, error) {
 			return &greeter{id: id, greeting: rt.Config.String("GREETING")}, nil
@@ -92,7 +96,7 @@ func served(t *testing.T, members ...Served) string {
 
 func envOf(m map[string]string) config.Env {
 	return config.Env{LookupEnv: func(k string) (string, bool) { v, ok := m[k]; return v, ok },
-		Read: func(string) ([]byte, error) { return nil, errors.New("no files") }}
+		Read: os.ReadFile} // certificates are files
 }
 
 var self = Identity{ID: "be/go-core", Version: "3.0.0"}
@@ -115,8 +119,10 @@ func refuse(t *testing.T, env config.Env, bi func() (*debug.BuildInfo, bool), de
 	return stderr.String()
 }
 
-func get(url string) (int, string) {
-	resp, err := http.Get(url)
+func get(t *testing.T, url string) (int, string) {
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	authorize(t, req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, ""
 	}
@@ -127,9 +133,10 @@ func get(url string) (int, string) {
 
 func TestHostsMembersOnTheirOwnPorts(t *testing.T) {
 	pa, pb, ps := freePort(t), freePort(t), freePort(t)
-	js := served(t,
+	defs := []component.Definition{def("demo/alpha", "0.1.0"), def("demo/beta", "0.1.0")}
+	js := served(t, secure(t, defs,
 		Served{ComponentID: "demo/alpha", Version: "0.1.0", HTTPPort: pa, Config: map[string]string{"GREETING": "hi from alpha"}},
-		Served{ComponentID: "demo/beta", Version: "0.1.0", HTTPPort: pb, Config: map[string]string{"GREETING": "hi from beta"}})
+		Served{ComponentID: "demo/beta", Version: "0.1.0", HTTPPort: pb, Config: map[string]string{"GREETING": "hi from beta"}})...)
 	ctx, cancel := context.WithCancel(context.Background())
 	var stdout syncBuffer
 	done := make(chan int, 1)
@@ -139,23 +146,23 @@ func TestHostsMembersOnTheirOwnPorts(t *testing.T) {
 				BuildInfo: buildInfo(map[string]string{"demo/alpha": "v0.1.0", "demo/beta": "v0.1.0"}), ModuleOf: moduleByID})
 	}()
 	shellURL := "http://127.0.0.1:" + strconv.Itoa(ps)
-	require.Eventually(t, func() bool { c, _ := get(shellURL + "/readyz"); return c == 200 }, 5*time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool { c, _ := get(t, shellURL+"/readyz"); return c == 200 }, 5*time.Second, 20*time.Millisecond)
 
-	_, body := get("http://127.0.0.1:" + strconv.Itoa(pa) + "/api/hello")
+	_, body := get(t, "http://127.0.0.1:"+strconv.Itoa(pa)+"/api/hello")
 	assert.JSONEq(t, `{"from":"demo/alpha","greeting":"hi from alpha"}`, body, "each member reads its own config")
-	_, body = get("http://127.0.0.1:" + strconv.Itoa(pb) + "/api/hello")
+	_, body = get(t, "http://127.0.0.1:"+strconv.Itoa(pb)+"/api/hello")
 	assert.JSONEq(t, `{"from":"demo/beta","greeting":"hi from beta"}`, body)
 
-	_, desc := get(shellURL + "/.well-known/be-component")
+	_, desc := get(t, shellURL+"/.well-known/be-component")
 	assert.Contains(t, desc, `"component_id":"be/go-core"`)
 	assert.Contains(t, desc, `"demo/beta"`)
-	_, metrics := get(shellURL + "/metrics")
+	_, metrics := get(t, shellURL+"/metrics")
 	assert.Contains(t, metrics, `component="demo/alpha"`)
 	assert.Contains(t, metrics, `component="demo/beta"`)
 
 	cancel()
 	assert.Equal(t, 0, <-done)
-	c, _ := get("http://127.0.0.1:" + strconv.Itoa(pa) + "/healthz")
+	c, _ := get(t, "http://127.0.0.1:"+strconv.Itoa(pa)+"/healthz")
 	assert.Equal(t, 0, c, "every member's listener is closed after the stop")
 }
 
@@ -174,7 +181,8 @@ func TestRefusesOtherVersionInBuildInfo(t *testing.T) { // 0-04 C5
 }
 
 func TestRefusesReplaceUnlessAllowed(t *testing.T) {
-	js := served(t, Served{ComponentID: "demo/alpha", Version: "0.1.0", HTTPPort: freePort(t), Config: map[string]string{"GREETING": "x"}})
+	js := served(t, secure(t, []component.Definition{def("demo/alpha", "0.1.0")},
+		Served{ComponentID: "demo/alpha", Version: "0.1.0", HTTPPort: freePort(t), Config: map[string]string{"GREETING": "x"}})...)
 	bi := buildInfo(map[string]string{"demo/alpha": "v0.1.0"}, "demo/alpha")
 	out := refuse(t, shellEnv(freePort(t), js), bi, def("demo/alpha", "0.1.0"))
 	assert.Contains(t, out, "no replace in a release build")
@@ -187,7 +195,7 @@ func TestRefusesReplaceUnlessAllowed(t *testing.T) {
 		done <- Run(ctx, self, []component.Definition{def("demo/alpha", "0.1.0")}, Options{
 			Env: shellEnv(ps, js, "SHELL_ALLOW_REPLACE", "true"), Stdout: &stdout, Stderr: io.Discard, BuildInfo: bi, ModuleOf: moduleByID})
 	}()
-	require.Eventually(t, func() bool { c, _ := get("http://127.0.0.1:" + strconv.Itoa(ps) + "/readyz"); return c == 200 },
+	require.Eventually(t, func() bool { c, _ := get(t, "http://127.0.0.1:"+strconv.Itoa(ps)+"/readyz"); return c == 200 },
 		5*time.Second, 20*time.Millisecond)
 	cancel()
 	assert.Equal(t, 0, <-done)

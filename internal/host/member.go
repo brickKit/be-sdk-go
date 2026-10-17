@@ -5,7 +5,6 @@ package host
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,16 +13,14 @@ import (
 
 	protocol "github.com/brickKit/be-protocol/v3"
 	sdk "github.com/brickKit/be-sdk-go/v3"
+	"github.com/brickKit/be-sdk-go/v3/authz"
 	"github.com/brickKit/be-sdk-go/v3/calls"
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/events/bus"
-	"github.com/brickKit/be-sdk-go/v3/grpcx"
-	"github.com/brickKit/be-sdk-go/v3/httpx"
-	"github.com/brickKit/be-sdk-go/v3/obs"
-	"github.com/brickKit/be-sdk-go/v3/runtime"
+	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/work"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
@@ -55,9 +52,23 @@ func SDKKeys() []config.Key {
 	}
 }
 
+// SecurityKeys are the identity and authorization keys (protocol chapters 02 and 08); which are required depends on
+// what the member serves and calls, checked when it is built.
+func SecurityKeys() []config.Key {
+	return []config.Key{
+		{Name: "DEPLOYMENT_ID", Type: config.String, Process: true},
+		{Name: "IAM_ISSUER", Type: config.String, Process: true},
+		{Name: "IAM_JWKS_URL", Type: config.String, Process: true},
+		{Name: "AUTHZ_GRPC_URL", Type: config.String, Process: true},
+		{Name: "SERVICE_TLS_CERT_FILE", Type: config.String},
+		{Name: "SERVICE_TLS_KEY_FILE", Type: config.String},
+		{Name: "SERVICE_TLS_CA_FILE", Type: config.String},
+	}
+}
+
 // Keys returns a definition's keys plus the SDK's (and the database keys when the component owns a database).
 func Keys(def component.Definition) []config.Key {
-	keys := append(append([]config.Key(nil), def.Keys...), SDKKeys()...)
+	keys := append(append(append([]config.Key(nil), def.Keys...), SDKKeys()...), SecurityKeys()...)
 	if def.Migrations != nil {
 		keys = append(keys, db.ServeKeys()...)
 	}
@@ -86,6 +97,8 @@ type Member struct {
 	transport events.Transport
 	runner    *work.Runner
 	hasJobs   bool
+	holder    *authz.Holder
+	tls       *identity.ServiceTLS
 	state     atomic.Value
 	reread    func(string) ([]byte, error)
 }
@@ -106,106 +119,6 @@ func (m *Member) Describe() map[string]any {
 		"sdk": "be-sdk-go/" + sdk.Version, "capabilities": caps}
 }
 
-// Build constructs the member from parsed values. addresses is where *_ENDPOINT values are looked up; read is used to
-// re-read secret files; database is the member's handle on its pool (nil without a database).
-func Build(ctx context.Context, def component.Definition, values *config.Values, addresses config.Source,
-	read func(string) ([]byte, error), out io.Writer, database *db.DB, transport events.Transport) (*Member, error) {
-	if (len(def.Streams) > 0 || def.Subscribes) && (database == nil || transport == nil) {
-		return nil, errors.New("events need the component's database (Migrations) and the bus (BUS_URL)")
-	}
-	member := obs.Member{ID: def.ID, Version: def.Version}
-	m := &Member{Def: def, Values: values, Registry: obs.NewRegistry(), reread: read,
-		Logger: obs.NewLogger(member, obs.ParseLevel(values.String("LOG_LEVEL")), out)}
-	m.state.Store(Starting)
-	tp, err := obs.NewTracerProvider(ctx, member, values.String("OTEL_URL"))
-	if err != nil {
-		return nil, fmt.Errorf("tracing exporter: %w", err)
-	}
-	m.Tracers = tp
-	if m.Outbound, err = calls.NewMember(m.Registry); err != nil {
-		return nil, fmt.Errorf("outbound metrics: %w", err)
-	}
-	var producer *events.Producer
-	if len(def.Streams) > 0 {
-		if producer, err = events.NewProducer(def.ID, def.Streams, nil); err != nil {
-			return nil, err
-		}
-		m.forwarder = &events.Forwarder{DB: database, Producer: producer, Transport: transport, Source: def.ID,
-			Impl: values.String("IMPLEMENTATION_INSTANCE"), Log: m.Logger}
-	}
-	m.transport = transport
-	if database != nil {
-		m.runner = work.NewRunner(database, def.ID, m.Logger)
-	}
-	rt := runtime.New(member, values, m.Logger, m.Registry, tp.Tracer(def.ID), addresses, database, m.Outbound, producer, m.runner)
-	if m.Module, err = newModule(def, rt); err != nil {
-		return nil, fmt.Errorf("the module could not be built: %w", err)
-	}
-	var routes httpx.Routes
-	if err := m.Module.Routes(&routes); err != nil {
-		return nil, fmt.Errorf("the module's routes could not be registered: %w", err)
-	}
-	m.Engine, err = httpx.NewEngine(httpx.Deps{Member: member, Logger: m.Logger, Registry: m.Registry, Tracer: rt.Tracer,
-		Platform: httpx.Platform{
-			Ready:    func() (bool, string, []string) { s := m.State(); return s == Ready, s, nil },
-			Describe: func() any { return m.Describe() },
-		}}, &routes)
-	if err != nil {
-		return nil, fmt.Errorf("the user surface could not be built: %w", err)
-	}
-	if wk, ok := m.Module.(work.Worker); ok {
-		if m.runner == nil {
-			return nil, errors.New("the module has background jobs but the component has no database (Migrations)")
-		}
-		var jobs work.Jobs
-		if err := wk.Jobs(&jobs); err != nil {
-			return nil, fmt.Errorf("the module's jobs could not be registered: %w", err)
-		}
-		if err := m.runner.AddAll(&jobs); err != nil {
-			return nil, err
-		}
-		m.hasJobs = true
-	}
-	if sub, ok := m.Module.(events.Subscriber); ok {
-		if !def.Subscribes {
-			return nil, errors.New("the module subscribes to events but the definition does not say Subscribes")
-		}
-		var subs events.Subscriptions
-		if err := sub.Subscriptions(&subs); err != nil {
-			return nil, fmt.Errorf("the module's subscriptions could not be registered: %w", err)
-		}
-		for _, s := range subs.List() {
-			m.consumers = append(m.consumers, &events.Consumer{Member: def.ID, Sub: s, DB: database, Log: m.Logger})
-		}
-	}
-	if sm, ok := m.Module.(component.SystemModule); ok {
-		var services grpcx.Services
-		if err := sm.Services(&services); err != nil {
-			return nil, fmt.Errorf("the module's services could not be registered: %w", err)
-		}
-		if !services.Empty() {
-			if m.System, err = grpcx.NewServer(grpcx.Deps{Member: member, Logger: m.Logger, Registry: m.Registry,
-				Tracer: rt.Tracer}, &services); err != nil {
-				return nil, fmt.Errorf("the system surface could not be built: %w", err)
-			}
-		}
-	}
-	return m, nil
-}
-
-// newModule calls the module entry, turning a panic into an error: a module never takes the process down.
-func newModule(def component.Definition, rt *runtime.Runtime) (mod component.Module, err error) {
-	defer func() {
-		if p := recover(); p != nil {
-			err = fmt.Errorf("panic in New: %v", p)
-		}
-	}()
-	if def.New == nil {
-		return nil, errors.New("the definition has no New")
-	}
-	return def.New(rt)
-}
-
 // Start runs the module's background work (if any), the event forwarder and consumers, and the secret re-reading,
 // all bound to bg.
 func (m *Member) Start(bg context.Context) error {
@@ -223,6 +136,21 @@ func (m *Member) Start(bg context.Context) error {
 		if err := m.runner.Start(bg); err != nil {
 			return err
 		}
+	}
+	if m.tls != nil {
+		go m.tls.Watch(bg, secretRereadEvery, func(err error) {
+			m.Logger.Warn("the service certificate could not be re-read; keeping the previous one", "error", err.Error())
+		})
+	}
+	if m.holder != nil {
+		// one verification before ready, so the first requests find a view; best effort: the authorization member
+		// may be down, and then protected requests answer a retryable 503 until it is back
+		first, cancel := context.WithTimeout(bg, 2*time.Second)
+		if err := m.holder.Verify(first); err != nil {
+			m.Logger.Warn("no authorization view yet; protected requests wait for one", "error", err.Error())
+		}
+		cancel()
+		go m.holder.Run(bg)
 	}
 	for _, c := range m.consumers {
 		sub, err := m.transport.Subscribe(bg, c.Spec(), c.Handle)

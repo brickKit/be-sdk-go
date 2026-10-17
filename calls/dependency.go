@@ -10,6 +10,7 @@ import (
 
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/errs"
+	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 )
@@ -120,6 +121,7 @@ type Member struct {
 	client  *http.Client
 	conns   map[string]*grpc.ClientConn
 	creds   Credentials
+	tls     *identity.ServiceTLS
 }
 
 // NewMember creates the member's outbound state; reg is the member's own registry (nil: no metrics).

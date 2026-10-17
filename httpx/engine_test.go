@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -22,6 +23,13 @@ import (
 
 func init() { gin.SetMode(gin.ReleaseMode) }
 
+// admitAll stands in for the guard: these tests are about the chain around it (the guard has its own tests).
+type admitAll struct{}
+
+func (admitAll) Admit(ctx context.Context, _ Route, _ *http.Request) (context.Context, error) {
+	return ctx, nil
+}
+
 type harness struct {
 	engine http.Handler
 	logs   *bytes.Buffer
@@ -33,7 +41,7 @@ func newHarness(t *testing.T, routes *Routes) *harness {
 	h := &harness{logs: &bytes.Buffer{}}
 	m := obs.Member{ID: "demo/alpha", Version: "3.0.0"}
 	d := Deps{Member: m, Logger: obs.NewLogger(m, slog.LevelDebug, h.logs), Registry: prometheus.NewRegistry(),
-		Tracer: sdktrace.NewTracerProvider().Tracer("test"),
+		Tracer: sdktrace.NewTracerProvider().Tracer("test"), Guard: admitAll{},
 		Platform: Platform{
 			Ready:    func() (bool, string, []string) { return h.ready, "starting", []string{"demo/beta"} },
 			Describe: func() any { return map[string]string{"component_id": m.ID} },

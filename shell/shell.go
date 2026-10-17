@@ -26,6 +26,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
+	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/internal/host"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/prometheus/client_golang/prometheus"
@@ -160,13 +161,28 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 	if transport != nil {
 		defer transport.Close()
 	}
+	var keys *identity.KeySet // one per process (protocol 17); IAM_JWKS_URL agrees across the members
+	if len(plans) > 0 {
+		if keys, err = host.OpenKeys(ctx, plans[0].values); err != nil {
+			log.Warn("the identity keys could not be fetched yet", "error", err.Error())
+		}
+	}
 	for _, p := range plans {
 		var database *db.DB
 		if p.def.Migrations != nil {
 			s := db.SettingsFrom(p.values)
 			database = db.NewDB(p.def.ID, pools[s.Target], s)
 		}
-		m, err := host.Build(ctx, p.def, p.values, config.Map(p.served.Config), o.Env.ReadFile, o.Stdout, database, transport)
+		m, err := host.Build(ctx, p.def, p.values, host.Shared{Addresses: config.Map(p.served.Config), Read: o.Env.ReadFile,
+			Out: o.Stdout, DB: database, Transport: transport, Keys: keys})
+		var cfgErr *host.ConfigError
+		if errors.As(err, &cfgErr) {
+			host.ReportConfig(o.Stderr, p.def.ID, cfgErr.Problems)
+			for _, s := range servers {
+				_ = s.Close()
+			}
+			return host.ExitConfiguration
+		}
 		if err != nil {
 			return fail(p.def.ID, "a member could not be built", err)
 		}

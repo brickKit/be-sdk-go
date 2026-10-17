@@ -13,9 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/brickKit/be-sdk-go/v3/clock"
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
+	"github.com/brickKit/be-sdk-go/v3/reqctx"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -294,4 +296,26 @@ func TestManyMembersConcurrentlyOnOnePool(t *testing.T) {
 	}
 	wg.Wait()
 	assert.Zero(t, wrong.Load(), "no transaction ever ran with another member's role or schema")
+}
+
+func TestAWriteWhoseCutoffPassedIsRolledBack(t *testing.T) { // P8.12, CK-AZ-04
+	host, port := fixture(t)
+	pool := sharedPool(t, host, port, 2)
+	a := NewDB("demo/alpha", pool, settings(host, port, "alpha", 4))
+	ctx := context.Background()
+	write := func(ctx context.Context) error {
+		return a.Tx(ctx, func(ctx context.Context, tx Tx) error {
+			_, err := tx.Exec(ctx, "UPDATE items SET name = 'cutoff' WHERE id = 2")
+			return err
+		})
+	}
+	err := write(reqctx.WithCutoff(ctx, clock.Boot()-time.Millisecond))
+	assert.True(t, errs.Is(err, "be", errs.ReasonAuthorizationViewExpired), "%v", err)
+	var name string
+	require.NoError(t, admin(t, testDB).QueryRow(ctx, "SELECT name FROM alpha.items WHERE id = 2").Scan(&name))
+	assert.Equal(t, "a2", name, "rolled back")
+
+	require.NoError(t, write(reqctx.WithCutoff(ctx, clock.Boot()+time.Minute)))
+	require.NoError(t, admin(t, testDB).QueryRow(ctx, "SELECT name FROM alpha.items WHERE id = 2").Scan(&name))
+	assert.Equal(t, "cutoff", name)
 }

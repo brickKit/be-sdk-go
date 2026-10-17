@@ -15,6 +15,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
+	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/brickKit/be-sdk-go/v3/work"
 	"github.com/stretchr/testify/assert"
@@ -58,6 +59,7 @@ func TestQueuedWorkRunsInTheComponent(t *testing.T) {
 	pgtest.Member(t, "reports", "")
 	vars := pgtest.MemberEnv(host, port, "reports")
 	def := component.Definition{ID: "demo/reports", Version: "3.0.0",
+		Authz:      sectest.Defs("demo/reports", "demo.reports", "demo.reports.read", "demo.reports.create"),
 		Migrations: fstest.MapFS{"0001_reports.up.sql": {Data: []byte("CREATE TABLE reports (id text PRIMARY KEY);")}},
 		New:        func(rt *runtime.Runtime) (component.Module, error) { return &reports{rt: rt}, nil }}
 	var out syncBuffer
@@ -67,7 +69,7 @@ func TestQueuedWorkRunsInTheComponent(t *testing.T) {
 	maps.Copy(serve, map[string]string{"COMPONENT_ID": def.ID, "COMPONENT_VERSION": def.Version, "PORT": strconv.Itoa(httpPort), "STOP_DRAIN_DELAY": "50ms"})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
-	go func() { done <- Run(ctx, def, Options{Env: env(serve), Stdout: &out, Stderr: &out}) }()
+	go func() { done <- Run(ctx, def, Options{Env: env(secured(t, def, serve)), Stdout: &out, Stderr: &out}) }()
 	base := "http://127.0.0.1:" + strconv.Itoa(httpPort)
 	require.Eventually(t, func() bool { c, _ := get(t, base+"/readyz"); return c == 200 }, 10*time.Second, 20*time.Millisecond)
 	for i := 0; i < 3; i++ {

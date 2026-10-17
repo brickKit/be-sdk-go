@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
+	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,7 +39,7 @@ func (s *syncBuffer) String() string { s.mu.Lock(); defer s.mu.Unlock(); return 
 
 func env(m map[string]string) config.Env {
 	return config.Env{LookupEnv: func(k string) (string, bool) { v, ok := m[k]; return v, ok },
-		Read: func(string) ([]byte, error) { return nil, errors.New("no files") }}
+		Read: os.ReadFile} // certificates are files
 }
 
 type demo struct {
@@ -60,8 +62,9 @@ func (d *demo) Stop(context.Context) error  { d.stopped.Store(true); return nil 
 
 func definition(d *demo) component.Definition {
 	return component.Definition{ID: "demo/alpha", Version: "3.0.0", Capabilities: []string{"core"},
-		Keys: []config.Key{{Name: "GREETING", Type: config.String, Default: "hello"}},
-		New:  func(*runtime.Runtime) (component.Module, error) { return d, nil }}
+		Authz: sectest.Defs("demo/alpha", "demo.alpha", "demo.alpha.read"),
+		Keys:  []config.Key{{Name: "GREETING", Type: config.String, Default: "hello"}},
+		New:   func(*runtime.Runtime) (component.Module, error) { return d, nil }}
 }
 
 func freePort(t *testing.T) int {
@@ -105,7 +108,9 @@ func TestModuleFailuresDoNotCrash(t *testing.T) {
 }
 
 func get(t *testing.T, url string) (int, []byte) {
-	resp, err := http.Get(url)
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	authorize(t, req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, nil
 	}
@@ -122,8 +127,8 @@ func TestServeReadyAndGracefulStop(t *testing.T) {
 	var stdout syncBuffer
 	done := make(chan int, 1)
 	go func() {
-		done <- Run(ctx, definition(d), Options{Env: env(map[string]string{"COMPONENT_ID": "demo/alpha",
-			"COMPONENT_VERSION": "3.0.0", "PORT": strconv.Itoa(port), "STOP_DRAIN_DELAY": "400ms", "STOP_TIMEOUT": "5s"}),
+		done <- Run(ctx, definition(d), Options{Env: env(secured(t, definition(d), map[string]string{"COMPONENT_ID": "demo/alpha",
+			"COMPONENT_VERSION": "3.0.0", "PORT": strconv.Itoa(port), "STOP_DRAIN_DELAY": "400ms", "STOP_TIMEOUT": "5s"})),
 			Stdout: &stdout, Stderr: io.Discard})
 	}()
 

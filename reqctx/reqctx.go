@@ -3,7 +3,10 @@
 // them. Modules never need it directly.
 package reqctx
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type key int
 
@@ -31,4 +34,21 @@ func WithUserCredential(ctx context.Context, authorization string) context.Conte
 func UserCredential(ctx context.Context) string {
 	s, _ := ctx.Value(userCredentialKey).(string)
 	return s
+}
+
+type cutoffKey struct{}
+
+// WithCutoff records the request's cutoff (P8.12): the earliest end of the evidence it relies on, as a reading of
+// the suspend-aware clock. A write transaction checks it again just before COMMIT.
+func WithCutoff(ctx context.Context, boot time.Duration) context.Context {
+	if prev, ok := Cutoff(ctx); ok && prev < boot {
+		boot = prev // only ever shortened
+	}
+	return context.WithValue(ctx, cutoffKey{}, boot)
+}
+
+// Cutoff returns the request's cutoff, if any.
+func Cutoff(ctx context.Context) (time.Duration, bool) {
+	d, ok := ctx.Value(cutoffKey{}).(time.Duration)
+	return d, ok
 }

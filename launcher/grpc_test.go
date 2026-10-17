@@ -12,6 +12,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/grpcx"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/internal/echotest"
+	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,7 +28,7 @@ func (s *system) Services(r *grpcx.Services) error {
 			<-s.release
 		}
 		return wrapperspb.String("echo " + in.Value), nil
-	}), map[string]grpcx.Method{"Say": {Operation: "demo.system.say"}})
+	}), map[string]grpcx.Method{"Say": {Operation: "demo.system.say", Callers: []string{"demo/client"}}})
 	return nil
 }
 
@@ -35,12 +36,13 @@ func TestServesTheSystemSurfaceAndStopsItGracefully(t *testing.T) {
 	port, grpcPort := freePort(t), freePort(t)
 	s := &system{release: make(chan struct{})}
 	def := component.Definition{ID: "demo/system", Version: "3.0.0", GRPCPort: grpcPort,
-		New: func(*runtime.Runtime) (component.Module, error) { return s, nil }}
+		Authz: sectest.Defs("demo/system", "demo.system", "demo.system.say"),
+		New:   func(*runtime.Runtime) (component.Module, error) { return s, nil }}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	go func() {
-		done <- Run(ctx, def, Options{Env: env(map[string]string{"COMPONENT_ID": "demo/system", "COMPONENT_VERSION": "3.0.0",
-			"PORT": strconv.Itoa(port), "STOP_DRAIN_DELAY": "200ms"}), Stdout: io.Discard, Stderr: io.Discard})
+		done <- Run(ctx, def, Options{Env: env(secured(t, def, map[string]string{"COMPONENT_ID": "demo/system", "COMPONENT_VERSION": "3.0.0",
+			"PORT": strconv.Itoa(port), "STOP_DRAIN_DELAY": "200ms"})), Stdout: io.Discard, Stderr: io.Discard})
 	}()
 	base := "http://127.0.0.1:" + strconv.Itoa(port)
 	require.Eventually(t, func() bool { c, _ := get(t, base+"/readyz"); return c == 200 }, 5*time.Second, 20*time.Millisecond)
@@ -48,6 +50,7 @@ func TestServesTheSystemSurfaceAndStopsItGracefully(t *testing.T) {
 	out, err := calls.NewMember(nil)
 	require.NoError(t, err)
 	defer out.Close()
+	out.SetTLS(worldOf(t).TLS(t, "demo/client"))
 	conn, err := out.GRPC("demo/system", "127.0.0.1:"+strconv.Itoa(grpcPort))
 	require.NoError(t, err)
 	call := func(v string) (string, error) {
@@ -72,11 +75,11 @@ func TestServesTheSystemSurfaceAndStopsItGracefully(t *testing.T) {
 }
 
 func TestSystemModuleWithoutGRPCPortFails(t *testing.T) {
-	def := component.Definition{ID: "demo/system", Version: "3.0.0",
+	def := component.Definition{ID: "demo/system", Version: "3.0.0", Authz: sectest.Defs("demo/system", "demo.system", "demo.system.say"),
 		New: func(*runtime.Runtime) (component.Module, error) { return &system{}, nil }}
 	var out syncBuffer
-	code := Run(context.Background(), def, Options{Env: env(map[string]string{"COMPONENT_ID": "demo/system",
-		"COMPONENT_VERSION": "3.0.0", "PORT": strconv.Itoa(freePort(t))}), Stdout: &out, Stderr: &out})
+	code := Run(context.Background(), def, Options{Env: env(secured(t, def, map[string]string{"COMPONENT_ID": "demo/system",
+		"COMPONENT_VERSION": "3.0.0", "PORT": strconv.Itoa(freePort(t))})), Stdout: &out, Stderr: &out})
 	assert.Equal(t, ExitFailure, code)
 	assert.Contains(t, out.String(), "no GRPCPort")
 }

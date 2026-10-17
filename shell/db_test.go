@@ -8,6 +8,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
+	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/stretchr/testify/assert"
 )
@@ -43,7 +44,7 @@ func (s *shape) Routes(r *httpx.Routes) error {
 }
 
 func dbDef(id, migration string) component.Definition {
-	return component.Definition{ID: id, Version: "0.1.0",
+	return component.Definition{ID: id, Version: "0.1.0", Authz: sectest.Defs(id, "demo.shape", "demo.shape.read"),
 		Migrations: fstest.MapFS{"0001_items.up.sql": {Data: []byte(migration)}},
 		New:        func(rt *runtime.Runtime) (component.Module, error) { return &shape{db: rt.DB}, nil }}
 }

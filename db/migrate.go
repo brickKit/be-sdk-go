@@ -156,7 +156,7 @@ func applyOnce(ctx context.Context, c MigrateConfig, set MigrationSet) (blockers
 	err = m.Up()
 	if err == nil || errors.Is(err, migrate.ErrNoChange) {
 		v, _, _ := m.Version()
-		c.Log.Info("migrations applied", "set", set.Name, "version", v)
+		c.Log.Info("migrations applied", "set", set.Name, "schema_version", v)
 		return nil, nil
 	}
 	var dirty migrate.ErrDirty

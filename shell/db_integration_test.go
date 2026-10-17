@@ -47,11 +47,11 @@ func TestMembersShareOnePoolAndNeverEachOthersSchema(t *testing.T) {
 	var stdout syncBuffer
 	done := make(chan int, 1)
 	go func() {
-		done <- Run(ctx, self, defs, Options{Env: shellEnv(ps, served(t, members...), "PG_SHELL_USER", "sdk_shell_t",
+		done <- Run(ctx, self, defs, Options{Env: shellEnv(ps, served(t, secure(t, defs, members...)...), "PG_SHELL_USER", "sdk_shell_t",
 			"PG_SHELL_PASSWORD", "shell-t-pw"), Stdout: &stdout, Stderr: io.Discard,
 			BuildInfo: buildInfo(map[string]string{"demo/sha": "v0.1.0", "demo/shb": "v0.1.0"}), ModuleOf: moduleByID})
 	}()
-	require.Eventually(t, func() bool { c, _ := get("http://127.0.0.1:" + strconv.Itoa(ps) + "/readyz"); return c == 200 },
+	require.Eventually(t, func() bool { c, _ := get(t, "http://127.0.0.1:"+strconv.Itoa(ps)+"/readyz"); return c == 200 },
 		10*time.Second, 20*time.Millisecond, stdout.String())
 
 	want := map[int]map[string]any{
@@ -60,7 +60,7 @@ func TestMembersShareOnePoolAndNeverEachOthersSchema(t *testing.T) {
 	}
 	for i := 0; i < 20; i++ {
 		for p, w := range want {
-			code, body := get("http://127.0.0.1:" + strconv.Itoa(p) + "/api/shape")
+			code, body := get(t, "http://127.0.0.1:"+strconv.Itoa(p)+"/api/shape")
 			require.Equal(t, 200, code, body)
 			var got map[string]any
 			require.NoError(t, json.Unmarshal([]byte(body), &got))

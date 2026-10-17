@@ -6,10 +6,11 @@ import (
 	"fmt"
 
 	"github.com/brickKit/be-sdk-go/v3/errs"
+	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/reqctx"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -27,8 +28,11 @@ type Credentials interface {
 	ServiceAuthorization(ctx context.Context) (string, error)
 }
 
-// SetCredentials sets the member's service identity for its system-surface calls.
+// SetCredentials sets an additional service credential carried in metadata (a token-based identity profile).
 func (m *Member) SetCredentials(c Credentials) { m.mu.Lock(); m.creds = c; m.mu.Unlock() }
+
+// SetTLS sets the member's mTLS service identity; system-surface calls are made only with it (P8.5).
+func (m *Member) SetTLS(t *identity.ServiceTLS) { m.mu.Lock(); m.tls = t; m.mu.Unlock() }
 
 type idempotentOption struct{ grpc.EmptyCallOption }
 type keyOption struct {
@@ -52,8 +56,11 @@ func (m *Member) GRPC(id, target string) (*grpc.ClientConn, error) {
 	if c, ok := m.conns[key]; ok {
 		return c, nil
 	}
+	if m.tls == nil {
+		return nil, fmt.Errorf("system surface of %s: this member has no service identity (SERVICE_TLS_*)", id)
+	}
 	dep := m.dependencyLocked(id, "grpc")
-	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()),
+	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(credentials.NewTLS(m.tls.ClientConfig(id))),
 		grpc.WithUnaryInterceptor(m.unary(dep)))
 	if err != nil {
 		return nil, fmt.Errorf("system surface of %s at %s: %w", id, target, err)

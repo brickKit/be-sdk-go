@@ -38,6 +38,12 @@ type Platform struct {
 	Metrics http.Handler
 }
 
+// Guard admits a request to a route (protocol chapter 08): it verifies the caller's credential and puts the
+// verified subject and the request's cutoff into the context. Public routes skip it.
+type Guard interface {
+	Admit(ctx context.Context, r Route, req *http.Request) (context.Context, error)
+}
+
 // Deps are what the engine needs from the member's runtime.
 type Deps struct {
 	Member   obs.Member
@@ -45,6 +51,8 @@ type Deps struct {
 	Registry *prometheus.Registry
 	Tracer   trace.Tracer
 	Platform Platform
+	// Guard admits requests to non-public routes; an engine with such routes is not built without one.
+	Guard Guard
 }
 
 var requestIDRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
@@ -53,6 +61,13 @@ var requestIDRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 func NewEngine(d Deps, routes *Routes) (*gin.Engine, error) {
 	if err := routes.Validate(); err != nil {
 		return nil, err
+	}
+	if d.Guard == nil {
+		for _, r := range routes.List() {
+			if !r.Public {
+				return nil, fmt.Errorf("route %s %s: no guard to admit its callers", r.Method, r.Path)
+			}
+		}
 	}
 	duration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "be_http_server_duration_seconds", Help: "User-surface request duration by route and status.",
@@ -173,6 +188,13 @@ func serve(g *gin.Context, d Deps, r Route, duration *prometheus.HistogramVec) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, limit)
 		defer cancel()
+		if !r.Public {
+			admitted, err := d.Guard.Admit(ctx, r, req)
+			if err != nil {
+				return err
+			}
+			ctx = admitted
+		}
 		g.Request = req.WithContext(ctx)
 		g.Request.Body = http.MaxBytesReader(g.Writer, req.Body, r.maxBody())
 		return r.Handle(&Context{gin: g, route: r, requestID: rid, traceID: traceID, logger: log})

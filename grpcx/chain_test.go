@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/grpcx"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/internal/echotest"
+	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/reqctx"
 	"github.com/gin-gonic/gin"
@@ -33,17 +35,33 @@ type sayFunc = echotest.Say
 
 var echoDesc = echotest.Desc
 
-func deps(id string) grpcx.Deps {
+// worlds keeps one test deployment per test: certificates for every component in it.
+var worlds sync.Map
+
+func worldOf(t *testing.T) *sectest.World {
+	if w, ok := worlds.Load(t.Name()); ok {
+		return w.(*sectest.World)
+	}
+	w := sectest.New(t)
+	worlds.Store(t.Name(), w)
+	t.Cleanup(func() { worlds.Delete(t.Name()) })
+	return w
+}
+
+// callers may call every test method: these tests are about the call policy (permits have their own test).
+var callers = []string{"demo/a", "demo/b", "demo/c"}
+
+func deps(t *testing.T, id string) grpcx.Deps {
 	m := obs.Member{ID: id, Version: "3.0.0"}
 	return grpcx.Deps{Member: m, Logger: obs.NewLogger(m, slog.LevelError, io.Discard), Registry: prometheus.NewRegistry(),
-		Tracer: sdktrace.NewTracerProvider().Tracer(id)}
+		Tracer: sdktrace.NewTracerProvider().Tracer(id), TLS: worldOf(t).TLS(t, id)}
 }
 
 // serveGRPC starts a member's system surface and returns its address.
 func serveGRPC(t *testing.T, id string, say sayFunc) string {
 	var s grpcx.Services
-	s.Register(&echoDesc, say, map[string]grpcx.Method{"Say": {Operation: id + ".say"}})
-	srv, err := grpcx.NewServer(deps(id), &s)
+	s.Register(&echoDesc, say, map[string]grpcx.Method{"Say": {Operation: id + ".say", Callers: callers}})
+	srv, err := grpcx.NewServer(deps(t, id), &s)
 	require.NoError(t, err)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -52,11 +70,20 @@ func serveGRPC(t *testing.T, id string, say sayFunc) string {
 	return ln.Addr().String()
 }
 
-func member(t *testing.T) *calls.Member {
+// member is a calling component's outbound state, with its service identity.
+func member(t *testing.T, id string) *calls.Member {
 	m, err := calls.NewMember(prometheus.NewRegistry())
 	require.NoError(t, err)
+	m.SetTLS(worldOf(t).TLS(t, id))
 	t.Cleanup(m.Close)
 	return m
+}
+
+// admitAll stands in for the guard on the user surface: these tests are about the call policy.
+type admitAll struct{}
+
+func (admitAll) Admit(ctx context.Context, _ httpx.Route, _ *http.Request) (context.Context, error) {
+	return ctx, nil
 }
 
 type seen struct {
@@ -83,7 +110,7 @@ func TestGRPCChainRetriesAtOneLayerOnly(t *testing.T) {
 		atC.record(ctx)
 		return nil, errs.New(errs.ReasonServiceBusy, "c is busy")
 	})
-	bOut := member(t)
+	bOut := member(t, "demo/b")
 	bAddr := serveGRPC(t, "demo/b", func(ctx context.Context, in *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 		bHits.Add(1)
 		atB.record(ctx)
@@ -95,7 +122,7 @@ func TestGRPCChainRetriesAtOneLayerOnly(t *testing.T) {
 		return out, conn.Invoke(ctx, "/demo.Echo/Say", in, out, calls.Idempotent())
 	})
 
-	aOut := member(t)
+	aOut := member(t, "demo/a")
 	conn, err := aOut.GRPC("demo/b", bAddr)
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(reqctx.WithRequestID(context.Background(), "rid-chain-1"), time.Second)
@@ -122,7 +149,7 @@ func TestGRPCComponentErrorsPassThroughUnchanged(t *testing.T) {
 	cAddr := serveGRPC(t, "demo/c", func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 		return nil, short.New("only 2 left").With("sku", "A-1").WithViolations(errs.Violation{Field: "/qty", Reason: "TOO_LARGE"})
 	})
-	conn, err := member(t).GRPC("demo/c", cAddr)
+	conn, err := member(t, "demo/a").GRPC("demo/c", cAddr)
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -138,7 +165,7 @@ func TestGRPCComponentErrorsPassThroughUnchanged(t *testing.T) {
 func TestUndeclaredMethodsAreRefused(t *testing.T) {
 	var s grpcx.Services
 	s.Register(&echoDesc, sayFunc(nil), map[string]grpcx.Method{"Shout": {Operation: "x"}})
-	_, err := grpcx.NewServer(deps("demo/x"), &s)
+	_, err := grpcx.NewServer(deps(t, "demo/x"), &s)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "/demo.Echo/Say: no operation declared")
 	assert.Contains(t, err.Error(), "/demo.Echo/Shout: declared but not a method")
@@ -147,8 +174,8 @@ func TestUndeclaredMethodsAreRefused(t *testing.T) {
 // ---------------------------------------------------------------- user surface
 
 func serveHTTP(t *testing.T, id string, routes *httpx.Routes) string {
-	d := deps(id)
-	e, err := httpx.NewEngine(httpx.Deps{Member: d.Member, Logger: d.Logger, Registry: d.Registry, Tracer: d.Tracer,
+	d := deps(t, id)
+	e, err := httpx.NewEngine(httpx.Deps{Member: d.Member, Logger: d.Logger, Registry: d.Registry, Tracer: d.Tracer, Guard: admitAll{},
 		Platform: httpx.Platform{Ready: func() (bool, string, []string) { return true, "ready", nil }, Describe: func() any { return nil }}}, routes)
 	require.NoError(t, err)
 	s := httptest.NewServer(e)
@@ -170,7 +197,7 @@ func TestHTTPChainRetriesAtOneLayerOnlyAndForwardsTheUser(t *testing.T) {
 		return errs.New(errs.ReasonServiceBusy, "c is busy").WithRetryAfter(time.Second)
 	})
 	cURL := serveHTTP(t, "demo/c", &c)
-	bOut := member(t)
+	bOut := member(t, "demo/b")
 	var b httpx.Routes
 	b.GET("/api/b", "demo.b.read", func(x *httpx.Context) error {
 		bHits.Add(1)
@@ -181,7 +208,7 @@ func TestHTTPChainRetriesAtOneLayerOnlyAndForwardsTheUser(t *testing.T) {
 	ctx, cancel := context.WithTimeout(reqctx.WithUserCredential(reqctx.WithRequestID(context.Background(), "rid-http-1"),
 		"Bearer user-token"), 2*time.Second)
 	defer cancel()
-	err := member(t).HTTP("demo/b", bURL).Do(ctx, calls.Request{Method: "GET", Path: "/api/b", ForwardUser: true}, nil)
+	err := member(t, "demo/a").HTTP("demo/b", bURL).Do(ctx, calls.Request{Method: "GET", Path: "/api/b", ForwardUser: true}, nil)
 
 	assert.Equal(t, int32(3), cHits.Load())
 	assert.Equal(t, int32(1), bHits.Load())
@@ -206,7 +233,7 @@ func TestHTTPOutboundLimitAnswerIsNotRetried(t *testing.T) {
 	cURL := serveHTTP(t, "demo/c", &c)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	err := member(t).HTTP("demo/c", cURL).Do(ctx, calls.Request{Method: "GET", Path: "/api/c"}, nil)
+	err := member(t, "demo/a").HTTP("demo/c", cURL).Do(ctx, calls.Request{Method: "GET", Path: "/api/c"}, nil)
 	assert.Equal(t, int32(1), hits.Load())
 	assert.True(t, errs.Is(err, "be", errs.ReasonOutboundLimit), "%v", err)
 }
@@ -216,7 +243,7 @@ func TestHTTPConnectFailureIsRetriedThenReported(t *testing.T) {
 	require.NoError(t, err)
 	addr := ln.Addr().String()
 	require.NoError(t, ln.Close())
-	m := member(t)
+	m := member(t, "demo/a")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	err = m.HTTP("demo/gone", "http://"+addr).Do(ctx, calls.Request{Method: "GET", Path: "/api/x"}, nil)

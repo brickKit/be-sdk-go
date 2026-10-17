@@ -38,3 +38,9 @@ type clockError string
 func (e clockError) Error() string { return string(e) }
 
 const errNotMonotonic = clockError("CLOCK_BOOTTIME went backwards")
+
+// Boot returns the suspend-aware clock reading; the start check has already proven it works.
+func Boot() time.Duration {
+	d, _ := SinceBoot()
+	return d
+}

@@ -10,17 +10,20 @@ import (
 	"log/slog"
 	"regexp"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/calls"
 	"github.com/brickKit/be-sdk-go/v3/errs"
+	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/reqctx"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -40,6 +43,8 @@ type Method struct {
 	Orchestration bool
 	// Timeout overrides the default deadline.
 	Timeout time.Duration
+	// Callers are the components allowed to call this method (P8.6); a caller is known by its verified certificate.
+	Callers []string
 }
 
 func (m Method) deadline() time.Duration {
@@ -88,6 +93,8 @@ func (s *Services) Validate() error {
 			known[full] = true
 			if d, ok := s.methods[full]; !ok || d.Operation == "" {
 				problems = append(problems, full+": no operation declared")
+			} else if len(d.Callers) == 0 {
+				problems = append(problems, full+": no callers declared")
 			}
 		}
 		for _, st := range svc.desc.Streams {
@@ -111,6 +118,17 @@ type Deps struct {
 	Logger   *slog.Logger
 	Registry *prometheus.Registry
 	Tracer   trace.Tracer
+	// TLS is the member's service identity; the system surface never runs without it (P8.5).
+	TLS *identity.ServiceTLS
+}
+
+// Operations lists the operations the registered methods declare (checked against the component's declarations).
+func (s *Services) Operations() []string {
+	var out []string
+	for _, m := range s.methods {
+		out = append(out, m.Operation)
+	}
+	return out
 }
 
 var requestIDRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
@@ -120,12 +138,16 @@ func NewServer(d Deps, s *Services) (*grpc.Server, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
+	if d.TLS == nil {
+		return nil, errors.New("system surface: no service identity (SERVICE_TLS_CERT_FILE, SERVICE_TLS_KEY_FILE, SERVICE_TLS_CA_FILE)")
+	}
 	duration := prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "be_grpc_server_duration_seconds",
 		Help: "System-surface call duration by method and code.", Buckets: prometheus.DefBuckets}, []string{"method", "code"})
 	if err := d.Registry.Register(duration); err != nil {
 		return nil, fmt.Errorf("register grpc metrics: %w", err)
 	}
-	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(interceptor(d, s, duration)))
+	srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(d.TLS.ServerConfig())),
+		grpc.ChainUnaryInterceptor(interceptor(d, s, duration)))
 	for _, svc := range s.list {
 		srv.RegisterService(svc.desc, svc.impl)
 	}
@@ -152,6 +174,10 @@ func interceptor(d Deps, s *Services, duration *prometheus.HistogramVec) grpc.Un
 		ctx, cancel := context.WithTimeout(ctx, decl.deadline())
 		defer cancel()
 
+		if caller, ok := identity.Caller(ctx, d.TLS.Deployment); !ok || !slices.Contains(decl.Callers, caller) {
+			log.Warn("a system call from a component not allowed to call this method", "method", info.FullMethod, "caller", caller)
+			return nil, errs.New(errs.ReasonPermissionDenied, "this component may not call this method").GRPCStatus().Err()
+		}
 		func() {
 			defer func() {
 				if p := recover(); p != nil {

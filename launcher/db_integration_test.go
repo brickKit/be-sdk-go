@@ -17,6 +17,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
+	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,6 +51,7 @@ func (n *notes) Routes(r *httpx.Routes) error {
 
 func notesDefinition() component.Definition {
 	return component.Definition{ID: "demo/notes", Version: "3.0.0",
+		Authz:      sectest.Defs("demo/notes", "demo.notes", "demo.notes.read", "demo.notes.write"),
 		Migrations: fstest.MapFS{"0001_notes.up.sql": {Data: []byte("CREATE TABLE notes (id uuid PRIMARY KEY);")}},
 		New:        func(rt *runtime.Runtime) (component.Module, error) { return &notes{db: rt.DB}, nil }}
 }
@@ -75,7 +77,7 @@ func TestDatabaseComponentMigratesAndServes(t *testing.T) {
 	done := make(chan int, 1)
 	var stdout syncBuffer
 	go func() {
-		done <- Run(ctx, notesDefinition(), Options{Env: env(serveVars), Stdout: &stdout, Stderr: io.Discard})
+		done <- Run(ctx, notesDefinition(), Options{Env: env(secured(t, notesDefinition(), serveVars)), Stdout: &stdout, Stderr: io.Discard})
 	}()
 	require.Eventually(t, func() bool { c, _ := get(t, base+"/readyz"); return c == 200 }, 10*time.Second, 20*time.Millisecond, stdout.String())
 
@@ -91,7 +93,7 @@ func TestDatabaseComponentMigratesAndServes(t *testing.T) {
 func TestDatabaseStartChecks(t *testing.T) {
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "notes", "")
-	base := pgtest.MemberEnv(host, port, "notes")
+	base := secured(t, notesDefinition(), pgtest.MemberEnv(host, port, "notes"))
 	maps.Copy(base, map[string]string{"COMPONENT_ID": "demo/notes", "COMPONENT_VERSION": "3.0.0", "PORT": strconv.Itoa(freePort(t))})
 
 	wrong := maps.Clone(base)
@@ -123,7 +125,9 @@ func TestDatabaseStartChecks(t *testing.T) {
 }
 
 func post(t *testing.T, url string) int {
-	resp, err := http.Post(url, "application/json", nil)
+	req, _ := http.NewRequest(http.MethodPost, url, nil)
+	authorize(t, req)
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	return resp.StatusCode

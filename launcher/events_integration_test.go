@@ -22,6 +22,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
+	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -85,7 +86,7 @@ func runComponent(t *testing.T, def component.Definition, vars0 map[string]strin
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	var logs syncBuffer
-	go func() { done <- Run(ctx, def, Options{Env: env(vars), Stdout: &logs, Stderr: &logs}) }()
+	go func() { done <- Run(ctx, def, Options{Env: env(secured(t, def, vars)), Stdout: &logs, Stderr: &logs}) }()
 	base := "http://127.0.0.1:" + strconv.Itoa(httpPort)
 	require.Eventually(t, func() bool { c, _ := get(t, base+"/readyz"); return c == 200 }, 10*time.Second, 20*time.Millisecond, logs.String())
 	return base, func() {
@@ -125,9 +126,11 @@ func TestEventsFlowBetweenComponentsOnBothTransports(t *testing.T) {
 			consEnv := pgtest.MemberEnv(host, port, "evcons")
 			consEnv["BUS_URL"] = busURL
 			prodDef := component.Definition{ID: "demo/evprod", Version: "3.0.0", Streams: []events.Stream{things},
+				Authz:      sectest.Defs("demo/evprod", "demo.things", "demo.things.read", "demo.things.create"),
 				Migrations: fstest.MapFS{"0001_things.up.sql": {Data: []byte("CREATE TABLE things (id uuid PRIMARY KEY);")}},
 				New:        func(rt *runtime.Runtime) (component.Module, error) { return &producer{rt: rt}, nil }}
 			consDef := component.Definition{ID: "demo/evcons", Version: "3.0.0", Subscribes: true,
+				Authz:      sectest.Defs("demo/evcons", "demo.seen", "demo.seen.read"),
 				Migrations: fstest.MapFS{"0001_seen.up.sql": {Data: []byte("CREATE TABLE seen (event_id uuid PRIMARY KEY, record_id text NOT NULL);")}},
 				New:        func(rt *runtime.Runtime) (component.Module, error) { return &consumer{rt: rt}, nil }}
 
