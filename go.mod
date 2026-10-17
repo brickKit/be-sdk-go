@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.8.2
-	github.com/brickKit/be-protocol/v3 v3.0.0-20261017203857-659215e45d9d
+	github.com/brickKit/be-protocol/v3 v3.0.0-alpha.1
 	github.com/cockroachdb/apd/v3 v3.2.3
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
