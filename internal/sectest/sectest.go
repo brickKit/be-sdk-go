@@ -44,6 +44,7 @@ type World struct {
 	Issuer     string
 	JWKSURL    string
 	AuthzAddr  string
+	AuditAddr  string
 	dir        string
 	signer     ed25519.PrivateKey
 	caCert     *x509.Certificate
@@ -54,13 +55,14 @@ type World struct {
 	subjects map[string]authz.SubjectEntry
 	types    map[string]bool
 	gen      int
+	audited  map[string]json.RawMessage // record ID -> the record as received
 }
 
 // New starts the issuer and the fake authorization member.
 func New(t testing.TB) *World {
 	t.Helper()
 	w := &World{Deployment: "0190f3a1-0000-7000-8000-00000000d001", dir: t.TempDir(), subjects: map[string]authz.SubjectEntry{},
-		types: map[string]bool{}, gen: 1}
+		types: map[string]bool{}, gen: 1, audited: map[string]json.RawMessage{}}
 	_, w.signer, _ = ed25519.GenerateKey(rand.Reader)
 	jwks := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 		pub := w.signer.Public().(ed25519.PublicKey)
@@ -71,6 +73,7 @@ func New(t testing.TB) *World {
 	w.JWKSURL, w.Issuer = jwks.URL, "https://iam.test/"
 	w.trustRoot(t)
 	w.startAuthz(t)
+	w.startAudit(t)
 	return w
 }
 
@@ -153,7 +156,7 @@ func (w *World) TLS(t testing.TB, component string) *identity.ServiceTLS {
 func (w *World) Env(t testing.TB, component string) map[string]string {
 	cert, key, ca := w.Certs(t, component)
 	return map[string]string{"DEPLOYMENT_ID": w.Deployment, "IAM_ISSUER": w.Issuer, "IAM_JWKS_URL": w.JWKSURL,
-		"AUTHZ_GRPC_URL": "http://" + w.AuthzAddr, "SERVICE_TLS_CERT_FILE": cert, "SERVICE_TLS_KEY_FILE": key,
+		"AUTHZ_GRPC_URL": "http://" + w.AuthzAddr, "AUDIT_GRPC_URL": "http://" + w.AuditAddr, "SERVICE_TLS_CERT_FILE": cert, "SERVICE_TLS_KEY_FILE": key,
 		"SERVICE_TLS_CA_FILE": ca}
 }
 
@@ -248,4 +251,57 @@ func (w *World) startAuthz(t testing.TB) {
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(srv.Stop)
 	w.AuthzAddr = ln.Addr().String()
+}
+
+// Audited returns the records the fake audit component received, by ID.
+func (w *World) Audited() map[string]json.RawMessage {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := map[string]json.RawMessage{}
+	for k, v := range w.audited {
+		out[k] = v
+	}
+	return out
+}
+
+func (w *World) startAudit(t testing.TB) {
+	tls := w.TLS(t, "infra/audit")
+	srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(tls.ServerConfig())))
+	handle := func(fn func([]byte) any) func(any, context.Context, func(any) error, grpc.UnaryServerInterceptor) (any, error) {
+		return func(_ any, _ context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+			in := new(wrapperspb.BytesValue)
+			if err := dec(in); err != nil {
+				return nil, err
+			}
+			b, _ := json.Marshal(fn(in.Value))
+			return wrapperspb.Bytes(b), nil
+		}
+	}
+	srv.RegisterService(&grpc.ServiceDesc{ServiceName: "be.audit.v3.Intake", HandlerType: (*viewServer)(nil),
+		Methods: []grpc.MethodDesc{
+			{MethodName: "Submit", Handler: handle(func(body []byte) any {
+				var recs []struct {
+					ID     string          `json:"id"`
+					Record json.RawMessage `json:"record"`
+				}
+				_ = json.Unmarshal(body, &recs)
+				w.mu.Lock()
+				defer w.mu.Unlock()
+				var out []map[string]any
+				for _, r := range recs {
+					w.audited[r.ID] = r.Record
+					out = append(out, map[string]any{"id": r.ID, "status": "received", "epoch": "1.1",
+						"seq": len(w.audited), "chain": "sha256:test"})
+				}
+				return out
+			})},
+			{MethodName: "Watermark", Handler: handle(func([]byte) any { return map[string]any{"Epoch": "1.1", "Seq": 0} })},
+		}}, struct{}{})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(srv.Stop)
+	w.AuditAddr = ln.Addr().String()
 }

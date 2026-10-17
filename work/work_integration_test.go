@@ -278,3 +278,22 @@ func TestASingletonContinuesFromItsCommittedProgress(t *testing.T) { // P7.17, C
 	require.NoError(t, admin.QueryRow(context.Background(), "SELECT run_at FROM be_work_item WHERE id = 'partitions'").Scan(&runAt))
 	assert.WithinDuration(t, time.Now().Add(time.Hour), runAt, time.Minute, "next run after the interval")
 }
+
+func TestARunPastItsDeadlineIsRetried(t *testing.T) {
+	d, admin := dbtest.Schema(t, "work7", nil)
+	var runs atomic.Int32
+	job := Job{Name: "slow", Kind: Queue, Effect: Local, Timeout: 100 * time.Millisecond, MaxAttempts: 2,
+		Handle: func(ctx context.Context, r *Run) error {
+			runs.Add(1)
+			<-ctx.Done()
+			return ctx.Err()
+		}}
+	r := replica(d, 30*time.Second, job)
+	id := enqueue(t, d, r, "slow")
+	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, r.Start(ctx))
+	require.Eventually(t, func() bool { s, _, _, _ := state(t, admin, id); return s == "dead" }, 10*time.Second, 20*time.Millisecond)
+	cancel()
+	r.Stop()
+	assert.Equal(t, int32(2), runs.Load(), "retried after the timeout without waiting for the 30 s lease")
+}

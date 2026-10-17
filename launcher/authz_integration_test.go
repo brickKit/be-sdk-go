@@ -14,10 +14,12 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/brickKit/be-sdk-go/v3/audit"
 	"github.com/brickKit/be-sdk-go/v3/authz"
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
+	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
 	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
@@ -110,6 +112,15 @@ func (l *ledger) Routes(r *httpx.Routes) error {
 		if _, err := one(c, "demo.entry.approve"); err != nil {
 			return err
 		}
+		u, _ := identity.UserFrom(c.Ctx())
+		err := l.rt.DB.Tx(c.Ctx(), func(ctx context.Context, tx db.Tx) error {
+			_, err := l.rt.Audit.Write(ctx, tx, audit.Record{Category: audit.BusinessChange, Operation: "demo.entry.approve",
+				Outcome: audit.Succeeded, Actor: u.Subject, Target: map[string]any{"type": "demo.entry", "id": c.Param("id")}})
+			return err
+		})
+		if err != nil {
+			return err
+		}
 		return c.NoContent(204)
 	})
 	return nil
@@ -187,6 +198,14 @@ func TestOthersSeeNothingAndFieldsFollowTheSegments(t *testing.T) { // T2.8 acce
 	assert.Equal(t, 404, code, "not visible: the command answers like the read")
 	code, _ = call(t, "POST", base+"/api/entries/0190f3a1-0000-7000-8000-00000000e001/approve", alice)
 	assert.Equal(t, 204, code)
+	require.Eventually(t, func() bool {
+		for _, rec := range w.Audited() {
+			if strings.Contains(string(rec), "demo.entry.approve") && strings.Contains(string(rec), sectest.Alice) {
+				return true
+			}
+		}
+		return false
+	}, 15*time.Second, 100*time.Millisecond, "the approval's audit record reached the audit component over mTLS")
 
 	code, body = call(t, "GET", base+"/api/entries", "")
 	assert.Equal(t, 401, code)

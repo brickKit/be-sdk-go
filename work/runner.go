@@ -98,6 +98,8 @@ func (w *Runner) Start(ctx context.Context) error {
 			go func() {
 				defer w.wg.Done()
 				w.loop(ctx, j.Interval, func(ctx context.Context) bool {
+					ctx, cancel := context.WithTimeout(ctx, j.Timeout)
+					defer cancel()
 					if err := safely(func() error { return j.Handle(ctx, nil) }); err != nil && ctx.Err() == nil {
 						w.Log.Warn("an every job failed", "job", j.Name, "error", err.Error())
 					}
@@ -263,7 +265,7 @@ func (w *Runner) claim(ctx context.Context) (*Run, error) {
 }
 
 func (w *Runner) run(parent context.Context, r *Run) {
-	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), r.job.Timeout)
 	r.cancel = cancel
 	defer cancel()
 	stopping := make(chan struct{})
@@ -293,8 +295,12 @@ func (w *Runner) run(parent context.Context, r *Run) {
 		return
 	default:
 	}
-	if errors.Is(err, ErrLost) || ctx.Err() != nil && !r.completed {
-		return
+	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+	if errors.Is(err, ErrLost) || (ctx.Err() != nil && !timedOut && !r.completed) {
+		return // taken over or the epoch changed: nothing more to commit
+	}
+	if timedOut && !r.completed {
+		err = fmt.Errorf("the run passed its %s deadline: %w", r.job.Timeout, context.DeadlineExceeded)
 	}
 	bg := context.Background()
 	switch {
@@ -335,6 +341,8 @@ func (w *Runner) fail(ctx context.Context, r *Run, cause error) {
 	case r.Attempts >= r.MaxAttempts:
 		w.dead(ctx, r, cause)
 	default:
+		w.Log.Warn("a work item failed; it is retried after a backoff", "job", r.Item.Job, "item", r.ID,
+			"attempt", r.Attempts, "error", msg)
 		_ = r.exec(ctx, `state = 'retry_wait', outcome_unknown = false, holder = NULL, lease_until = NULL, last_error = $5,
 			run_at = now() + make_interval(secs => $6)`, []any{msg, backoff(r.Attempts).Seconds()}, nil)
 	}

@@ -60,6 +60,7 @@ func SecurityKeys() []config.Key {
 		{Name: "IAM_ISSUER", Type: config.String, Process: true},
 		{Name: "IAM_JWKS_URL", Type: config.String, Process: true},
 		{Name: "AUTHZ_GRPC_URL", Type: config.String, Process: true},
+		{Name: "AUDIT_GRPC_URL", Type: config.String, Process: true},
 		{Name: "SERVICE_TLS_CERT_FILE", Type: config.String},
 		{Name: "SERVICE_TLS_KEY_FILE", Type: config.String},
 		{Name: "SERVICE_TLS_CA_FILE", Type: config.String},

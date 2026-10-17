@@ -8,8 +8,8 @@ github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERo
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
-github.com/brickKit/be-protocol/v3 v3.0.0-20261017191903-db0df961e982 h1:llUKPFJFSS5M/d7wmd7CZqSutGLq/ejGTPJiWqZcUdE=
-github.com/brickKit/be-protocol/v3 v3.0.0-20261017191903-db0df961e982/go.mod h1:euxvgDOrNwb2CKJjl8dVZpfREzHbuEIPdYrJDWEWpkE=
+github.com/brickKit/be-protocol/v3 v3.0.0-20261017192244-cb242843cd68 h1:EaPBmZtJi84T1ocn6pHohrnRX3Ete51ybCJD/iH+0RM=
+github.com/brickKit/be-protocol/v3 v3.0.0-20261017192244-cb242843cd68/go.mod h1:euxvgDOrNwb2CKJjl8dVZpfREzHbuEIPdYrJDWEWpkE=
 github.com/bytedance/gopkg v0.1.3 h1:TPBSwH8RsouGCBcMBktLt1AymVo2TVsBVCY4b6TnZ/M=
 github.com/bytedance/gopkg v0.1.3/go.mod h1:576VvJ+eJgyCzdjS+c4+77QF3p7ubbtiKARP3TxducM=
 github.com/bytedance/sonic v1.15.0 h1:/PXeWFaR5ElNcVE84U0dOHjiMHQOwNIx3K4ymzh/uSE=

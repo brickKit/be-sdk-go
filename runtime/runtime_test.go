@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/brickKit/be-sdk-go/v3/config"
-	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -14,11 +13,11 @@ func TestEnvPrefixMatchesBrickKit(t *testing.T) {
 }
 
 func TestDependencyAddresses(t *testing.T) {
-	rt := New(obs.Member{}, nil, nil, nil, nil, config.Map{
+	rt := New(Parts{Addresses: config.Map{
 		"ERP_INVENTORY_ENDPOINT":      "http://erp-inventory-3-0-0:8086",
 		"ERP_INVENTORY_GRPC_ENDPOINT": "http://erp-inventory-3-0-0:9096",
 		"MDM_PARTNER_ENDPOINT":        "",
-	}, nil, nil, nil, nil)
+	}})
 	ep, ok := rt.Dependency("erp/inventory")
 	assert.True(t, ok)
 	assert.Equal(t, "erp-inventory-3-0-0:8086", ep.Host)

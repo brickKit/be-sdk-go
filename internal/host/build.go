@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 
+	"github.com/brickKit/be-sdk-go/v3/audit"
 	"github.com/brickKit/be-sdk-go/v3/authz"
 	"github.com/brickKit/be-sdk-go/v3/calls"
 	"github.com/brickKit/be-sdk-go/v3/component"
@@ -72,10 +73,17 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 	if err != nil {
 		return nil, err
 	}
+	var auditor *audit.Auditor
 	if sh.DB != nil {
 		m.runner = work.NewRunner(sh.DB, def.ID, m.Logger)
+		auditor = audit.New(sh.DB)
+		if err := m.auditTransfer(auditor, values); err != nil {
+			return nil, err
+		}
 	}
-	rt := runtime.New(member, values, m.Logger, m.Registry, tp.Tracer(def.ID), sh.Addresses, sh.DB, m.Outbound, producer, m.runner)
+	rt := runtime.New(runtime.Parts{Member: member, Config: values, Logger: m.Logger, Metrics: m.Registry,
+		Tracer: tp.Tracer(def.ID), Addresses: sh.Addresses, DB: sh.DB, Outbound: m.Outbound, Events: producer,
+		Work: m.runner, Audit: auditor})
 	if m.Module, err = newModule(def, rt); err != nil {
 		return nil, fmt.Errorf("the module could not be built: %w", err)
 	}
@@ -89,6 +97,25 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		return nil, err
 	}
 	return m, nil
+}
+
+// auditTransfer registers the audit transfer job; without AUDIT_GRPC_URL the records stay local (P8.21).
+func (m *Member) auditTransfer(a *audit.Auditor, values *config.Values) error {
+	var sender *audit.GRPCSender
+	if addr := values.String("AUDIT_GRPC_URL"); addr != "" {
+		conn, err := m.Outbound.GRPC("infra/audit", hostPort(addr))
+		if err != nil {
+			return err
+		}
+		sender = &audit.GRPCSender{Conn: conn}
+	} else {
+		m.Logger.Warn("AUDIT_GRPC_URL is not set: audit records stay in the local table until it is")
+	}
+	if err := m.runner.Add(a.Job(sender, m.Logger)); err != nil {
+		return err
+	}
+	m.hasJobs = true
+	return nil
 }
 
 // serviceIdentity loads the member's mTLS identity when its certificate is configured (P8.5).

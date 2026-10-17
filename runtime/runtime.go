@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/brickKit/be-sdk-go/v3/audit"
 	"github.com/brickKit/be-sdk-go/v3/calls"
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/db"
@@ -32,16 +33,33 @@ type Runtime struct {
 	Events *events.Producer
 	// Work enqueues the module's queue jobs inside a transaction; nil without a database.
 	Work *work.Runner
+	// Audit writes the member's audit records (with the business change, before a sensitive read, on a denial);
+	// nil without a database.
+	Audit *audit.Auditor
 
 	addresses config.Source // where the platform's *_ENDPOINT values are looked up
 	calls     *calls.Member
 }
 
+// Parts are what the launcher or the shell gives a module.
+type Parts struct {
+	Member    obs.Member
+	Config    *config.Values
+	Logger    *slog.Logger
+	Metrics   prometheus.Registerer
+	Tracer    trace.Tracer
+	Addresses config.Source
+	DB        *db.DB
+	Outbound  *calls.Member
+	Events    *events.Producer
+	Work      *work.Runner
+	Audit     *audit.Auditor
+}
+
 // New is used by the launcher and the shell.
-func New(m obs.Member, cfg *config.Values, logger *slog.Logger, metrics prometheus.Registerer, tracer trace.Tracer,
-	addresses config.Source, database *db.DB, outbound *calls.Member, producer *events.Producer, runner *work.Runner) *Runtime {
-	return &Runtime{Member: m, Config: cfg, Logger: logger, Metrics: metrics, Tracer: tracer, DB: database,
-		Events: producer, Work: runner, addresses: addresses, calls: outbound}
+func New(p Parts) *Runtime {
+	return &Runtime{Member: p.Member, Config: p.Config, Logger: p.Logger, Metrics: p.Metrics, Tracer: p.Tracer, DB: p.DB,
+		Events: p.Events, Work: p.Work, Audit: p.Audit, addresses: p.Addresses, calls: p.Outbound}
 }
 
 // HTTP returns the client for a dependency's user surface (protocol chapter 04: deadline, retries, breaker and limit

@@ -38,6 +38,7 @@ const (
 const (
 	DefaultLease       = 30 * time.Second
 	DefaultMaxAttempts = 10
+	DefaultTimeout     = 5 * time.Minute
 	BackoffStart       = time.Second
 	BackoffCap         = 5 * time.Minute
 )
@@ -55,6 +56,9 @@ type Job struct {
 	MaxBacklog int
 	// Singleton jobs run again this long after a run completes; Every jobs run this often on every replica.
 	Interval time.Duration
+	// Timeout is one run's deadline (default 5 minutes): outbound calls need one (protocol P4.4), and a run past it
+	// fails as retryable.
+	Timeout time.Duration
 	// MaxWait bounds a business wait (Wait errors) before it counts as a permanent failure; 0: no limit.
 	MaxWait time.Duration
 	// Handle runs one claim of a work item. For Every jobs it is called with a nil Run.
@@ -72,6 +76,9 @@ func (j *Job) prepare() error {
 	}
 	if j.MaxAttempts <= 0 {
 		j.MaxAttempts = DefaultMaxAttempts
+	}
+	if j.Timeout <= 0 {
+		j.Timeout = DefaultTimeout
 	}
 	if j.Effect == "" && j.Kind != Every {
 		return fmt.Errorf("work: job %s must declare its effect class", j.Name)
