@@ -69,6 +69,10 @@ func main() { launcher.Main(sales.Definition) }
 | `shell` | 外壳启动器：按构建信息核对成员、拒绝 `replace`、每个成员独立的端口与运行时、共享池 | 协议 17 的外壳义务 |
 | `mergesafety` | 合并安全检查：读进程环境、初始化进程级的东西、退出进程、绕过 SDK 建引擎与连接 | 组件实现约定的合并安全 |
 
+## 功能矩阵
+
+`features.json` 按 `be-protocol` 的能力清单（`capabilities.json`）标出每项能力在本 SDK 中的状态、证明它的测试与尚待验证的规则；状态的含义见 `be-protocol` 阅读说明的“能力清单与功能矩阵”。`TestFeatureMatrix` 核对它与所引用协议版本的能力清单一一对应、证据都是本仓库真实存在的测试。只留形状的能力（`service_proxy`、严格路径、委托与扮演、水位、影子投影、成员切换、高可用、事件签名）标为 `not_implemented`，组件声明它们时装配准入拒绝。
+
 ## 测试
 
 `make test`：L1 测试，含协议向量（按 `go.mod` 中 `be-protocol` 的精确版本）与 SDK 自身的合并安全检查。需要真实 PostgreSQL（16 及以上）与消息系统的测试在构建标签 `integration` 下，`make test-integration` 运行：环境变量 `BE_SDK_TEST_PG_ADMIN` 给出超级用户的连接串（装配项目的 `be-postgres`），`BE_SDK_TEST_NATS_URL` 给出开启 JetStream 的 NATS（`be-nats`），测试在库 `be_sdk_test` 中自建角色与 schema；各包共用这个库，所以按包串行（`-p 1`）。缺环境时失败，不跳过。

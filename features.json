@@ -1,0 +1,379 @@
+{
+  "sdk": "go",
+  "module": "github.com/brickKit/be-sdk-go/v3",
+  "protocol": "3.0.0-alpha.1",
+  "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。",
+  "features": {
+    "lifecycle": {
+      "status": "verified",
+      "evidence": [
+        "TestServeReadyAndGracefulStop",
+        "TestUnknownEntry",
+        "TestConfigurationErrorsAllAtOnce",
+        "TestModuleFailuresDoNotCrash",
+        "TestPlatformEndpoints",
+        "TestDatabaseStartChecks",
+        "TestBootClockAdvances",
+        "TestServesTheSystemSurfaceAndStopsItGracefully",
+        "TestSDKIsMergeSafe"
+      ],
+      "pending": [
+        {
+          "rule": "P1.16",
+          "reason": "容器里作为 1 号进程响应 SIGTERM：第 0 步已在容器中观察到，SDK 的真实镜像验证在第 4 步"
+        }
+      ]
+    },
+    "shell": {
+      "status": "verified",
+      "evidence": [
+        "TestHostsMembersOnTheirOwnPorts",
+        "TestRefusesMemberNotCompiledIn",
+        "TestRefusesOtherVersionInBuildInfo",
+        "TestRefusesReplaceUnlessAllowed",
+        "TestRefusesVersionMismatchAndBadConfigAllAtOnce",
+        "TestRefusesProcessKeysThatDisagree",
+        "TestMembersShareOnePoolAndNeverEachOthersSchema",
+        "TestSameSQLOfTwoMembersNeverSharesACachedStatement",
+        "TestEachMemberServesItsSystemSurfaceOnItsOwnPort"
+      ],
+      "pending": [
+        {
+          "rule": "P1.13",
+          "reason": "成员按 BrickKit 列出的顺序初始化，依赖顺序由 BrickKit 给出；真实外壳镜像在第 4 步验证"
+        },
+        {
+          "rule": "P1.17",
+          "reason": "成员并行停止已实现，外壳镜像中的停止宽限在第 4 步验证"
+        }
+      ]
+    },
+    "config": {
+      "status": "verified",
+      "evidence": [
+        "TestConfigParseVectors",
+        "TestAllProblemsAtOnceAndNoSecretValues",
+        "TestDeclarationRules",
+        "TestSecretFromFileAndRefresh",
+        "TestSecretValueAndFileConflict",
+        "TestRangeAndAccessorMisuse"
+      ]
+    },
+    "errors": {
+      "status": "verified",
+      "evidence": [
+        "TestErrorsVectors",
+        "TestInternalNeverLeaks",
+        "TestUnknownReasonIsInternal",
+        "TestWriteHTTP",
+        "TestDeclaredComponentReason",
+        "TestErrorsPanicsBodiesAndUnknownRoutes",
+        "TestGRPCComponentErrorsPassThroughUnchanged"
+      ],
+      "pending": [
+        {
+          "rule": "P3.3",
+          "reason": "GraphQL 的 extensions 由移动聚合组件（TypeScript）实现，Go SDK 不涉及"
+        }
+      ]
+    },
+    "calls": {
+      "status": "verified",
+      "evidence": [
+        "TestOutboundTimeoutVectors",
+        "TestRetryDecisionVectors",
+        "TestRetryBudgetVectors",
+        "TestCircuitBreakerVectors",
+        "TestCallOutcomesVectors",
+        "TestRetriesOnlyIdempotentCallsAtMostThreeTimes",
+        "TestRelayedFailuresAreNeitherRetriedNorCounted",
+        "TestBreakerOpensAndFailsFastWithoutSending",
+        "TestOutboundLimit",
+        "TestDeadlines",
+        "TestGRPCChainRetriesAtOneLayerOnly",
+        "TestHTTPChainRetriesAtOneLayerOnlyAndForwardsTheUser",
+        "TestNoCallsInsideATransaction",
+        "TestRequestIDAndDeadline"
+      ]
+    },
+    "idempotency": {
+      "status": "verified",
+      "evidence": [
+        "TestIdempotencyVectors",
+        "TestOnceAndReplayed",
+        "TestAFailedCommandLeavesNoClaim",
+        "TestConcurrentUsesRunOnce",
+        "TestInProgressWhenTheFirstUseOutlastsTheLockWait",
+        "TestCleanupRemovesOnlyExpiredRecords",
+        "TestIdempotentCommandsOnBothSurfaces"
+      ]
+    },
+    "database": {
+      "status": "verified",
+      "evidence": [
+        "TestRoleAndSchemaArePerTransactionAndNeverLeak",
+        "TestTimeoutsNestingAndRetries",
+        "TestForegroundBudgetAndDurableCheck",
+        "TestManyMembersConcurrentlyOnOnePool",
+        "TestDBErrorsVectors",
+        "TestMigrationLintVectors",
+        "TestSDKMigrationsPassTheLint",
+        "TestMigrateTwiceAndStateInTheComponentSchema",
+        "TestAFailedFileLeavesNoTraceAndTheEntryStaysRerunnable",
+        "TestLockWaitReportsTheBlocker",
+        "TestTwoInstancesMigrateAtOnce",
+        "TestRefusedMigrationsChangeNothing",
+        "TestServeNeverParsesTheOwnerRole",
+        "TestDatabaseComponentMigratesAndServes",
+        "TestDatabaseStartChecks",
+        "TestNewIsVersion7AndOrdered",
+        "TestRefusesMembersOfOneTargetThatDisagreeOnPreparedStatements"
+      ]
+    },
+    "document-numbers": {
+      "status": "verified",
+      "evidence": [
+        "TestDocumentNumbers"
+      ]
+    },
+    "partitions": {
+      "status": "verified",
+      "evidence": [
+        "TestMonthlyPartitions",
+        "TestOnlyRangePartitionedTablesAreDeclared",
+        "TestPartitionsAreKeptAheadInTheComponent"
+      ]
+    },
+    "money": {
+      "status": "verified",
+      "evidence": [
+        "TestMoneyVectors",
+        "TestAllocateRefusesBadInput"
+      ]
+    },
+    "business-dates": {
+      "status": "verified",
+      "evidence": [
+        "TestBusinessDateVectors"
+      ]
+    },
+    "outbox": {
+      "status": "verified",
+      "evidence": [
+        "TestEmitOnlyWithTheBusinessCommit",
+        "TestTwoNumberersNeverShareAPosition",
+        "TestALongTransactionDelaysOnlyItsOwnRows",
+        "TestANewEpochRestartsPositionsAndRecordsTheFork",
+        "TestForwarderPublishesInOrderOnceNumbered",
+        "TestPurgeKeepsUnpublishedAndRecentRows",
+        "TestPartitionVectors",
+        "TestEventsFlowBetweenComponentsOnBothTransports"
+      ],
+      "pending": [
+        {
+          "rule": "P6.12",
+          "reason": "未发布积压的度量与告警随观测的告警规则加入"
+        }
+      ]
+    },
+    "envelope": {
+      "status": "verified",
+      "evidence": [
+        "TestEnvelopeVectors",
+        "TestTooManyHopsIsAFailure"
+      ]
+    },
+    "claim-check": {
+      "status": "verified",
+      "evidence": [
+        "TestLargePayloadsTravelByClaimCheck"
+      ]
+    },
+    "transport": {
+      "status": "verified",
+      "evidence": [
+        "TestMemoryTransportPassesTheSuite",
+        "TestTheSuiteFailsAnAdapterThatLosesAcks",
+        "TestJetStreamPassesTheSuite",
+        "TestPostgresQueuePassesTheSuite",
+        "TestAnInFlightRowWithASmallerSequenceIsNotSkipped",
+        "TestPurgeDropsMessagesPastTheRetention",
+        "TestStreamsKeepMessagesForTheTransportRetention"
+      ]
+    },
+    "consumers": {
+      "status": "verified",
+      "evidence": [
+        "TestARedeliveryTakesEffectOnce",
+        "TestTheLastFailureBecomesOneDeadLetter"
+      ],
+      "note": "收件表不清理：P6.26 只禁止提前清理；按覆盖它的版本或墓碑证明的清理随水位与对账加入"
+    },
+    "work": {
+      "status": "verified",
+      "evidence": [
+        "TestStopReleasesTheLeaseForAnotherReplica",
+        "TestATakenOverHolderCanCommitNothing",
+        "TestNonIdempotentCallsAreNeverSentTwice",
+        "TestRetriesThenDeadWithItsDeadLetter",
+        "TestASingletonContinuesFromItsCommittedProgress",
+        "TestARunPastItsDeadlineIsRetried",
+        "TestPurgeKeepsWhatIsNotYetDue",
+        "TestQueuedWorkRunsInTheComponent"
+      ],
+      "pending": [
+        {
+          "rule": "P7.14",
+          "reason": "重新排队与标记已解决的守卫已实现；这些运维动作写审计尚未接入"
+        },
+        {
+          "rule": "P7.18",
+          "reason": "every 作业已实现，没有专门的测试"
+        },
+        {
+          "rule": "P7.20",
+          "reason": "每个作业的指标（运行次数、耗时、队列深度、最老 pending）尚未实现"
+        }
+      ]
+    },
+    "cron": {
+      "status": "verified",
+      "evidence": [
+        "TestCronSlotVectors",
+        "TestCronRejectsBadExpressions",
+        "TestTwoReplicasRunACronSlotOnce"
+      ]
+    },
+    "user-credentials": {
+      "status": "verified",
+      "evidence": [
+        "TestJWTVerifyVectors",
+        "TestUnknownKIDRefreshIsRateLimited",
+        "TestStaleKeysAreNotUsed",
+        "TestOthersSeeNothingAndFieldsFollowTheSegments"
+      ]
+    },
+    "call-modes": {
+      "status": "verified",
+      "evidence": [
+        "TestRouteValidation",
+        "TestUndeclaredMethodsAreRefused",
+        "TestOthersSeeNothingAndFieldsFollowTheSegments"
+      ],
+      "pending": [
+        {
+          "rule": "P8.4",
+          "reason": "user、public、system 已验证；service_proxy 见能力 call-mode-service-proxy：路由还不能声明这种模式"
+        }
+      ]
+    },
+    "service-identity": {
+      "status": "verified",
+      "evidence": [
+        "TestOnlyPermittedComponentsMayCall",
+        "TestConnectionsWithoutAValidIdentityAreRefused"
+      ]
+    },
+    "authz-definitions": {
+      "status": "verified",
+      "evidence": [
+        "TestARouteWithAnUndeclaredOperationStopsTheStart",
+        "TestProtectedRoutesNeedTheSecurityConfiguration",
+        "TestCanonicalVectors",
+        "TestSegmentCanonicalVectors"
+      ]
+    },
+    "authz-view": {
+      "status": "verified",
+      "evidence": [
+        "TestNoViewAfterStart",
+        "TestValidityCountsFromTheRequest",
+        "TestAnswersThatDoNotRenew",
+        "TestAStallInvalidatesEveryShard",
+        "TestDisabledAccountsHaveNoSegments",
+        "TestAWriteWhoseCutoffPassedIsRolledBack"
+      ]
+    },
+    "authz-evaluation": {
+      "status": "verified",
+      "evidence": [
+        "TestSegmentEvalVectors",
+        "TestCompiledListsMatchTheVectors",
+        "TestOthersSeeNothingAndFieldsFollowTheSegments"
+      ]
+    },
+    "audit": {
+      "status": "verified",
+      "evidence": [
+        "TestChangesAreAuditedWithTheirTransaction",
+        "TestDenialsPastTheBudgetAreCountedNotLost",
+        "TestNumberingTransferAndDeletion",
+        "TestOthersSeeNothingAndFieldsFollowTheSegments"
+      ]
+    },
+    "lists": {
+      "status": "verified",
+      "evidence": [
+        "TestListPagesVectors",
+        "TestCursorsBindTheirFilterAndPlan",
+        "TestRestrictedFieldsAndSearch"
+      ]
+    },
+    "search": {
+      "status": "verified",
+      "evidence": [
+        "TestSearchVectors",
+        "TestChineseSearchByPinyin",
+        "TestRestrictedFieldsAndSearch"
+      ],
+      "pending": [
+        {
+          "rule": "P9.9",
+          "reason": "搜索列的索引由组件迁移建立；SDK 还没有按可用扩展（pg_trgm、pg_bigm）选择的帮助"
+        }
+      ]
+    },
+    "projections": {
+      "status": "verified",
+      "evidence": [
+        "TestProjectionApplyVectors",
+        "TestAlignMatchesSource",
+        "TestOlderAlignmentDiscarded",
+        "TestWrittenDuringAlignment",
+        "TestApplyAndRepair"
+      ]
+    },
+    "call-mode-service-proxy": {
+      "status": "not_implemented",
+      "evidence": []
+    },
+    "authz-strict-path": {
+      "status": "not_implemented",
+      "evidence": []
+    },
+    "delegation-impersonation": {
+      "status": "not_implemented",
+      "evidence": []
+    },
+    "projection-watermarks": {
+      "status": "not_implemented",
+      "evidence": []
+    },
+    "projection-shadow": {
+      "status": "not_implemented",
+      "evidence": []
+    },
+    "member-switching": {
+      "status": "not_implemented",
+      "evidence": []
+    },
+    "high-availability": {
+      "status": "not_implemented",
+      "evidence": []
+    },
+    "event-signing": {
+      "status": "not_implemented",
+      "evidence": []
+    }
+  }
+}
