@@ -134,3 +134,32 @@ func TestDisabledAccountsHaveNoSegments(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, g.Segments)
 }
+
+type failingAfterFirst struct {
+	*fakeSource
+	calls int
+}
+
+func (f *failingAfterFirst) Verify(ctx context.Context, req VerifyRequest) (VerifyAnswer, error) {
+	f.calls++
+	if f.calls == 1 {
+		return f.fakeSource.Verify(ctx, req)
+	}
+	*f.clock += Interval - 100*time.Millisecond // the authorization member is slow: the call runs into its deadline
+	return VerifyAnswer{}, context.DeadlineExceeded
+}
+
+func TestAVerificationThatTimesOutIsNotAStall(t *testing.T) { // P8.10: only the wait between verifications is timed
+	src := &fakeSource{gen: "1", status: "changed", shard: shard()}
+	h, now := holderWith(src)
+	slow := &failingAfterFirst{fakeSource: src}
+	h.Source = slow
+	h.tick()
+	require.NoError(t, h.Verify(context.Background()))
+	require.Error(t, h.Verify(context.Background()))
+	h.rest()
+	*now += Interval // the wait, on time
+	h.tick()
+	_, err := h.Lookup("demo.order", alice, "low")
+	require.NoError(t, err, "the view renewed by the first answer is still valid")
+}

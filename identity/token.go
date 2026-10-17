@@ -58,9 +58,20 @@ func (v *Verifier) Verify(token string) (User, error) {
 		return User{}, &TokenError{"format"}
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
-	var h struct{ Alg, Typ, Kid string }
-	if err != nil || json.Unmarshal(raw, &h) != nil {
+	var h struct {
+		Alg string `json:"alg"`
+		Typ string `json:"typ"`
+		Kid string `json:"kid"`
+	}
+	var fields map[string]json.RawMessage
+	if err != nil || json.Unmarshal(raw, &fields) != nil || json.Unmarshal(raw, &h) != nil {
 		return User{}, &TokenError{"format"}
+	}
+	// encoding/json matches field names without regard to case; the header's names are exact (RFC 7515)
+	for name, dst := range map[string]*string{"alg": &h.Alg, "typ": &h.Typ, "kid": &h.Kid} {
+		if _, ok := fields[name]; !ok {
+			*dst = ""
+		}
 	}
 	switch {
 	case !slices.Contains(Algorithms, h.Alg):
@@ -106,8 +117,11 @@ func classify(err error) error {
 	case errors.Is(err, jwt.ErrTokenUsedBeforeIssued):
 		return &TokenError{"iat"}
 	case errors.Is(err, jwt.ErrTokenRequiredClaimMissing):
-		if strings.Contains(err.Error(), "aud") {
+		switch {
+		case strings.Contains(err.Error(), "aud claim is required"):
 			return &TokenError{"aud"}
+		case strings.Contains(err.Error(), "iss claim is required"):
+			return &TokenError{"iss"}
 		}
 		return &TokenError{"exp"}
 	}

@@ -2,11 +2,13 @@ package identity
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -109,4 +111,48 @@ func TestStaleKeysAreNotUsed(t *testing.T) { // P8.2
 	keys.now = func() time.Time { return time.Now().Add(KeyMaxAge + time.Minute) }
 	_, err = v.Verify(good)
 	assert.True(t, errs.Is(err, "be", errs.ReasonDependencyUnavailable), "%v", err)
+}
+
+func validToken(t *testing.T, cases []json.RawMessage, id string) string {
+	for _, raw := range cases {
+		var c struct{ ID, Token string }
+		require.NoError(t, json.Unmarshal(raw, &c))
+		if c.ID == id {
+			return c.Token
+		}
+	}
+	t.Fatalf("no case %s", id)
+	return ""
+}
+
+func TestKeysThisCodeDoesNotUnderstandAreSkipped(t *testing.T) { // P8.2, RFC 7517 section 5
+	f, cases := loadJWT(t)
+	var set struct{ Keys []json.RawMessage }
+	require.NoError(t, json.Unmarshal(f.JWKS, &set))
+	odd := append([]json.RawMessage{json.RawMessage(`{"kty":"XYZ","kid":"future-1"}`),
+		json.RawMessage(`{"kty":"RSA","kid":"broken"}`)}, set.Keys...)
+	body, _ := json.Marshal(map[string]any{"keys": odd})
+	var hits atomic.Int32
+	keys, err := NewKeySet(context.Background(), jwksServer(t, body, &hits).URL)
+	require.NoError(t, err, "one key of a new type does not make the set unusable")
+	v := &Verifier{Issuer: f.Issuer, Audience: f.Audience, Keys: keys, Now: func() time.Time { return time.Unix(f.Now, 0) }}
+	_, err = v.Verify(validToken(t, cases, "valid-es256"))
+	assert.NoError(t, err)
+}
+
+func TestHeaderNamesAreExact(t *testing.T) { // RFC 7515: "TYP" is not "typ"
+	f, cases := loadJWT(t)
+	tok := validToken(t, cases, "valid-eddsa")
+	parts := strings.Split(tok, ".")
+	raw, _ := base64.RawURLEncoding.DecodeString(parts[0])
+	upper := strings.Replace(string(raw), `"typ"`, `"TYP"`, 1)
+	parts[0] = base64.RawURLEncoding.EncodeToString([]byte(upper))
+	var hits atomic.Int32
+	keys, err := NewKeySet(context.Background(), jwksServer(t, f.JWKS, &hits).URL)
+	require.NoError(t, err)
+	v := &Verifier{Issuer: f.Issuer, Audience: f.Audience, Keys: keys, Now: func() time.Time { return time.Unix(f.Now, 0) }}
+	_, err = v.Verify(strings.Join(parts, "."))
+	var te *TokenError
+	require.True(t, errors.As(err, &te))
+	assert.Equal(t, Problem("typ"), te.Problem)
 }

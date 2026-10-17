@@ -78,15 +78,26 @@ func (k *KeySet) refresh(ctx context.Context) error {
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("fetching the issuer's keys: status %d %v", resp.StatusCode, err)
 	}
-	kf, err := keyfunc.NewJWKSetJSON(body)
-	if err != nil {
+	var set struct{ Keys []json.RawMessage }
+	if err := json.Unmarshal(body, &set); err != nil {
 		return fmt.Errorf("parsing the issuer's keys: %w", err)
 	}
-	var set struct{ Keys []struct{ Kid string } }
-	_ = json.Unmarshal(body, &set)
+	// a key this code does not understand is skipped and the rest are used (P8.2, RFC 7517 section 5): one key of a
+	// new type must not make every token unverifiable
+	var usable []json.RawMessage
 	kids := map[string]bool{}
 	for _, key := range set.Keys {
-		kids[key.Kid] = true
+		one, _ := json.Marshal(map[string]any{"keys": []json.RawMessage{key}})
+		var k struct{ Kid string }
+		if _, err := keyfunc.NewJWKSetJSON(one); err != nil || json.Unmarshal(key, &k) != nil || k.Kid == "" {
+			continue
+		}
+		usable, kids[k.Kid] = append(usable, key), true
+	}
+	all, _ := json.Marshal(map[string]any{"keys": usable})
+	kf, err := keyfunc.NewJWKSetJSON(all)
+	if err != nil {
+		return fmt.Errorf("parsing the issuer's keys: %w", err)
 	}
 	k.mu.Lock()
 	k.kf, k.kids, k.fetchedAt = kf, kids, k.now()

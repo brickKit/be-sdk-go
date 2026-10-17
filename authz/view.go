@@ -126,12 +126,22 @@ func (h *Holder) Run(ctx context.Context) {
 		if err != nil && ctx.Err() == nil {
 			h.Log.Warn("authorization view verification failed; the view stays valid only until it expires", "error", err.Error())
 		}
+		h.rest()
 		t.Reset(Interval)
 	}
 }
 
-// tick detects a stall: a scheduling gap beyond Interval + TStall, or a jump between the boot clock and the wall
-// clock beyond TStall, invalidates every shard (P8.10).
+// rest marks the start of the wait between verifications: the scheduling gap tick checks is the wait alone, so a
+// slow verification (its own deadline is Interval) is never taken for a stall.
+func (h *Holder) rest() {
+	now := h.Boot()
+	h.mu.Lock()
+	h.lastTick, h.lastSkew = now, time.Duration(h.Wall().UnixNano())-now
+	h.mu.Unlock()
+}
+
+// tick detects a stall: a scheduling gap beyond Interval + TStall since rest, or a jump between the boot clock and
+// the wall clock beyond TStall, invalidates every shard (P8.10).
 func (h *Holder) tick() {
 	now, wall := h.Boot(), h.Wall()
 	skew := time.Duration(wall.UnixNano()) - now
@@ -161,7 +171,7 @@ func (h *Holder) Verify(ctx context.Context) error {
 	h.verifyMu.Lock()
 	defer h.verifyMu.Unlock()
 	h.mu.RLock()
-	req := VerifyRequest{Component: h.Component, Nonce: nonce()}
+	req := VerifyRequest{Component: h.Component, Nonce: nonce(), Held: []Held{}}
 	for _, s := range h.shards {
 		req.Held = append(req.Held, Held{Shard: s.shard.Shard, Digest: s.shard.Digest})
 	}
