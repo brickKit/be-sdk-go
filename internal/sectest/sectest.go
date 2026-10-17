@@ -120,6 +120,15 @@ func (w *World) Certs(t testing.TB, component string) (cert, key, ca string) {
 
 // CertsIn issues a certificate naming any deployment (for refusals).
 func (w *World) CertsIn(t testing.TB, deployment, component string) (cert, key, ca string) {
+	return w.issue(t, deployment, component, []string{identity.DNSName(deployment, component)})
+}
+
+// CertsWithoutDNS issues a certificate with only the URI SAN (for refusals: P8.5 needs both).
+func (w *World) CertsWithoutDNS(t testing.TB, component string) (cert, key, ca string) {
+	return w.issue(t, w.Deployment, component, nil)
+}
+
+func (w *World) issue(t testing.TB, deployment, component string, dns []string) (cert, key, ca string) {
 	t.Helper()
 	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	u, _ := url.Parse(identity.SPIFFE(deployment, component))
@@ -128,6 +137,7 @@ func (w *World) CertsIn(t testing.TB, deployment, component string) (cert, key, 
 	n := serial
 	w.mu.Unlock()
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(n), Subject: pkix.Name{CommonName: component}, URIs: []*url.URL{u},
+		DNSNames:  dns,
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour), KeyUsage: x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, w.caCert, &k.PublicKey, w.caKey)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,11 @@ import (
 // SPIFFE is the service identity of a component in a deployment (P8.5).
 func SPIFFE(deployment, component string) string {
 	return "spiffe://" + deployment + "/component/" + component
+}
+
+// DNSName is the DNS SAN derived from the SPIFFE ID (P8.5), for clients that can only check a host name.
+func DNSName(deployment, component string) string {
+	return strings.ReplaceAll(component, "/", ".") + ".component." + deployment
 }
 
 // ServiceTLS is a member's mTLS identity: its certificate and the deployment's trust root, re-read from their
@@ -72,6 +78,9 @@ func (s *ServiceTLS) Reload() error {
 	}
 	if id := identityOf(leaf); id != SPIFFE(s.Deployment, s.Component) {
 		return fmt.Errorf("service certificate: it names %q, this member is %q", id, SPIFFE(s.Deployment, s.Component))
+	}
+	if want := DNSName(s.Deployment, s.Component); !slices.Contains(leaf.DNSNames, want) {
+		return fmt.Errorf("service certificate: no DNS name %q (P8.5)", want)
 	}
 	s.mu.Lock()
 	s.cert, s.pool = &cert, pool

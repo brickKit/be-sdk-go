@@ -83,3 +83,10 @@ func TestConnectionsWithoutAValidIdentityAreRefused(t *testing.T) { // P8.5, CK-
 	}())
 	assert.ErrorContains(t, err, "no service identity", "never served without TLS")
 }
+
+func TestACertificateWithoutTheDerivedDNSNameIsRefused(t *testing.T) { // P8.5
+	w := worldOf(t)
+	cert, key, ca := w.CertsWithoutDNS(t, "erp/sales")
+	_, err := identity.LoadServiceTLS(w.Deployment, "erp/sales", cert, key, ca, os.ReadFile)
+	assert.ErrorContains(t, err, `no DNS name "erp.sales.component.`+w.Deployment+`"`)
+}
