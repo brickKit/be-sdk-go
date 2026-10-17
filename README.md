@@ -43,7 +43,7 @@ func main() { launcher.Main(sales.Definition) }
 
 ### 事件
 
-产生事件的组件在定义里声明 `Streams`，在业务事务内调用 `rt.Events.Emit`；SDK 负责编号、转发与信封。消费事件的组件声明 `Subscribes` 并实现 `Subscriptions`，处理函数在 SDK 开的事务里执行，收件表与业务写入同时提交，重复投递只生效一次，最后一次仍失败的记为死信。两者都需要数据库与 `BUS_URL`。
+产生事件的组件在定义里声明 `Streams`，在业务事务内调用 `rt.Events.Emit`；SDK 负责编号、转发与信封。超过 64 KiB 的载荷经对象存储：生产者配置自己的 `OBJECT_STORE_*`，转发时写入并发出预签名的只读地址，订阅者不需要存储凭据。消费事件的组件声明 `Subscribes` 并实现 `Subscriptions`，处理函数在 SDK 开的事务里执行，收件表与业务写入同时提交，重复投递只生效一次，最后一次仍失败的记为死信。两者都需要数据库与 `BUS_URL`。
 
 ### 后台工作
 
@@ -113,4 +113,4 @@ func main() { launcher.Main(sales.Definition) }
 
 ## 测试
 
-`make test`：L1 测试，含协议向量（按 `go.mod` 中 `be-protocol` 的精确版本）、功能矩阵与 SDK 自身的合并安全检查。需要真实 PostgreSQL（16 及以上）与消息系统的测试在构建标签 `integration` 下，`make test-integration` 运行：环境变量 `BE_SDK_TEST_PG_ADMIN` 给出超级用户的连接串（装配项目的 `be-postgres`），`BE_SDK_TEST_NATS_URL` 给出开启 JetStream 的 NATS（`be-nats`），测试在库 `be_sdk_test` 中自建角色与 schema；各包共用这个库，所以按包串行（`-p 1`）。缺环境时失败，不跳过。
+`make test`：L1 测试，含协议向量（按 `go.mod` 中 `be-protocol` 的精确版本）、功能矩阵与 SDK 自身的合并安全检查。需要真实 PostgreSQL（16 及以上）与消息系统的测试在构建标签 `integration` 下，`make test-integration` 运行：环境变量 `BE_SDK_TEST_PG_ADMIN` 给出超级用户的连接串（装配项目的 `be-postgres`），`BE_SDK_TEST_NATS_URL` 给出开启 JetStream 的 NATS（`be-nats`），`BE_SDK_TEST_S3_URL`、`BE_SDK_TEST_S3_ACCESS_KEY`、`BE_SDK_TEST_S3_SECRET_KEY` 给出对象存储（`be-rustfs`，测试建桶 `be-sdk-test`），测试在库 `be_sdk_test` 中自建角色与 schema；各包共用这个库，所以按包串行（`-p 1`）。缺环境时失败，不跳过。

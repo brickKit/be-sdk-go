@@ -74,7 +74,7 @@ func Keys(def component.Definition) []config.Key {
 		keys = append(keys, db.ServeKeys()...)
 	}
 	if len(def.Streams) > 0 || def.Subscribes {
-		keys = append(keys, bus.Keys(len(def.Streams) > 0)...)
+		keys = append(append(keys, bus.Keys(len(def.Streams) > 0)...), events.StoreKeys()...)
 	}
 	return keys
 }

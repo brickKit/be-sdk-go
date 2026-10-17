@@ -63,9 +63,10 @@ func TestFindsEveryKind(t *testing.T) {
 
 // TestSDKIsMergeSafe holds the SDK to the rule it enforces: only the launcher (and config.ProcessEnv, which only the
 // launcher calls) may touch the process; the shell and internal/host are the launcher's other half; the db package and
-// the transport adapters are the places that open connections; internal/pgtest only serves the integration tests.
+// the transport adapters are the places that open connections; internal/pgtest and internal/s3test only serve the
+// integration tests.
 func TestSDKIsMergeSafe(t *testing.T) {
-	findings, err := CheckTree("..", "launcher", "shell", "internal/host", "internal/pgtest", "internal/sectest", "mergesafety")
+	findings, err := CheckTree("..", "launcher", "shell", "internal/host", "internal/pgtest", "internal/s3test", "internal/sectest", "mergesafety")
 	require.NoError(t, err)
 	var left []string
 	for _, f := range findings {

@@ -177,7 +177,15 @@ func (m *Member) producer(values *config.Values, sh Shared) (*events.Producer, e
 	if len(m.Def.Streams) == 0 {
 		return nil, nil
 	}
-	p, err := events.NewProducer(m.Def.ID, m.Def.Streams, nil)
+	store, err := events.NewS3Store(values)
+	if err != nil {
+		return nil, err
+	}
+	var claims events.ClaimStore
+	if store != nil {
+		claims = store
+	}
+	p, err := events.NewProducer(m.Def.ID, m.Def.Streams, claims)
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +294,8 @@ func (m *Member) background(sh Shared) error {
 			return fmt.Errorf("the module's subscriptions could not be registered: %w", err)
 		}
 		for _, s := range subs.List() {
-			m.consumers = append(m.consumers, &events.Consumer{Member: m.Def.ID, Sub: s, DB: sh.DB, Log: m.Logger})
+			m.consumers = append(m.consumers, &events.Consumer{Member: m.Def.ID, Sub: s, DB: sh.DB, Log: m.Logger,
+				Claims: events.NewHTTPClaims()})
 		}
 	}
 	return nil

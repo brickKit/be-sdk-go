@@ -188,7 +188,9 @@
     "claim-check": {
       "status": "verified",
       "evidence": [
-        "events.TestLargePayloadsTravelByClaimCheck"
+        "events.TestLargePayloadsTravelByClaimCheck",
+        "events.TestS3ClaimsRoundTripWithoutStorageCredentials",
+        "launcher.TestEventsFlowBetweenComponentsOnBothTransports"
       ]
     },
     "transport": {

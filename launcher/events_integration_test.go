@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
+	"github.com/brickKit/be-sdk-go/v3/internal/s3test"
 	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/stretchr/testify/assert"
@@ -39,8 +41,12 @@ func (p *producer) Routes(r *httpx.Routes) error {
 			if _, err := tx.Exec(ctx, "INSERT INTO things VALUES ($1)", id); err != nil {
 				return err
 			}
+			data := map[string]string{"id": id}
+			if c.Request().URL.Query().Get("big") != "" { // over 64 KiB: through object storage (P6.14)
+				data["blob"] = strings.Repeat("z", events.MaxPayload+1000)
+			}
 			_, err := p.rt.Events.Emit(ctx, tx, things.Name, events.Event{Type: "demo.things.created.v1", RecordID: id,
-				Version: 1, Projection: events.Full, Data: map[string]string{"id": id}})
+				Version: 1, Projection: events.Full, Data: data})
 			return err
 		})
 		if err != nil {
@@ -57,7 +63,7 @@ func (c *consumer) Routes(r *httpx.Routes) error {
 	r.GET("/api/seen", "demo.seen.read", func(x *httpx.Context) error {
 		var n int
 		err := c.rt.DB.Tx(x.Ctx(), func(ctx context.Context, tx db.Tx) error {
-			return tx.QueryRow(ctx, "SELECT count(*) FROM seen").Scan(&n)
+			return tx.QueryRow(ctx, "SELECT count(*) + count(*) FILTER (WHERE size > 65536) * 100 FROM seen").Scan(&n)
 		})
 		if err != nil {
 			return err
@@ -70,7 +76,12 @@ func (c *consumer) Routes(r *httpx.Routes) error {
 func (c *consumer) Subscriptions(s *events.Subscriptions) error {
 	s.Add(events.Sub{Name: "things", Streams: []string{things.Name}, Types: []string{"demo.things.created.v1"},
 		Handle: func(ctx context.Context, tx db.Tx, e events.Received) error {
-			_, err := tx.Exec(ctx, "INSERT INTO seen (event_id, record_id) VALUES ($1, $2)", e.ID, e.RecordID)
+			var data map[string]string
+			if err := e.Decode(&data); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, "INSERT INTO seen (event_id, record_id, size) VALUES ($1, $2, $3)", e.ID, e.RecordID,
+				len(data["blob"]))
 			return err
 		}})
 	return nil
@@ -123,6 +134,7 @@ func TestEventsFlowBetweenComponentsOnBothTransports(t *testing.T) {
 			pgtest.Member(t, "evcons", "")
 			prodEnv := pgtest.MemberEnv(host, port, "evprod")
 			prodEnv["BUS_URL"], prodEnv["IMPLEMENTATION_INSTANCE"] = busURL, ids.New().String()
+			maps.Copy(prodEnv, s3test.Env(t, "demo-evprod/")) // the producer's own prefix; the consumer holds no credentials
 			consEnv := pgtest.MemberEnv(host, port, "evcons")
 			consEnv["BUS_URL"] = busURL
 			prodDef := component.Definition{ID: "demo/evprod", Version: "3.0.0", Streams: []events.Stream{things},
@@ -131,7 +143,7 @@ func TestEventsFlowBetweenComponentsOnBothTransports(t *testing.T) {
 				New:        func(rt *runtime.Runtime) (component.Module, error) { return &producer{rt: rt}, nil }}
 			consDef := component.Definition{ID: "demo/evcons", Version: "3.0.0", Subscribes: true,
 				Authz:      sectest.Defs("demo/evcons", "demo.seen", "demo.seen.read"),
-				Migrations: fstest.MapFS{"0001_seen.up.sql": {Data: []byte("CREATE TABLE seen (event_id uuid PRIMARY KEY, record_id text NOT NULL);")}},
+				Migrations: fstest.MapFS{"0001_seen.up.sql": {Data: []byte("CREATE TABLE seen (event_id uuid PRIMARY KEY, record_id text NOT NULL, size int NOT NULL);")}},
 				New:        func(rt *runtime.Runtime) (component.Module, error) { return &consumer{rt: rt}, nil }}
 
 			prodURL, stopProd := runComponent(t, prodDef, prodEnv)
@@ -139,10 +151,11 @@ func TestEventsFlowBetweenComponentsOnBothTransports(t *testing.T) {
 			for i := 0; i < 5; i++ {
 				assert.Equal(t, 201, post(t, prodURL+"/api/things"))
 			}
+			assert.Equal(t, 201, post(t, prodURL+"/api/things?big=1"))
 			require.Eventually(t, func() bool {
 				_, body := get(t, consURL+"/api/seen")
-				return string(body) == `{"count":5}`+"\n" || string(body) == `{"count":5}`
-			}, 15*time.Second, 50*time.Millisecond)
+				return strings.TrimSpace(string(body)) == `{"count":106}`
+			}, 15*time.Second, 50*time.Millisecond, "six events, the large one with its whole payload")
 			stopCons()
 			stopProd()
 		})
