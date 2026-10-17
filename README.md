@@ -29,6 +29,8 @@ func main() { launcher.Main(sales.Definition) }
 
 有后台工作的模块实现 `Jobs`，每个作业声明种类（queue、cron、singleton、every）与副作用种类；queue 作业在业务事务内用 `rt.Work.Enqueue` 排入。处理函数拿到 `*work.Run`：`local` 作业用 `Complete` 把效果与完成标记一起提交；非幂等外部调用先 `BeforeCall` 再发出；singleton 用 `Checkpoint` 分段提交进度。返回 `work.Permanent`、`work.NotEffective`、`work.Wait` 区分失败，其余错误按退避重试；每次运行有截止时间（`Job.Timeout`，缺省 5 分钟），出站调用靠它。
 
+列表接口用 `list.Build`：传入资源的列声明（可排序、可筛选、可搜索）与请求（排序、筛选、`q`、游标、页大小），得到与授权谓词拼好的条件、参数、排序与命中位图；取到一页后用 `Next` 得到下一页的游标。授权或资源定义变了，旧游标答 `QUERY_PLAN_CHANGED`。投影其他组件的记录用 `projection.Projection`：消费者在处理事件的事务里 `Apply`，返回需要取回时排入取回工作项（`Repair`）；来源换了实现实例或纪元时 `Align` 全量重新取回。
+
 需要审计的操作经 `rt.Audit` 记录：变更用 `Write`（与业务同一事务），敏感读取与导出用 `Read`（先记，写不进去就拒绝读取），安全拒绝用 `Denial`。转运、编号、汇总与删除由 SDK 在后台完成（`AUDIT_GRPC_URL`）。
 
 ## 包
@@ -54,12 +56,13 @@ func main() { launcher.Main(sales.Definition) }
 | `guard` | 用户面的准入：核验凭据、操作必须已声明、视图有效，请求带上主体与截止时间 | 第 8 章 |
 | `audit` | 本地审计表：业务与安全变更同事务写入、敏感读取先记后放、拒绝的明细预算与汇总、锁内编号、经系统面转运与回执、按已备份水位删除、积压容量保护；转运是 SDK 自带的 singleton 作业 | 第 8 章 P8.19–P8.23 |
 | `canon` | 安全记录的规范编码与摘要（RFC 8785、十进制、时刻、NFC） | 第 8 章 P8.8 |
+| `search` | 规范化搜索列（版本 1）：折叠、全拼与首字母（`be-protocol` 的拼音表），查询折叠与子串匹配 | 第 9 章 P9.6–P9.8 |
+| `list` | 列表：游标分页（排序键加身份、不透明游标、筛选摘要与计划摘要）、页大小、声明的筛选与排序字段、受限字段的可查询性、关键字搜索；与授权谓词拼成一条 SQL | 第 9 章 P9.1–P9.8 |
+| `projection` | 投影：按协议 02 的状态表接收完整、部分与删除；全量重新取回（对齐代次、快照直接覆盖、对齐期间写入的行按版本比较、快照之外的行按身份读取）；补全不完整的行 | 第 9 章 P9.10–P9.12 |
 | `work` | 后台工作项：原子认领、租约与代次、停止时释放租约、副作用种类、重试与死信、cron 时间槽与物化水位、singleton、每副本计时器、运维动作与清理 | 第 7 章 |
 | `events/jetstream`、`events/pgqueue`、`events/bus` | 两个运输适配器与按 `BUS_URL` 选择；`events/transporttest` 是两者共跑的运输检查 | 第 6 章 P6.16–P6.24 |
 | `shell` | 外壳启动器：按构建信息核对成员、拒绝 `replace`、每个成员独立的端口与运行时、共享池 | 协议 17 的外壳义务 |
 | `mergesafety` | 合并安全检查：读进程环境、初始化进程级的东西、退出进程、绕过 SDK 建引擎与连接 | 组件实现约定的合并安全 |
-
-列表与投影随实验计划第 2 步的后续任务加入（装配项目 `dev/rebuild/step2-plan.md`）。
 
 ## 测试
 
