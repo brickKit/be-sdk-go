@@ -7,6 +7,7 @@ import (
 	"io/fs"
 
 	"github.com/brickKit/be-sdk-go/v3/config"
+	"github.com/brickKit/be-sdk-go/v3/grpcx"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 )
@@ -21,6 +22,9 @@ type Definition struct {
 	// Migrations are the component's migration files (<version>_<title>.up.sql at the root). Non-nil means the
 	// component owns a database: the PG_* keys are added to Keys, rt.DB is set, and the migrate entry applies them.
 	Migrations fs.FS
+	// GRPCPort is the "grpc" extra port declared in component.yaml; the system surface listens on it when the module
+	// registers services (in a shell the port comes from BrickKit instead).
+	GRPCPort int
 	// New builds the module from its runtime. It must not read the process environment, start listeners, initialise
 	// process-wide state or exit the process: everything comes from rt.
 	New func(rt *runtime.Runtime) (Module, error)
@@ -29,6 +33,12 @@ type Definition struct {
 // Module is a built component: it registers its user-surface routes.
 type Module interface {
 	Routes(r *httpx.Routes) error
+}
+
+// SystemModule is implemented by modules with a system surface: they register gRPC services, each method declaring
+// its operation.
+type SystemModule interface {
+	Services(s *grpcx.Services) error
 }
 
 // Starter is implemented by modules with background work (consumers, work items); Start returns once that work

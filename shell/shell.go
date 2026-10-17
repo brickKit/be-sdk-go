@@ -6,6 +6,7 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -133,7 +134,7 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 		listen = func(addr string) (net.Listener, error) { return net.Listen("tcp", addr) }
 	}
 	var members []*host.Member
-	var servers []*http.Server
+	var servers []host.Server
 	fail := func(member, msg string, err error) int {
 		log.Error(msg, "member", member, "error", err.Error())
 		for _, s := range servers {
@@ -167,7 +168,19 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 		}
 		srv := &http.Server{Handler: m.Engine, ReadHeaderTimeout: 10 * time.Second}
 		go func() { _ = srv.Serve(ln) }()
-		members, servers = append(members, m), append(servers, srv)
+		members, servers = append(members, m), append(servers, host.HTTPServer{Server: srv})
+		if m.System != nil {
+			port := p.served.extraPort("grpc")
+			if port <= 0 {
+				return fail(p.def.ID, "the member registers gRPC services but BrickKit gave it no grpc port", errors.New("no extra port grpc"))
+			}
+			gln, err := listen(":" + strconv.Itoa(port))
+			if err != nil {
+				return fail(p.def.ID, "cannot listen on the member's grpc port", err)
+			}
+			go func() { _ = m.System.Serve(gln) }()
+			servers = append(servers, host.GRPCServer{Server: m.System, Addr: gln.Addr().String()})
+		}
 	}
 
 	own, err := ownSurface(self, sv, members)
@@ -180,7 +193,7 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 	}
 	ownSrv := &http.Server{Handler: own, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = ownSrv.Serve(ln) }()
-	servers = append(servers, ownSrv)
+	servers = append(servers, host.HTTPServer{Server: ownSrv})
 
 	for _, p := range pools {
 		if err := p.Ready(ctx, log); err != nil {

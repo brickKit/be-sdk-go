@@ -68,14 +68,32 @@ func serve(ctx context.Context, def component.Definition, o Options) int {
 		return ExitFailure
 	}
 	srv := &http.Server{Handler: m.Engine, ReadHeaderTimeout: 10 * time.Second}
-	serveErr := make(chan error, 1)
+	serveErr := make(chan error, 2)
 	go func() { serveErr <- srv.Serve(ln) }()
+	servers := []host.Server{host.HTTPServer{Server: srv}}
+	if m.System != nil {
+		if def.GRPCPort <= 0 {
+			log.Error("the module registers gRPC services but the definition has no GRPCPort")
+			_ = srv.Close()
+			return ExitFailure
+		}
+		gln, err := listen(":" + strconv.Itoa(def.GRPCPort))
+		if err != nil {
+			log.Error("cannot listen on the grpc port", "error", err.Error())
+			_ = srv.Close()
+			return ExitFailure
+		}
+		go func() { serveErr <- m.System.Serve(gln) }()
+		servers = append(servers, host.GRPCServer{Server: m.System, Addr: gln.Addr().String()})
+	}
 
 	bg, stopBg := context.WithCancel(context.Background())
 	defer stopBg()
 	if err := m.Start(bg); err != nil {
 		log.Error("the module could not start", "error", err.Error())
-		_ = srv.Close()
+		for _, s := range servers {
+			_ = s.Close()
+		}
 		return ExitFailure
 	}
 	m.SetState(host.Ready)
@@ -88,6 +106,6 @@ func serve(ctx context.Context, def component.Definition, o Options) int {
 		log.Error("the user surface stopped unexpectedly", "error", fmt.Sprint(err))
 		return ExitFailure
 	}
-	return host.StopAll(log, []*host.Member{m}, []*http.Server{srv}, stopBg,
+	return host.StopAll(log, []*host.Member{m}, servers, stopBg,
 		values.Duration("STOP_DRAIN_DELAY"), values.Duration("STOP_TIMEOUT"))
 }

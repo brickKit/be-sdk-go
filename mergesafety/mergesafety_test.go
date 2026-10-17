@@ -22,6 +22,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
+	"google.golang.org/grpc"
+	"net/http"
 )
 
 func New() {
@@ -34,6 +36,9 @@ func New() {
 	_, _ = pgxpool.NewWithConfig(nil, nil)
 	_, _ = pgx.ConnectConfig(nil, nil)
 	_ = stdlib.OpenDB(pgx.ConnConfig{})
+	_ = grpc.NewServer()
+	_, _ = grpc.NewClient("x")
+	_, _ = http.Get("http://x")
 	log.Fatal("bye")
 }
 `
@@ -50,10 +55,10 @@ func TestFindsEveryKind(t *testing.T) {
 	}
 	joined := strings.Join(calls, " ")
 	for _, want := range []string{"os.Getenv", "os.LookupEnv", "gin.SetMode", "prometheus.MustRegister",
-		"promauto.NewCounter", "pgxpool.New", "pgxpool.NewWithConfig", "pgx/v5.ConnectConfig", "stdlib.OpenDB", "log.Fatal"} {
+		"promauto.NewCounter", "pgxpool.New", "pgxpool.NewWithConfig", "pgx/v5.ConnectConfig", "stdlib.OpenDB", "grpc.NewServer", "grpc.NewClient", "net/http.Get", "log.Fatal"} {
 		assert.Contains(t, joined, want)
 	}
-	assert.Len(t, findings, 10, "test files are not checked")
+	assert.Len(t, findings, 13, "test files are not checked")
 }
 
 // TestSDKIsMergeSafe holds the SDK to the rule it enforces: only the launcher (and config.ProcessEnv, which only the
@@ -72,6 +77,12 @@ func TestSDKIsMergeSafe(t *testing.T) {
 		}
 		if filepath.Base(filepath.Dir(f.Pos.Filename)) == "db" && strings.HasSuffix(f.Why, "use the runtime's database") {
 			continue // the SDK's own pools and the migrate entry's connections
+		}
+		if filepath.Base(filepath.Dir(f.Pos.Filename)) == "calls" && strings.HasSuffix(f.Why, "use rt.GRPC") {
+			continue // the SDK's own client connections
+		}
+		if filepath.Base(filepath.Dir(f.Pos.Filename)) == "grpcx" && strings.HasPrefix(f.Why, "a module never serves") {
+			continue // the SDK's own system-surface server
 		}
 		left = append(left, f.String())
 	}

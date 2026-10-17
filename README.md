@@ -19,7 +19,9 @@ var Definition = component.Definition{
 func main() { launcher.Main(sales.Definition) }
 ```
 
-模块从 `rt` 取一切：配置（`rt.Config`）、依赖地址（`rt.Dependency`，可选依赖缺席时返回“不存在”）、数据库（`rt.DB`，只经 `rt.DB.Tx` 与 `BackgroundTx` 进入事务）、日志、指标注册器、追踪器。声明了 `Migrations` 的组件自动带上数据库的键；镜像的 `migrate` 入口先执行 SDK 自己的表（来自 `be-protocol` 的 `migrations/`），再执行组件的。模块在 `Routes` 里登记路由，每条路由声明它的操作（`httpx.Route.Operation`），公开接口显式标 `Public`。
+模块从 `rt` 取一切：配置（`rt.Config`）、依赖地址（`rt.Dependency`，可选依赖缺席时返回“不存在”）、数据库（`rt.DB`，只经 `rt.DB.Tx` 与 `BackgroundTx` 进入事务）、调用其他组件（`rt.HTTP` 走用户面、`rt.GRPC` 走系统面）、日志、指标注册器、追踪器。声明了 `Migrations` 的组件自动带上数据库的键；镜像的 `migrate` 入口先执行 SDK 自己的表（来自 `be-protocol` 的 `migrations/`），再执行组件的。模块在 `Routes` 里登记路由，每条路由声明它的操作（`httpx.Route.Operation`），公开接口显式标 `Public`；有系统面的模块实现 `Services`，用 `grpcx.Services.Register` 登记服务，每个方法同样声明操作，定义里写 `GRPCPort`（`component.yaml` 中 `grpc` 额外端口）。
+
+调用其他组件只经运行时的客户端：每个（成员，依赖）一个并发上限、熔断器与重试预算；每次调用的时限逐跳缩短，只有声明为幂等的方法（gRPC 加 `calls.Idempotent()`，HTTP 的 `GET` 或 `Request.Idempotent`）在依赖自己不可用时重试，最多 3 次；依赖转述的更下游故障不重试，所以一条调用链只有一层重试。最终失败按协议向上答（`DEPENDENCY_UNAVAILABLE`、`DEADLINE_EXCEEDED`、非幂等时 `RESULT_UNKNOWN`），业务错误原样穿透。替用户读取用 `Request.ForwardUser` 转发原凭据。事务内的调用被拒绝。
 
 ## 包
 
@@ -35,10 +37,13 @@ func main() { launcher.Main(sales.Definition) }
 | `clock` | 计入挂起的时钟（`CLOCK_BOOTTIME`）与启动检查 | 第 1 章 P1.11 |
 | `db` | 连接池（单独运行一个、外壳按目标共享）、事务入口（事务内设置角色、schema、超时；预算；重试与错误映射）、启动检查、迁移入口与迁移检查、单号序列 | 第 5 章 |
 | `ids` | 记录身份 UUIDv7 | 第 5 章 P5.17 |
+| `calls` | 出站调用：出站时限、重试决定与预算、熔断、并发上限、结果分类与向上报告；HTTP 与 gRPC 客户端 | 第 4 章 |
+| `grpcx` | 系统面：每个成员一个 gRPC 服务端与拦截器链，方法必须声明操作 | 第 1、3、4 章 |
+| `reqctx` | 出站调用转发的请求范围的值（请求 ID、用户凭据） | 第 4 章 P4.2 |
 | `shell` | 外壳启动器：按构建信息核对成员、拒绝 `replace`、每个成员独立的端口与运行时、共享池 | 协议 17 的外壳义务 |
 | `mergesafety` | 合并安全检查：读进程环境、初始化进程级的东西、退出进程、绕过 SDK 建引擎与连接 | 组件实现约定的合并安全 |
 
-组件间调用、事件、后台工作、身份与授权随实验计划第 2 步的后续任务加入（装配项目 `dev/rebuild/step2-plan.md`）。
+事件、后台工作、身份与授权随实验计划第 2 步的后续任务加入（装配项目 `dev/rebuild/step2-plan.md`）。
 
 ## 测试
 

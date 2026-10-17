@@ -12,6 +12,7 @@ import (
 
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/brickKit/be-sdk-go/v3/obs"
+	"github.com/brickKit/be-sdk-go/v3/reqctx"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
@@ -149,6 +150,11 @@ func serve(g *gin.Context, d Deps, r Route, duration *prometheus.HistogramVec) {
 	g.Header(HeaderRequestID, rid)
 
 	ctx := obs.Propagator.Extract(req.Context(), propagation.HeaderCarrier(req.Header))
+	// what outbound calls forward: the request ID always, the user's credential for reads on the user's behalf
+	ctx = reqctx.WithRequestID(ctx, rid)
+	if auth := req.Header.Get("Authorization"); auth != "" {
+		ctx = reqctx.WithUserCredential(ctx, auth)
+	}
 	ctx, span := d.Tracer.Start(ctx, r.Method+" "+r.Path, trace.WithSpanKind(trace.SpanKindServer))
 	defer span.End()
 	traceID := span.SpanContext().TraceID().String()

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/db"
+	"google.golang.org/grpc"
 )
 
 // Exit codes (protocol chapter 01).
@@ -24,7 +25,7 @@ const (
 // the drain delay passes while the listeners still answer, all servers shut down in parallel letting requests
 // finish, then every module stops in parallel; telemetry exporters close last. Everything ends by the stop timeout,
 // counted from the signal. Returns the exit code.
-func StopAll(log *slog.Logger, members []*Member, servers []*http.Server, stopBackground context.CancelFunc,
+func StopAll(log *slog.Logger, members []*Member, servers []Server, stopBackground context.CancelFunc,
 	drain, timeout time.Duration) int {
 	deadline := time.Now().Add(timeout)
 	for _, m := range members {
@@ -48,10 +49,10 @@ func StopAll(log *slog.Logger, members []*Member, servers []*http.Server, stopBa
 	var wg sync.WaitGroup
 	for _, s := range servers {
 		wg.Add(1)
-		go func(s *http.Server) {
+		go func(s Server) {
 			defer wg.Done()
 			if err := s.Shutdown(ctx); err != nil {
-				fail("requests still running at the stop deadline", "addr", s.Addr, "error", err.Error())
+				fail("requests still running at the stop deadline", "server", s.Name(), "error", err.Error())
 			}
 		}(s)
 	}
@@ -73,6 +74,44 @@ func StopAll(log *slog.Logger, members []*Member, servers []*http.Server, stopBa
 	log.Info("stopped", "event", "stopped", "exit_code", code)
 	return code
 }
+
+// Server is a listener the stop shuts down: the user surface (HTTP) or the system surface (gRPC).
+type Server interface {
+	Shutdown(ctx context.Context) error
+	Close() error
+	Name() string
+}
+
+// HTTPServer adapts an *http.Server.
+type HTTPServer struct{ *http.Server }
+
+// Name names the server in logs.
+func (s HTTPServer) Name() string { return "http " + s.Addr }
+
+// GRPCServer adapts a *grpc.Server: a graceful stop until ctx ends, then a hard stop.
+type GRPCServer struct {
+	*grpc.Server
+	Addr string
+}
+
+// Name names the server in logs.
+func (s GRPCServer) Name() string { return "grpc " + s.Addr }
+
+// Shutdown stops accepting calls and waits for the running ones until ctx ends.
+func (s GRPCServer) Shutdown(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() { s.GracefulStop(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		s.Stop()
+		return ctx.Err()
+	}
+}
+
+// Close stops at once.
+func (s GRPCServer) Close() error { s.Stop(); return nil }
 
 // ReadyExit maps a failed database readiness wait to the exit code of protocol chapter 01.
 func ReadyExit(err error) int {

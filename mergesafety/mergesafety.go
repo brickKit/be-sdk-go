@@ -64,6 +64,15 @@ var Rules = []Rule{
 	{"github.com/jackc/pgx/v5/stdlib", "OpenDB", "opens a pool outside the SDK; use the runtime's database"},
 	{"github.com/jackc/pgx/v5/stdlib", "OpenDBFromPool", "opens a pool outside the SDK; use the runtime's database"},
 	{"github.com/nats-io/nats.go", "Connect", "opens a bus connection outside the SDK; use the runtime's bus"},
+	{"google.golang.org/grpc", "NewServer", "a module never serves; register services in Services and the SDK serves them"},
+	{"google.golang.org/grpc", "NewClient", "calls a dependency outside the SDK; use rt.GRPC"},
+	{"google.golang.org/grpc", "Dial", "calls a dependency outside the SDK; use rt.GRPC"},
+	{"google.golang.org/grpc", "DialContext", "calls a dependency outside the SDK; use rt.GRPC"},
+	{"net/http", "Get", "calls outside the SDK (no deadline, retry budget or breaker); use rt.HTTP"},
+	{"net/http", "Post", "calls outside the SDK (no deadline, retry budget or breaker); use rt.HTTP"},
+	{"net/http", "Head", "calls outside the SDK (no deadline, retry budget or breaker); use rt.HTTP"},
+	{"net/http", "PostForm", "calls outside the SDK (no deadline, retry budget or breaker); use rt.HTTP"},
+	{"net/http", "DefaultClient", "calls outside the SDK (no deadline, retry budget or breaker); use rt.HTTP"},
 }
 
 // Finding is one violation.

@@ -14,15 +14,18 @@ import (
 
 	protocol "github.com/brickKit/be-protocol/v3"
 	sdk "github.com/brickKit/be-sdk-go/v3"
+	"github.com/brickKit/be-sdk-go/v3/calls"
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/db"
+	"github.com/brickKit/be-sdk-go/v3/grpcx"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"google.golang.org/grpc"
 )
 
 // States of protocol chapter 01.
@@ -67,6 +70,9 @@ type Member struct {
 	Tracers  *sdktrace.TracerProvider
 	Module   component.Module
 	Engine   *gin.Engine
+	// System is the member's gRPC server; nil when the module registers no services.
+	System   *grpc.Server
+	Outbound *calls.Member
 	state    atomic.Value
 	reread   func(string) ([]byte, error)
 }
@@ -100,7 +106,10 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		return nil, fmt.Errorf("tracing exporter: %w", err)
 	}
 	m.Tracers = tp
-	rt := runtime.New(member, values, m.Logger, m.Registry, tp.Tracer(def.ID), addresses, database)
+	if m.Outbound, err = calls.NewMember(m.Registry); err != nil {
+		return nil, fmt.Errorf("outbound metrics: %w", err)
+	}
+	rt := runtime.New(member, values, m.Logger, m.Registry, tp.Tracer(def.ID), addresses, database, m.Outbound)
 	if m.Module, err = newModule(def, rt); err != nil {
 		return nil, fmt.Errorf("the module could not be built: %w", err)
 	}
@@ -115,6 +124,18 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		}}, &routes)
 	if err != nil {
 		return nil, fmt.Errorf("the user surface could not be built: %w", err)
+	}
+	if sm, ok := m.Module.(component.SystemModule); ok {
+		var services grpcx.Services
+		if err := sm.Services(&services); err != nil {
+			return nil, fmt.Errorf("the module's services could not be registered: %w", err)
+		}
+		if !services.Empty() {
+			if m.System, err = grpcx.NewServer(grpcx.Deps{Member: member, Logger: m.Logger, Registry: m.Registry,
+				Tracer: rt.Tracer}, &services); err != nil {
+				return nil, fmt.Errorf("the system surface could not be built: %w", err)
+			}
+		}
 	}
 	return m, nil
 }
@@ -143,8 +164,9 @@ func (m *Member) Start(bg context.Context) error {
 	return nil
 }
 
-// Stop stops the module's work within ctx.
+// Stop stops the module's work within ctx, then releases its outbound connections.
 func (m *Member) Stop(ctx context.Context) error {
+	defer m.Outbound.Close()
 	if s, ok := m.Module.(component.Stopper); ok {
 		return s.Stop(ctx)
 	}

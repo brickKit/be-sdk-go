@@ -24,6 +24,15 @@ type Served struct {
 	Config      map[string]string `json:"config"`
 }
 
+func (s Served) extraPort(name string) int {
+	for _, p := range s.ExtraPorts {
+		if p.Name == name {
+			return p.Port
+		}
+	}
+	return 0
+}
+
 // Port is a named extra port.
 type Port struct {
 	Name string `json:"name"`
@@ -98,6 +107,12 @@ func check(raw string, defs []component.Definition, bi *debug.BuildInfo, modOf f
 			refusals = append(refusals, refusal{id, "httpPort", "invalid", fmt.Sprintf("a free port (%d is taken by %s)", s.HTTPPort, other)})
 		}
 		seenPorts[s.HTTPPort] = id
+		for _, p := range s.ExtraPorts {
+			if other, clash := seenPorts[p.Port]; clash || p.Port <= 0 {
+				refusals = append(refusals, refusal{id, "extraPorts." + p.Name, "invalid", fmt.Sprintf("a free port (%d is taken by %s)", p.Port, other)})
+			}
+			seenPorts[p.Port] = id
+		}
 		def, ok := byID[id]
 		if !ok {
 			refusals = append(refusals, refusal{id, "componentId", "invalid", "a member compiled into this shell; this shell has no module " + id})
