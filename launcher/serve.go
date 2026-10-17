@@ -12,6 +12,7 @@ import (
 	sdk "github.com/brickKit/be-sdk-go/v3"
 	"github.com/brickKit/be-sdk-go/v3/clock"
 	"github.com/brickKit/be-sdk-go/v3/component"
+	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/internal/host"
 )
 
@@ -25,7 +26,22 @@ func serve(ctx context.Context, def component.Definition, o Options) int {
 		host.ReportConfig(o.Stderr, def.ID, problems)
 		return ExitConfiguration
 	}
-	m, err := host.Build(ctx, def, values, o.Env, o.Env.ReadFile, o.Stdout)
+	var pool *db.Pool
+	var database *db.DB
+	if def.Migrations != nil {
+		// alone, the component connects with its own runtime login role (protocol 14, "connection pools")
+		s := db.SettingsFrom(values)
+		var err error
+		pool, err = db.Open(ctx, db.PoolConfig{Target: s.Target, User: s.User, Password: s.Password, AppName: def.ID,
+			MaxConns: int32(s.Foreground + s.Background), Prepared: s.Prepared})
+		if err != nil {
+			fmt.Fprintf(o.Stdout, "{\"level\":\"ERROR\",\"component\":%q,\"msg\":%q}\n", def.ID, err.Error())
+			return ExitConfiguration
+		}
+		defer pool.Close()
+		database = db.NewDB(def.ID, pool, s)
+	}
+	m, err := host.Build(ctx, def, values, o.Env, o.Env.ReadFile, o.Stdout, database)
 	if err != nil {
 		fmt.Fprintf(o.Stdout, "{\"level\":\"ERROR\",\"component\":%q,\"msg\":%q}\n", def.ID, err.Error())
 		return ExitFailure
@@ -34,6 +50,12 @@ func serve(ctx context.Context, def component.Definition, o Options) int {
 	if err := clock.Check(); err != nil {
 		log.Error("start check failed: no clock that counts suspension (CLOCK_BOOTTIME)", "error", err.Error())
 		return ExitStartupCheck
+	}
+	if pool != nil {
+		if err := pool.Ready(ctx, log); err != nil {
+			log.Error("the database is not usable", "error", err.Error())
+			return host.ReadyExit(err)
+		}
 	}
 
 	listen := o.Listen

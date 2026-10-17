@@ -53,8 +53,16 @@ var Rules = []Rule{
 	{"net/http", "ListenAndServeTLS", "a module never listens; the launcher or the shell does"},
 	{"net", "Listen", "a module never listens; the launcher or the shell does"},
 	{"database/sql", "Open", "opens a pool outside the SDK; use the runtime's database"},
+	{"database/sql", "OpenDB", "opens a pool outside the SDK; use the runtime's database"},
 	{"github.com/jackc/pgx/v5/pgxpool", "New", "opens a pool outside the SDK; use the runtime's database"},
+	{"github.com/jackc/pgx/v5/pgxpool", "NewWithConfig", "opens a pool outside the SDK; use the runtime's database"},
 	{"github.com/jackc/pgx/v5", "Connect", "opens a connection outside the SDK; use the runtime's database"},
+	{"github.com/jackc/pgx/v5", "ConnectConfig", "opens a connection outside the SDK; use the runtime's database"},
+	{"github.com/jackc/pgx/v5", "ConnectWithOptions", "opens a connection outside the SDK; use the runtime's database"},
+	{"github.com/jackc/pgx/v5/pgconn", "Connect", "opens a connection outside the SDK; use the runtime's database"},
+	{"github.com/jackc/pgx/v5/pgconn", "ConnectConfig", "opens a connection outside the SDK; use the runtime's database"},
+	{"github.com/jackc/pgx/v5/stdlib", "OpenDB", "opens a pool outside the SDK; use the runtime's database"},
+	{"github.com/jackc/pgx/v5/stdlib", "OpenDBFromPool", "opens a pool outside the SDK; use the runtime's database"},
 	{"github.com/nats-io/nats.go", "Connect", "opens a bus connection outside the SDK; use the runtime's bus"},
 }
 

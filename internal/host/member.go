@@ -16,6 +16,7 @@ import (
 	sdk "github.com/brickKit/be-sdk-go/v3"
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/config"
+	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
@@ -48,9 +49,13 @@ func SDKKeys() []config.Key {
 	}
 }
 
-// Keys returns a definition's keys plus the SDK's.
+// Keys returns a definition's keys plus the SDK's (and the database keys when the component owns a database).
 func Keys(def component.Definition) []config.Key {
-	return append(append([]config.Key(nil), def.Keys...), SDKKeys()...)
+	keys := append(append([]config.Key(nil), def.Keys...), SDKKeys()...)
+	if def.Migrations != nil {
+		keys = append(keys, db.ServeKeys()...)
+	}
+	return keys
 }
 
 // Member is one built member.
@@ -83,9 +88,9 @@ func (m *Member) Describe() map[string]any {
 }
 
 // Build constructs the member from parsed values. addresses is where *_ENDPOINT values are looked up; read is used to
-// re-read secret files.
+// re-read secret files; database is the member's handle on its pool (nil without a database).
 func Build(ctx context.Context, def component.Definition, values *config.Values, addresses config.Source,
-	read func(string) ([]byte, error), out io.Writer) (*Member, error) {
+	read func(string) ([]byte, error), out io.Writer, database *db.DB) (*Member, error) {
 	member := obs.Member{ID: def.ID, Version: def.Version}
 	m := &Member{Def: def, Values: values, Registry: obs.NewRegistry(), reread: read,
 		Logger: obs.NewLogger(member, obs.ParseLevel(values.String("LOG_LEVEL")), out)}
@@ -95,7 +100,7 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		return nil, fmt.Errorf("tracing exporter: %w", err)
 	}
 	m.Tracers = tp
-	rt := runtime.New(member, values, m.Logger, m.Registry, tp.Tracer(def.ID), addresses)
+	rt := runtime.New(member, values, m.Logger, m.Registry, tp.Tracer(def.ID), addresses, database)
 	if m.Module, err = newModule(def, rt); err != nil {
 		return nil, fmt.Errorf("the module could not be built: %w", err)
 	}

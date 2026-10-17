@@ -52,8 +52,7 @@ func Run(ctx context.Context, def component.Definition, o Options) int {
 	case "serve":
 		return serve(ctx, def, o)
 	case "migrate":
-		fmt.Fprintln(o.Stderr, `{"level":"ERROR","msg":"migrate: no migrations are wired into this component yet"}`)
-		return ExitFailure
+		return migrate(ctx, def, o)
 	}
 	fmt.Fprintf(o.Stderr, "{\"level\":\"ERROR\",\"msg\":\"unknown entry %q; use serve or migrate\"}\n", entry)
 	return ExitUsage

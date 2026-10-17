@@ -2,10 +2,13 @@ package host
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/brickKit/be-sdk-go/v3/db"
 )
 
 // Exit codes (protocol chapter 01).
@@ -69,4 +72,17 @@ func StopAll(log *slog.Logger, members []*Member, servers []*http.Server, stopBa
 	}
 	log.Info("stopped", "event", "stopped", "exit_code", code)
 	return code
+}
+
+// ReadyExit maps a failed database readiness wait to the exit code of protocol chapter 01.
+func ReadyExit(err error) int {
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return ExitOK // stopped while waiting for the database
+	case errors.Is(err, db.ErrCredentials):
+		return ExitConfiguration
+	case errors.Is(err, db.ErrStartCheck):
+		return ExitStartupCheck
+	}
+	return ExitFailure
 }

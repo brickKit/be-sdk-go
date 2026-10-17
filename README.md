@@ -11,6 +11,7 @@
 var Definition = component.Definition{
 	ID: "erp/sales", Version: "3.0.0",
 	Keys: []config.Key{{Name: "SALES_QUOTE_DAYS", Type: config.Integer, Default: 30}},
+	Migrations: migrations.Files, // embed.FS of <version>_<title>.up.sql; nil: no database
 	New: func(rt *runtime.Runtime) (component.Module, error) { return newModule(rt) },
 }
 
@@ -18,7 +19,7 @@ var Definition = component.Definition{
 func main() { launcher.Main(sales.Definition) }
 ```
 
-模块从 `rt` 取一切：配置（`rt.Config`）、依赖地址（`rt.Dependency`，可选依赖缺席时返回“不存在”）、日志、指标注册器、追踪器。模块在 `Routes` 里登记路由，每条路由声明它的操作（`httpx.Route.Operation`），公开接口显式标 `Public`。
+模块从 `rt` 取一切：配置（`rt.Config`）、依赖地址（`rt.Dependency`，可选依赖缺席时返回“不存在”）、数据库（`rt.DB`，只经 `rt.DB.Tx` 与 `BackgroundTx` 进入事务）、日志、指标注册器、追踪器。声明了 `Migrations` 的组件自动带上数据库的键；镜像的 `migrate` 入口先执行 SDK 自己的表（来自 `be-protocol` 的 `migrations/`），再执行组件的。模块在 `Routes` 里登记路由，每条路由声明它的操作（`httpx.Route.Operation`），公开接口显式标 `Public`。
 
 ## 包
 
@@ -32,10 +33,13 @@ func main() { launcher.Main(sales.Definition) }
 | `runtime` | 模块唯一的入口 | 组件实现约定 |
 | `obs` | 每个成员的日志、指标注册表、追踪提供者 | 协议 17 的观测 |
 | `clock` | 计入挂起的时钟（`CLOCK_BOOTTIME`）与启动检查 | 第 1 章 P1.11 |
+| `db` | 连接池（单独运行一个、外壳按目标共享）、事务入口（事务内设置角色、schema、超时；预算；重试与错误映射）、启动检查、迁移入口与迁移检查、单号序列 | 第 5 章 |
+| `ids` | 记录身份 UUIDv7 | 第 5 章 P5.17 |
+| `shell` | 外壳启动器：按构建信息核对成员、拒绝 `replace`、每个成员独立的端口与运行时、共享池 | 协议 17 的外壳义务 |
 | `mergesafety` | 合并安全检查：读进程环境、初始化进程级的东西、退出进程、绕过 SDK 建引擎与连接 | 组件实现约定的合并安全 |
 
-数据库、组件间调用、事件、后台工作、身份与授权、外壳启动器随实验计划第 2 步的后续任务加入（装配项目 `dev/rebuild/step2-plan.md`）。
+组件间调用、事件、后台工作、身份与授权随实验计划第 2 步的后续任务加入（装配项目 `dev/rebuild/step2-plan.md`）。
 
 ## 测试
 
-`make test`：L1 测试，含协议向量（按 `go.mod` 中 `be-protocol` 的精确版本）与 SDK 自身的合并安全检查。需要真实 PostgreSQL 与消息系统的测试在构建标签 `integration` 下，`make test-integration` 运行；缺环境时失败，不跳过。
+`make test`：L1 测试，含协议向量（按 `go.mod` 中 `be-protocol` 的精确版本）与 SDK 自身的合并安全检查。需要真实 PostgreSQL（16 及以上）与消息系统的测试在构建标签 `integration` 下，`make test-integration` 运行：环境变量 `BE_SDK_TEST_PG_ADMIN` 给出超级用户的连接串（装配项目的 `be-postgres`），测试在库 `be_sdk_test` 中自建角色与 schema；各包共用这个库，所以按包串行（`-p 1`）。缺环境时失败，不跳过。

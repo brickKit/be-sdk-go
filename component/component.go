@@ -4,6 +4,7 @@ package component
 
 import (
 	"context"
+	"io/fs"
 
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
@@ -17,6 +18,9 @@ type Definition struct {
 	Version      string // the version this code is; checked against COMPONENT_VERSION at start
 	Keys         []config.Key
 	Capabilities []string
+	// Migrations are the component's migration files (<version>_<title>.up.sql at the root). Non-nil means the
+	// component owns a database: the PG_* keys are added to Keys, rt.DB is set, and the migrate entry applies them.
+	Migrations fs.FS
 	// New builds the module from its runtime. It must not read the process environment, start listeners, initialise
 	// process-wide state or exit the process: everything comes from rt.
 	New func(rt *runtime.Runtime) (Module, error)

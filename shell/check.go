@@ -11,6 +11,7 @@ import (
 
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/config"
+	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/internal/host"
 )
 
@@ -131,7 +132,31 @@ func check(raw string, defs []component.Definition, bi *debug.BuildInfo, modOf f
 		}
 	}
 	refusals = append(refusals, processKeysAgree(out)...)
+	refusals = append(refusals, targetsAgree(out)...)
 	return out, refusals, warnings
+}
+
+// targetsAgree checks the per-target database keys (P2.11): members on the same target share one pool, so they must
+// agree on how statements are executed there.
+func targetsAgree(members []planned) []refusal {
+	first := map[db.Target]planned{}
+	var out []refusal
+	for _, m := range members {
+		if m.def.Migrations == nil {
+			continue
+		}
+		s := db.SettingsFrom(m.values)
+		f, ok := first[s.Target]
+		if !ok {
+			first[s.Target] = m
+			continue
+		}
+		if fs := db.SettingsFrom(f.values); fs.Prepared != s.Prepared {
+			out = append(out, refusal{m.def.ID, "PG_POOLER_PREPARED", "invalid",
+				fmt.Sprintf("the same value as %s (members on target %s share one pool)", f.def.ID, s.Target)})
+		}
+	}
+	return out
 }
 
 // goVersion is the Go module version of a component version: v + version (the /vN path suffix is in the module path).

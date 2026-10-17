@@ -19,7 +19,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 func New() {
@@ -29,6 +31,9 @@ func New() {
 	prometheus.MustRegister(nil)
 	_ = promauto.NewCounter
 	_, _ = pgxpool.New(nil, "")
+	_, _ = pgxpool.NewWithConfig(nil, nil)
+	_, _ = pgx.ConnectConfig(nil, nil)
+	_ = stdlib.OpenDB(pgx.ConnConfig{})
 	log.Fatal("bye")
 }
 `
@@ -45,16 +50,17 @@ func TestFindsEveryKind(t *testing.T) {
 	}
 	joined := strings.Join(calls, " ")
 	for _, want := range []string{"os.Getenv", "os.LookupEnv", "gin.SetMode", "prometheus.MustRegister",
-		"promauto.NewCounter", "pgxpool.New", "log.Fatal"} {
+		"promauto.NewCounter", "pgxpool.New", "pgxpool.NewWithConfig", "pgx/v5.ConnectConfig", "stdlib.OpenDB", "log.Fatal"} {
 		assert.Contains(t, joined, want)
 	}
-	assert.Len(t, findings, 7, "test files are not checked")
+	assert.Len(t, findings, 10, "test files are not checked")
 }
 
 // TestSDKIsMergeSafe holds the SDK to the rule it enforces: only the launcher (and config.ProcessEnv, which only the
-// launcher calls) may touch the process; the shell and internal/host are the launcher's other half.
+// launcher calls) may touch the process; the shell and internal/host are the launcher's other half; the db package is
+// the one place that opens database connections; internal/pgtest only serves the integration tests.
 func TestSDKIsMergeSafe(t *testing.T) {
-	findings, err := CheckTree("..", "launcher", "shell", "internal/host", "mergesafety")
+	findings, err := CheckTree("..", "launcher", "shell", "internal/host", "internal/pgtest", "mergesafety")
 	require.NoError(t, err)
 	var left []string
 	for _, f := range findings {
@@ -63,6 +69,9 @@ func TestSDKIsMergeSafe(t *testing.T) {
 		}
 		if strings.HasSuffix(f.Pos.Filename, filepath.Join("httpx", "engine.go")) && f.Call == "github.com/gin-gonic/gin.New" {
 			continue // the engine the SDK builds for each member
+		}
+		if filepath.Base(filepath.Dir(f.Pos.Filename)) == "db" && strings.HasSuffix(f.Why, "use the runtime's database") {
+			continue // the SDK's own pools and the migrate entry's connections
 		}
 		left = append(left, f.String())
 	}

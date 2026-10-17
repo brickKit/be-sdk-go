@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/brickKit/be-sdk-go/v3/config"
+	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/trace"
@@ -21,14 +22,16 @@ type Runtime struct {
 	Logger  *slog.Logger
 	Metrics prometheus.Registerer
 	Tracer  trace.Tracer
+	// DB is the member's database; nil when the component declares no migrations.
+	DB *db.DB
 
 	addresses config.Source // where the platform's *_ENDPOINT values are looked up
 }
 
 // New is used by the launcher and the shell.
 func New(m obs.Member, cfg *config.Values, logger *slog.Logger, metrics prometheus.Registerer, tracer trace.Tracer,
-	addresses config.Source) *Runtime {
-	return &Runtime{Member: m, Config: cfg, Logger: logger, Metrics: metrics, Tracer: tracer, addresses: addresses}
+	addresses config.Source, database *db.DB) *Runtime {
+	return &Runtime{Member: m, Config: cfg, Logger: logger, Metrics: metrics, Tracer: tracer, DB: database, addresses: addresses}
 }
 
 // Endpoint is a dependency's address as BrickKit derived it (http://<versioned-service>:<port>).

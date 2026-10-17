@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/clock"
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/config"
+	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/internal/host"
 	"github.com/brickKit/be-sdk-go/v3/obs"
@@ -60,6 +62,10 @@ var shellKeys = []config.Key{
 	{Name: "PORT", Type: config.Integer, Required: true},
 	{Name: "BRICKKIT_SERVED_MEMBERS_CONFIG", Type: config.String, Required: true},
 	{Name: "SHELL_ALLOW_REPLACE", Type: config.Boolean, Default: false},
+	// the shell's login role for its shared pools; it holds the members' runtime roles WITH INHERIT FALSE and switches
+	// to one per transaction (protocol 14, "the shell's shared pool"); required when a member owns a database
+	{Name: "PG_SHELL_USER", Type: config.String},
+	{Name: "PG_SHELL_PASSWORD", Type: config.String, Secret: true},
 	{Name: "LOG_LEVEL", Type: config.Enum, Values: []string{"debug", "info", "warn", "error"}, Default: "info"},
 	{Name: "OTEL_URL", Type: config.String},
 	{Name: "STOP_DRAIN_DELAY", Type: config.Duration, Default: host.DefaultDrainDelay},
@@ -95,6 +101,10 @@ func Run(ctx context.Context, self Identity, defs []component.Definition, o Opti
 	}
 	bi, _ := buildInfo()
 	plans, refusals, warnings := check(sv.String("BRICKKIT_SERVED_MEMBERS_CONFIG"), defs, bi, modOf, sv.Bool("SHELL_ALLOW_REPLACE"))
+	if needsDB(plans) && (sv.String("PG_SHELL_USER") == "" || sv.Secret("PG_SHELL_PASSWORD") == nil) {
+		refusals = append(refusals, refusal{self.ID, "PG_SHELL_USER", "missing",
+			"the shell's login role and PG_SHELL_PASSWORD: a hosted member owns a database"})
+	}
 	if len(refusals) > 0 {
 		var ps []config.Problem
 		for _, r := range refusals {
@@ -116,10 +126,8 @@ func Run(ctx context.Context, self Identity, defs []component.Definition, o Opti
 	return run(ctx, self, sv, plans, log, o, started)
 }
 
-func run(ctx context.Context, self Identity, sv *config.Values, plans []planned, log interface {
-	Info(string, ...any)
-	Error(string, ...any)
-}, o Options, started time.Time) int {
+func run(ctx context.Context, self Identity, sv *config.Values, plans []planned, log *slog.Logger, o Options,
+	started time.Time) int {
 	listen := o.Listen
 	if listen == nil {
 		listen = func(addr string) (net.Listener, error) { return net.Listen("tcp", addr) }
@@ -133,8 +141,23 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 		}
 		return host.ExitFailure
 	}
+	pools, err := openPools(ctx, self, sv, plans)
+	defer func() {
+		for _, p := range pools {
+			p.Close()
+		}
+	}()
+	if err != nil {
+		log.Error("the shell's database pools could not be opened", "error", err.Error())
+		return host.ExitConfiguration
+	}
 	for _, p := range plans {
-		m, err := host.Build(ctx, p.def, p.values, config.Map(p.served.Config), o.Env.ReadFile, o.Stdout)
+		var database *db.DB
+		if p.def.Migrations != nil {
+			s := db.SettingsFrom(p.values)
+			database = db.NewDB(p.def.ID, pools[s.Target], s)
+		}
+		m, err := host.Build(ctx, p.def, p.values, config.Map(p.served.Config), o.Env.ReadFile, o.Stdout, database)
 		if err != nil {
 			return fail(p.def.ID, "a member could not be built", err)
 		}
@@ -159,6 +182,15 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 	go func() { _ = ownSrv.Serve(ln) }()
 	servers = append(servers, ownSrv)
 
+	for _, p := range pools {
+		if err := p.Ready(ctx, log); err != nil {
+			log.Error("a database is not usable", "target", p.Target.String(), "error", err.Error())
+			for _, s := range servers {
+				_ = s.Close()
+			}
+			return host.ReadyExit(err)
+		}
+	}
 	bg, stopBg := context.WithCancel(context.Background())
 	defer stopBg()
 	for _, m := range members { // in the order BrickKit lists them
