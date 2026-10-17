@@ -7,6 +7,7 @@ import (
 	"time"
 
 	protocol "github.com/brickKit/be-protocol/v3"
+	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -123,6 +124,8 @@ func TestSegmentEvalVectors(t *testing.T) {
 			Records map[string]struct {
 				Visible, Action string
 				Fields          []string
+				ReadError       *string `json:"read_error"`
+				ActionError     *string `json:"action_error"`
 			}
 		}
 		require.NoError(t, json.Unmarshal(c.Expect, &want))
@@ -142,6 +145,9 @@ func TestSegmentEvalVectors(t *testing.T) {
 				d.Fields = []string{}
 			}
 			assert.Equal(t, w.Fields, d.Fields, "%s %s fields", c.ID, id)
+			read := Evaluate(r, c.Segments, r.ViewOperation, f.facts(r, rec), c.Principal, at)
+			assert.Equal(t, w.ReadError, reasonOf(read.Err()), "%s %s read error", c.ID, id)
+			assert.Equal(t, w.ActionError, reasonOf(d.Err()), "%s %s action error", c.ID, id)
 		}
 	}
 }
@@ -163,4 +169,12 @@ func TestSegmentCanonicalVectors(t *testing.T) {
 		require.NoError(t, err, c.ID)
 		assert.Equal(t, c.Expect.Digest, got, c.ID)
 	}
+}
+
+func reasonOf(err error) *string {
+	if err == nil {
+		return nil
+	}
+	r := err.(*errs.Error).Reason
+	return &r
 }

@@ -51,8 +51,7 @@ type errUndeclared string
 
 func (e errUndeclared) Error() string { return "operation " + string(e) + " is not declared" }
 
-// Check decides one record for an operation (P8.15, P8.16): not visible answers NOT_FOUND, visible without the
-// operation PERMISSION_DENIED, unknown AUTHORIZATION_UNPROVABLE. The returned context carries the cutoff that a
+// Check decides one record for an operation; the error is the decision's Err. The returned context carries the cutoff that a
 // write transaction checks before COMMIT.
 func (s *Subject) Check(ctx context.Context, op string, facts Facts) (context.Context, Decision, error) {
 	ctx, o, r, g, err := s.grant(ctx, op)
@@ -60,15 +59,22 @@ func (s *Subject) Check(ctx context.Context, op string, facts Facts) (context.Co
 		return ctx, Decision{}, err
 	}
 	d := Evaluate(r, g.Segments, o.Key, facts, s.Principal, s.At)
+	return ctx, d, d.Err()
+}
+
+// Err is the answer for a decision (P8.15, P8.16): not visible NOT_FOUND; the operation definitely not allowed
+// PERMISSION_DENIED, even when visibility is unknown (a known mismatch is denied by the operation's rule, security
+// 01); otherwise unknown AUTHORIZATION_UNPROVABLE; nil when allowed.
+func (d Decision) Err() error {
 	switch {
 	case d.Visible == False:
-		return ctx, d, errs.New(errs.ReasonNotFound, "not found")
-	case d.Visible == Unknown, d.Action == Unknown:
-		return ctx, d, errs.New(errs.ReasonAuthorizationUnprovable, "the authorization cannot be proven right now")
+		return errs.New(errs.ReasonNotFound, "not found")
 	case d.Action == False:
-		return ctx, d, errs.New(errs.ReasonPermissionDenied, "not allowed")
+		return errs.New(errs.ReasonPermissionDenied, "not allowed")
+	case d.Visible == Unknown, d.Action == Unknown:
+		return errs.New(errs.ReasonAuthorizationUnprovable, "the authorization cannot be proven right now")
 	}
-	return ctx, d, nil
+	return nil
 }
 
 // List compiles the subject's list authorization for an operation over a table alias (P8.17); AND its Where
