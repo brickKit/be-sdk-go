@@ -11,6 +11,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/calls"
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/db"
+	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/trace"
@@ -26,6 +27,8 @@ type Runtime struct {
 	Tracer  trace.Tracer
 	// DB is the member's database; nil when the component declares no migrations.
 	DB *db.DB
+	// Events writes the member's events into its outbox inside a transaction; nil without declared streams.
+	Events *events.Producer
 
 	addresses config.Source // where the platform's *_ENDPOINT values are looked up
 	calls     *calls.Member
@@ -33,9 +36,9 @@ type Runtime struct {
 
 // New is used by the launcher and the shell.
 func New(m obs.Member, cfg *config.Values, logger *slog.Logger, metrics prometheus.Registerer, tracer trace.Tracer,
-	addresses config.Source, database *db.DB, outbound *calls.Member) *Runtime {
+	addresses config.Source, database *db.DB, outbound *calls.Member, producer *events.Producer) *Runtime {
 	return &Runtime{Member: m, Config: cfg, Logger: logger, Metrics: metrics, Tracer: tracer, DB: database,
-		addresses: addresses, calls: outbound}
+		Events: producer, addresses: addresses, calls: outbound}
 }
 
 // HTTP returns the client for a dependency's user surface (protocol chapter 04: deadline, retries, breaker and limit

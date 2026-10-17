@@ -152,13 +152,21 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 		log.Error("the shell's database pools could not be opened", "error", err.Error())
 		return host.ExitConfiguration
 	}
+	transport, err := openBus(ctx, self, sv, plans, log)
+	if err != nil {
+		log.Error("the bus is not usable", "error", err.Error())
+		return host.ExitStartupCheck
+	}
+	if transport != nil {
+		defer transport.Close()
+	}
 	for _, p := range plans {
 		var database *db.DB
 		if p.def.Migrations != nil {
 			s := db.SettingsFrom(p.values)
 			database = db.NewDB(p.def.ID, pools[s.Target], s)
 		}
-		m, err := host.Build(ctx, p.def, p.values, config.Map(p.served.Config), o.Env.ReadFile, o.Stdout, database)
+		m, err := host.Build(ctx, p.def, p.values, config.Map(p.served.Config), o.Env.ReadFile, o.Stdout, database, transport)
 		if err != nil {
 			return fail(p.def.ID, "a member could not be built", err)
 		}

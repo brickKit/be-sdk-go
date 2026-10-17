@@ -191,6 +191,11 @@ func processKeysAgree(members []planned) []refusal {
 				continue
 			}
 			v, _ := m.values.Raw(k.Name)
+			if k.Secret { // compared by value, never shown
+				if s := m.values.Secret(k.Name); s != nil {
+					v = s.Value()
+				}
+			}
 			if f, ok := first[k.Name]; !ok {
 				first[k.Name] = seen{m.def.ID, v}
 			} else if !reflect.DeepEqual(f.value, v) {

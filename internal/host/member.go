@@ -18,6 +18,8 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/db"
+	"github.com/brickKit/be-sdk-go/v3/events"
+	"github.com/brickKit/be-sdk-go/v3/events/bus"
 	"github.com/brickKit/be-sdk-go/v3/grpcx"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/obs"
@@ -58,6 +60,9 @@ func Keys(def component.Definition) []config.Key {
 	if def.Migrations != nil {
 		keys = append(keys, db.ServeKeys()...)
 	}
+	if len(def.Streams) > 0 || def.Subscribes {
+		keys = append(keys, bus.Keys(len(def.Streams) > 0)...)
+	}
 	return keys
 }
 
@@ -73,8 +78,13 @@ type Member struct {
 	// System is the member's gRPC server; nil when the module registers no services.
 	System   *grpc.Server
 	Outbound *calls.Member
-	state    atomic.Value
-	reread   func(string) ([]byte, error)
+	// forwarder and consumers run between Start and Stop.
+	forwarder *events.Forwarder
+	consumers []*events.Consumer
+	subs      []events.Subscription
+	transport events.Transport
+	state     atomic.Value
+	reread    func(string) ([]byte, error)
 }
 
 // State returns the member's lifecycle state.
@@ -96,7 +106,10 @@ func (m *Member) Describe() map[string]any {
 // Build constructs the member from parsed values. addresses is where *_ENDPOINT values are looked up; read is used to
 // re-read secret files; database is the member's handle on its pool (nil without a database).
 func Build(ctx context.Context, def component.Definition, values *config.Values, addresses config.Source,
-	read func(string) ([]byte, error), out io.Writer, database *db.DB) (*Member, error) {
+	read func(string) ([]byte, error), out io.Writer, database *db.DB, transport events.Transport) (*Member, error) {
+	if (len(def.Streams) > 0 || def.Subscribes) && (database == nil || transport == nil) {
+		return nil, errors.New("events need the component's database (Migrations) and the bus (BUS_URL)")
+	}
 	member := obs.Member{ID: def.ID, Version: def.Version}
 	m := &Member{Def: def, Values: values, Registry: obs.NewRegistry(), reread: read,
 		Logger: obs.NewLogger(member, obs.ParseLevel(values.String("LOG_LEVEL")), out)}
@@ -109,7 +122,16 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 	if m.Outbound, err = calls.NewMember(m.Registry); err != nil {
 		return nil, fmt.Errorf("outbound metrics: %w", err)
 	}
-	rt := runtime.New(member, values, m.Logger, m.Registry, tp.Tracer(def.ID), addresses, database, m.Outbound)
+	var producer *events.Producer
+	if len(def.Streams) > 0 {
+		if producer, err = events.NewProducer(def.ID, def.Streams, nil); err != nil {
+			return nil, err
+		}
+		m.forwarder = &events.Forwarder{DB: database, Producer: producer, Transport: transport, Source: def.ID,
+			Impl: values.String("IMPLEMENTATION_INSTANCE"), Log: m.Logger}
+	}
+	m.transport = transport
+	rt := runtime.New(member, values, m.Logger, m.Registry, tp.Tracer(def.ID), addresses, database, m.Outbound, producer)
 	if m.Module, err = newModule(def, rt); err != nil {
 		return nil, fmt.Errorf("the module could not be built: %w", err)
 	}
@@ -124,6 +146,18 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		}}, &routes)
 	if err != nil {
 		return nil, fmt.Errorf("the user surface could not be built: %w", err)
+	}
+	if sub, ok := m.Module.(events.Subscriber); ok {
+		if !def.Subscribes {
+			return nil, errors.New("the module subscribes to events but the definition does not say Subscribes")
+		}
+		var subs events.Subscriptions
+		if err := sub.Subscriptions(&subs); err != nil {
+			return nil, fmt.Errorf("the module's subscriptions could not be registered: %w", err)
+		}
+		for _, s := range subs.List() {
+			m.consumers = append(m.consumers, &events.Consumer{Member: def.ID, Sub: s, DB: database, Log: m.Logger})
+		}
 	}
 	if sm, ok := m.Module.(component.SystemModule); ok {
 		var services grpcx.Services
@@ -153,12 +187,25 @@ func newModule(def component.Definition, rt *runtime.Runtime) (mod component.Mod
 	return def.New(rt)
 }
 
-// Start runs the module's background work (if any) and the secret re-reading, both bound to bg.
+// Start runs the module's background work (if any), the event forwarder and consumers, and the secret re-reading,
+// all bound to bg.
 func (m *Member) Start(bg context.Context) error {
 	if s, ok := m.Module.(component.Starter); ok {
 		if err := s.Start(bg); err != nil {
 			return err
 		}
+	}
+	if m.forwarder != nil {
+		if err := m.forwarder.Start(bg); err != nil {
+			return err
+		}
+	}
+	for _, c := range m.consumers {
+		sub, err := m.transport.Subscribe(bg, c.Spec(), c.Handle)
+		if err != nil {
+			return fmt.Errorf("subscription %s: %w", c.Sub.Name, err)
+		}
+		m.subs = append(m.subs, sub)
 	}
 	go m.rereadSecrets(bg)
 	return nil
@@ -167,6 +214,9 @@ func (m *Member) Start(bg context.Context) error {
 // Stop stops the module's work within ctx, then releases its outbound connections.
 func (m *Member) Stop(ctx context.Context) error {
 	defer m.Outbound.Close()
+	for _, s := range m.subs {
+		_ = s.Stop() // the events in hand finish; the rest stay with the transport
+	}
 	if s, ok := m.Module.(component.Stopper); ok {
 		return s.Stop(ctx)
 	}

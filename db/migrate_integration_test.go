@@ -5,6 +5,9 @@ package db
 import (
 	"context"
 	"fmt"
+	"io/fs"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -58,7 +61,7 @@ func TestMigrateTwiceAndStateInTheComponentSchema(t *testing.T) {
 	assert.Equal(t, int64(2), v)
 	assert.False(t, dirty)
 	v, _ = version(t, c, "be_sdk_migrations")
-	assert.Equal(t, int64(1), v)
+	assert.Equal(t, latestSDKVersion(t), v, "every shared SDK migration applied")
 	var public int
 	require.NoError(t, c.QueryRow(ctx, "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE '%migrations'").Scan(&public))
 	assert.Zero(t, public, "no state table outside the component schema")
@@ -225,4 +228,18 @@ func TestDocumentNumbers(t *testing.T) {
 	assert.Equal(t, int64(5001), g)
 	_, err = d.NextGappedNumber(ctx, inv)
 	assert.ErrorContains(t, err, "declared gapless=true but used as gapless=false")
+}
+
+// latestSDKVersion is the highest version among the protocol's shared migration files.
+func latestSDKVersion(t *testing.T) int64 {
+	entries, err := fs.ReadDir(SDKMigrations().Files, ".")
+	require.NoError(t, err)
+	var top int64
+	for _, e := range entries {
+		v, err := strconv.ParseInt(e.Name()[:strings.IndexByte(e.Name(), '_')], 10, 64)
+		require.NoError(t, err)
+		top = max(top, v)
+	}
+	require.Positive(t, top)
+	return top
 }

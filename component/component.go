@@ -7,6 +7,7 @@ import (
 	"io/fs"
 
 	"github.com/brickKit/be-sdk-go/v3/config"
+	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/grpcx"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
@@ -25,6 +26,11 @@ type Definition struct {
 	// GRPCPort is the "grpc" extra port declared in component.yaml; the system surface listens on it when the module
 	// registers services (in a shell the port comes from BrickKit instead).
 	GRPCPort int
+	// Streams are the event streams the component produces (protocol chapter 06); they need Migrations (the outbox).
+	// rt.Events emits into them and the SDK forwards them.
+	Streams []events.Stream
+	// Subscribes says the module implements events.Subscriber; it needs Migrations (the inbox).
+	Subscribes bool
 	// New builds the module from its runtime. It must not read the process environment, start listeners, initialise
 	// process-wide state or exit the process: everything comes from rt.
 	New func(rt *runtime.Runtime) (Module, error)

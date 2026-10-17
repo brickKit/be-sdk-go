@@ -13,7 +13,10 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/clock"
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/db"
+	"github.com/brickKit/be-sdk-go/v3/events"
+	"github.com/brickKit/be-sdk-go/v3/events/bus"
 	"github.com/brickKit/be-sdk-go/v3/internal/host"
+	"github.com/brickKit/be-sdk-go/v3/obs"
 )
 
 // ListenFunc opens a listener.
@@ -41,7 +44,18 @@ func serve(ctx context.Context, def component.Definition, o Options) int {
 		defer pool.Close()
 		database = db.NewDB(def.ID, pool, s)
 	}
-	m, err := host.Build(ctx, def, values, o.Env, o.Env.ReadFile, o.Stdout, database)
+	var transport events.Transport
+	if len(def.Streams) > 0 || def.Subscribes {
+		// one bus connection per process (protocol 17)
+		blog := obs.NewLogger(obs.Member{ID: def.ID, Version: def.Version}, obs.ParseLevel(values.String("LOG_LEVEL")), o.Stdout)
+		var err error
+		if transport, err = bus.Open(ctx, values.Secret("BUS_URL").Value(), def.ID, blog); err != nil {
+			blog.Error("the bus is not usable", "error", err.Error())
+			return ExitStartupCheck
+		}
+		defer transport.Close()
+	}
+	m, err := host.Build(ctx, def, values, o.Env, o.Env.ReadFile, o.Stdout, database, transport)
 	if err != nil {
 		fmt.Fprintf(o.Stdout, "{\"level\":\"ERROR\",\"component\":%q,\"msg\":%q}\n", def.ID, err.Error())
 		return ExitFailure

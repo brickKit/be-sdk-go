@@ -4,7 +4,8 @@ vet:
 	go vet -tags integration ./...
 test: vet  ## L1: unit tests, protocol vectors, the SDK's own merge-safety check
 	go test -count=1 ./...
-# Needs BE_SDK_TEST_PG_ADMIN, a PostgreSQL 16+ superuser DSN (the assembly project's be-postgres); fails without it.
+# Needs BE_SDK_TEST_PG_ADMIN, a PostgreSQL 16+ superuser DSN (the assembly project's be-postgres), and
+# BE_SDK_TEST_NATS_URL, a JetStream-enabled NATS server (be-nats); fails without them.
 # -p 1: the packages share one test database, its roles and database-level grants.
 test-integration: vet
 	go test -count=1 -p 1 -tags integration ./...

@@ -58,7 +58,8 @@ func msg(stream string, partition int, typ string, data string) events.Message {
 }
 
 func spec(stream, durable string) events.SubscriptionSpec {
-	return events.SubscriptionSpec{Durable: durable, Streams: []string{stream}, MaxDeliver: 3, AckWait: AckWait,
+	// durables are unique per case: some transports keep them in one shared namespace
+	return events.SubscriptionSpec{Durable: events.DurableName("test/"+stream, durable), Streams: []string{stream}, MaxDeliver: 3, AckWait: AckWait,
 		Backoff: []time.Duration{Backoff}}
 }
 

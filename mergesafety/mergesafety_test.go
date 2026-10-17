@@ -62,8 +62,8 @@ func TestFindsEveryKind(t *testing.T) {
 }
 
 // TestSDKIsMergeSafe holds the SDK to the rule it enforces: only the launcher (and config.ProcessEnv, which only the
-// launcher calls) may touch the process; the shell and internal/host are the launcher's other half; the db package is
-// the one place that opens database connections; internal/pgtest only serves the integration tests.
+// launcher calls) may touch the process; the shell and internal/host are the launcher's other half; the db package and
+// the transport adapters are the places that open connections; internal/pgtest only serves the integration tests.
 func TestSDKIsMergeSafe(t *testing.T) {
 	findings, err := CheckTree("..", "launcher", "shell", "internal/host", "internal/pgtest", "mergesafety")
 	require.NoError(t, err)
@@ -77,6 +77,10 @@ func TestSDKIsMergeSafe(t *testing.T) {
 		}
 		if filepath.Base(filepath.Dir(f.Pos.Filename)) == "db" && strings.HasSuffix(f.Why, "use the runtime's database") {
 			continue // the SDK's own pools and the migrate entry's connections
+		}
+		if dir := filepath.Base(filepath.Dir(f.Pos.Filename)); (dir == "jetstream" || dir == "pgqueue") &&
+			(strings.HasSuffix(f.Why, "use the runtime's bus") || strings.HasSuffix(f.Why, "use the runtime's database")) {
+			continue // the SDK's transport adapters: one bus connection per process, opened by the launcher or shell
 		}
 		if filepath.Base(filepath.Dir(f.Pos.Filename)) == "calls" && strings.HasSuffix(f.Why, "use rt.GRPC") {
 			continue // the SDK's own client connections
