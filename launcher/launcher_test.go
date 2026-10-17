@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	protocol "github.com/brickKit/be-protocol/v3"
 	"io"
 	"net"
 	"net/http"
@@ -141,7 +142,7 @@ func TestServeReadyAndGracefulStop(t *testing.T) {
 	var desc map[string]any
 	require.NoError(t, json.Unmarshal(body, &desc))
 	assert.Equal(t, "demo/alpha", desc["component_id"])
-	assert.Equal(t, "3.0.0-alpha.1", desc["protocol"])
+	assert.Equal(t, protocol.Version, desc["protocol"], "the version of the protocol the SDK pins")
 
 	slow := make(chan int, 1)
 	go func() { c, _ := get(t, base+"/api/slow"); slow <- c }()

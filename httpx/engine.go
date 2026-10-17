@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/errs"
@@ -170,7 +171,8 @@ func serve(g *gin.Context, d Deps, r Route, duration *prometheus.HistogramVec) {
 	if auth := req.Header.Get("Authorization"); auth != "" {
 		ctx = reqctx.WithUserCredential(ctx, auth)
 	}
-	ctx, span := d.Tracer.Start(ctx, r.Method+" "+r.Path, trace.WithSpanKind(trace.SpanKindServer))
+	template := Template(r.Path)
+	ctx, span := d.Tracer.Start(ctx, r.Method+" "+template, trace.WithSpanKind(trace.SpanKindServer))
 	defer span.End()
 	traceID := span.SpanContext().TraceID().String()
 	log := d.Logger.With("request_id", rid, "trace_id", traceID)
@@ -211,7 +213,19 @@ func serve(g *gin.Context, d Deps, r Route, duration *prometheus.HistogramVec) {
 	}
 	status := g.Writer.Status()
 	elapsed := time.Since(start)
-	duration.WithLabelValues(r.Method, r.Path, strconv.Itoa(status)).Observe(elapsed.Seconds())
-	log.Log(ctx, errs.AccessLogLevel(status), "access", "method", r.Method, "route", r.Path, "status", status,
+	duration.WithLabelValues(r.Method, template, strconv.Itoa(status)).Observe(elapsed.Seconds())
+	log.Log(ctx, errs.AccessLogLevel(status), "access", "method", r.Method, "route", template, "status", status,
 		"duration_ms", elapsed.Milliseconds())
+}
+
+// Template is a route's path in the OpenAPI form every language reports (P10.3): gin's :id and *rest become {id}
+// and {rest}, so one route is one series on a dashboard whatever language serves it.
+func Template(path string) string {
+	parts := strings.Split(path, "/")
+	for i, p := range parts {
+		if strings.HasPrefix(p, ":") || strings.HasPrefix(p, "*") {
+			parts[i] = "{" + p[1:] + "}"
+		}
+	}
+	return strings.Join(parts, "/")
 }

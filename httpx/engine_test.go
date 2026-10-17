@@ -195,3 +195,26 @@ func TestPlatformEndpoints(t *testing.T) {
 	assert.Contains(t, metrics, `be_http_server_duration_seconds_count{method="GET",route="/api/x",status="204"} 1`)
 	assert.Contains(t, h.logs.String(), `"msg":"access"`)
 }
+
+func TestMetricsAndAccessLinesOfChapter10(t *testing.T) { // P10.2, P10.3, P10.6
+	var rs Routes
+	rs.GET("/api/things/:id", "op", func(c *Context) error { return c.NoContent(204) })
+	h := newHarness(t, &rs)
+	h.do("GET", "/api/things/7", nil, map[string]string{"Authorization": "Bearer secret-token-xyz"})
+	metrics := h.do("GET", "/metrics", nil, nil).Body.String()
+	for _, le := range []string{"0.005", "0.01", "0.025", "0.05", "0.1", "0.25", "0.5", "1", "2.5", "5", "10", "+Inf"} {
+		assert.Contains(t, metrics, `be_http_server_duration_seconds_bucket{method="GET",route="/api/things/{id}",status="204",le="`+le+`"}`)
+	}
+	var access map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(h.logs.String()), "\n") {
+		var r map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &r))
+		if r["msg"] == "access" {
+			access = r
+		}
+	}
+	require.NotNil(t, access)
+	assert.Equal(t, "/api/things/{id}", access["route"], "the template in the OpenAPI form, not the path")
+	assert.Regexp(t, `^[0-9a-f]{32}$`, access["trace_id"])
+	assert.NotContains(t, h.logs.String(), "secret-token-xyz") // P10.4
+}

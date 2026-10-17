@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.1",
+  "protocol": "3.0.0-alpha.2",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -22,6 +22,15 @@
           "rule": "P1.16",
           "reason": "容器里作为 1 号进程响应 SIGTERM：第 0 步已在容器中观察到，SDK 的真实镜像验证在第 4 步"
         }
+      ]
+    },
+    "observability": {
+      "status": "verified",
+      "evidence": [
+        "obs.TestLogLinesCarryUTCTimeAndTheMember",
+        "httpx.TestMetricsAndAccessLinesOfChapter10",
+        "httpx.TestPlatformEndpoints",
+        "shell.TestHostsMembersOnTheirOwnPorts"
       ]
     },
     "shell": {
