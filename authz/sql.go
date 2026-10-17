@@ -1,6 +1,8 @@
 package authz
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strconv"
@@ -17,7 +19,10 @@ type Plan struct {
 	Where string
 	Args  []any
 	Hits  []string
-	sets  [][]string
+	// Digest identifies the plan: the subject's normalized segments for the list and the resource definition (a
+	// cursor carries it; a different digest means the authorization changed, security 07).
+	Digest string
+	sets   [][]string
 }
 
 // Fields returns a row's readable fields from its hit bitmap (never a secret field).
@@ -173,6 +178,7 @@ func Compile(r *Resource, segs []Segment, op, principal string, at time.Time, al
 	}
 	p := &Plan{Where: orAll(viewPreds)}
 	fieldSegs, hitPreds := view, viewPreds
+	used := view // every segment the plan depends on
 	if op != r.ViewOperation {
 		opSegs := active(op)
 		opPreds, err := c.union(opSegs)
@@ -181,6 +187,7 @@ func Compile(r *Resource, segs []Segment, op, principal string, at time.Time, al
 		}
 		p.Where = p.Where + " AND " + orAll(opPreds)
 		fieldSegs, hitPreds = opSegs, opPreds
+		used = append(append([]Segment{}, view...), opSegs...)
 	}
 	p.Hits = hitPreds
 	for _, s := range fieldSegs {
@@ -193,5 +200,39 @@ func Compile(r *Resource, segs []Segment, op, principal string, at time.Time, al
 		p.sets = append(p.sets, fs)
 	}
 	p.Args = c.args
+	digests := []string{}
+	for _, s := range used {
+		d, err := s.Digest()
+		if err != nil {
+			return nil, err
+		}
+		digests = append(digests, d)
+	}
+	sort.Strings(digests)
+	rd, err := r.Digest()
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte(strings.Join(append(digests, rd, op), "\n")))
+	p.Digest = hex.EncodeToString(sum[:16])
 	return p, nil
+}
+
+// ReadableEverywhere reports whether every segment of the plan reads the field: then every visible row can be
+// filtered, sorted or searched by it without revealing it (security 07's sufficient condition, simplified to
+// one segment per row: P9.4).
+func (p *Plan) ReadableEverywhere(field string) bool {
+	if len(p.sets) == 0 {
+		return false
+	}
+	for _, set := range p.sets {
+		found := false
+		for _, f := range set {
+			found = found || f == field
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
