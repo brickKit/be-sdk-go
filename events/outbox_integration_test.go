@@ -9,12 +9,11 @@ import (
 	"sort"
 	"sync"
 	"testing"
-	"testing/fstest"
 	"time"
 
-	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/ids"
+	"github.com/brickKit/be-sdk-go/v3/internal/dbtest"
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
@@ -24,26 +23,7 @@ import (
 var stock = Stream{Name: "demo.stock", Partitions: 2}
 
 // source provisions and migrates a producer schema and returns its handle and an admin connection to it.
-func source(t *testing.T, name string) (*db.DB, *pgx.Conn) {
-	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
-	pgtest.Member(t, name, "")
-	env := pgtest.MemberEnv(host, port, name)
-	values, problems := config.Parse(db.MigrateKeys(), config.Map(env))
-	require.Empty(t, problems)
-	mc, problems := db.MigrateConfigFrom("demo/"+name, values, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	require.Empty(t, problems)
-	require.NoError(t, db.Migrate(context.Background(), mc, db.SDKMigrations(), db.MigrationSet{Name: "demo/" + name,
-		Table: "schema_migrations", Files: fstest.MapFS{"0001_items.up.sql": {Data: []byte("CREATE TABLE items (id uuid PRIMARY KEY);")}}}))
-	s := db.SettingsFrom(values)
-	s.Foreground, s.Background = 16, 16
-	pool, err := db.Open(context.Background(), db.PoolConfig{Target: s.Target, User: s.User, Password: s.Password,
-		AppName: "demo/" + name, MaxConns: 32, Prepared: true})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
-	admin := pgtest.Admin(t, pgtest.Database)
-	pgtest.Exec(t, admin, "SET search_path = "+name)
-	return db.NewDB("demo/"+name, pool, s), admin
-}
+func source(t *testing.T, name string) (*db.DB, *pgx.Conn) { return dbtest.Schema(t, name, nil) }
 
 func emit(t *testing.T, d *db.DB, p *Producer, n int) {
 	for i := 0; i < n; i++ {

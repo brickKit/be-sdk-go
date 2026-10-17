@@ -18,7 +18,7 @@ func TestDependencyAddresses(t *testing.T) {
 		"ERP_INVENTORY_ENDPOINT":      "http://erp-inventory-3-0-0:8086",
 		"ERP_INVENTORY_GRPC_ENDPOINT": "http://erp-inventory-3-0-0:9096",
 		"MDM_PARTNER_ENDPOINT":        "",
-	}, nil, nil, nil)
+	}, nil, nil, nil, nil)
 	ep, ok := rt.Dependency("erp/inventory")
 	assert.True(t, ok)
 	assert.Equal(t, "erp-inventory-3-0-0:8086", ep.Host)

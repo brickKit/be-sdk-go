@@ -3,7 +3,7 @@ module github.com/brickKit/be-sdk-go/v3
 go 1.26.0
 
 require (
-	github.com/brickKit/be-protocol/v3 v3.0.0-20261017183408-beedad1a19b6
+	github.com/brickKit/be-protocol/v3 v3.0.0-20261017184534-0c3b12982dc0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/google/uuid v1.6.0

@@ -24,6 +24,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
+	"github.com/brickKit/be-sdk-go/v3/work"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -83,6 +84,8 @@ type Member struct {
 	consumers []*events.Consumer
 	subs      []events.Subscription
 	transport events.Transport
+	runner    *work.Runner
+	hasJobs   bool
 	state     atomic.Value
 	reread    func(string) ([]byte, error)
 }
@@ -131,7 +134,10 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 			Impl: values.String("IMPLEMENTATION_INSTANCE"), Log: m.Logger}
 	}
 	m.transport = transport
-	rt := runtime.New(member, values, m.Logger, m.Registry, tp.Tracer(def.ID), addresses, database, m.Outbound, producer)
+	if database != nil {
+		m.runner = work.NewRunner(database, def.ID, m.Logger)
+	}
+	rt := runtime.New(member, values, m.Logger, m.Registry, tp.Tracer(def.ID), addresses, database, m.Outbound, producer, m.runner)
 	if m.Module, err = newModule(def, rt); err != nil {
 		return nil, fmt.Errorf("the module could not be built: %w", err)
 	}
@@ -146,6 +152,19 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		}}, &routes)
 	if err != nil {
 		return nil, fmt.Errorf("the user surface could not be built: %w", err)
+	}
+	if wk, ok := m.Module.(work.Worker); ok {
+		if m.runner == nil {
+			return nil, errors.New("the module has background jobs but the component has no database (Migrations)")
+		}
+		var jobs work.Jobs
+		if err := wk.Jobs(&jobs); err != nil {
+			return nil, fmt.Errorf("the module's jobs could not be registered: %w", err)
+		}
+		if err := m.runner.AddAll(&jobs); err != nil {
+			return nil, err
+		}
+		m.hasJobs = true
 	}
 	if sub, ok := m.Module.(events.Subscriber); ok {
 		if !def.Subscribes {
@@ -200,6 +219,11 @@ func (m *Member) Start(bg context.Context) error {
 			return err
 		}
 	}
+	if m.hasJobs {
+		if err := m.runner.Start(bg); err != nil {
+			return err
+		}
+	}
 	for _, c := range m.consumers {
 		sub, err := m.transport.Subscribe(bg, c.Spec(), c.Handle)
 		if err != nil {
@@ -216,6 +240,9 @@ func (m *Member) Stop(ctx context.Context) error {
 	defer m.Outbound.Close()
 	for _, s := range m.subs {
 		_ = s.Stop() // the events in hand finish; the rest stay with the transport
+	}
+	if m.hasJobs {
+		m.runner.Stop() // handlers were cancelled with the background context; their leases are released
 	}
 	if s, ok := m.Module.(component.Stopper); ok {
 		return s.Stop(ctx)
