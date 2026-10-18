@@ -315,3 +315,64 @@ func TestTheCommitWakesTheForwarder(t *testing.T) { // P6.29
 		t.Fatal("not published within 5 s: the forwarder waited for its poll")
 	}
 }
+
+func TestAWakeForwardsItsPartitionAndNeverPostponesThePoll(t *testing.T) { // P6.29
+	// a wake forwards only the partitions the commit wrote to; rows another replica wrote elsewhere are the poll's,
+	// and the poll keeps its pace however often this member's commits wake the forwarder
+	d, _ := source(t, "evsrc10")
+	two := Stream{Name: "demo.stock", Partitions: 2}
+	mine, err := NewProducer("demo/evsrc10", []Stream{two}, nil)
+	require.NoError(t, err)
+	theirs, err := NewProducer("demo/evsrc10", []Stream{two}, nil) // another replica's: it wakes no one here
+	require.NoError(t, err)
+	in := func(part int) string {
+		for {
+			if id := ids.New().String(); two.PartitionOf(id) == part {
+				return id
+			}
+		}
+	}
+	write := func(p *Producer, id string) {
+		require.NoError(t, d.Tx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+			if _, err := tx.Exec(ctx, "INSERT INTO items VALUES ($1)", id); err != nil {
+				return err
+			}
+			_, err := p.Emit(ctx, tx, "demo.stock", Event{Type: "demo.stock.moved.v1", RecordID: id, Version: 1,
+				Projection: Full})
+			return err
+		}))
+	}
+	tr := NewMemory(0)
+	f := &Forwarder{DB: d, Producer: mine, Transport: tr, Source: "demo/evsrc10", Impl: ids.New().String(),
+		Log: quietLog(), Poll: 400 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, f.Start(ctx))
+	got := make(chan string, 1000)
+	sub, err := tr.Subscribe(ctx, SubscriptionSpec{Durable: "pace", Streams: []string{"demo.stock"}},
+		func(_ context.Context, del *Delivery) Outcome { got <- del.Headers[HeaderSubject]; return Ack })
+	require.NoError(t, err)
+	defer sub.Stop()
+	time.Sleep(100 * time.Millisecond) // the first poll is over
+
+	theirsID := in(1)
+	write(theirs, theirsID)
+	written := time.Now()
+	stop := time.After(2 * time.Second)
+	tick := time.NewTicker(20 * time.Millisecond) // this member commits to partition 0 far more often than the poll
+	defer tick.Stop()
+	var seenAt time.Time
+	for seenAt.IsZero() {
+		select {
+		case <-tick.C:
+			write(mine, in(0))
+		case id := <-got:
+			if id == theirsID {
+				seenAt = time.Now()
+			}
+		case <-stop:
+			t.Fatal("the other replica's row was not forwarded within 2 s: the wakes postponed the poll")
+		}
+	}
+	assert.Less(t, seenAt.Sub(written), time.Second, "forwarded by the poll, at its own pace")
+}

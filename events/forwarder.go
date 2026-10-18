@@ -35,6 +35,8 @@ type Forwarder struct {
 	Poll      time.Duration
 	Batch     int
 	owner     string
+	mu        sync.Mutex
+	held      map[streamPart]time.Time // until when this forwarder holds each partition's lease, by its own clock
 }
 
 func (f *Forwarder) defaults() {
@@ -50,6 +52,11 @@ func (f *Forwarder) defaults() {
 	if f.owner == "" {
 		f.owner = ids.New().String()
 	}
+	f.mu.Lock()
+	if f.held == nil {
+		f.held = map[streamPart]time.Time{}
+	}
+	f.mu.Unlock()
 }
 
 // Start creates the streams' storage, then forwards in the background until ctx ends.
@@ -64,67 +71,121 @@ func (f *Forwarder) Start(ctx context.Context) error {
 	return nil
 }
 
+// run forwards on two signals (P6.29): a commit of this member wakes it for the partitions that commit wrote to, and
+// the poll takes every partition at its own pace, for other replicas' rows and retries. A wake never postpones the
+// poll: under a steady stream of commits it would never come.
 func (f *Forwarder) run(ctx context.Context) {
 	t := time.NewTimer(0)
 	defer t.Stop()
 	for {
+		var parts []streamPart
+		poll := false
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-		case <-f.Producer.written: // a commit of this member wrote rows (P6.29); the poll covers other replicas'
+			parts, poll = f.all(), true
+		case <-f.Producer.written:
+			parts = f.Producer.takeWritten()
 		}
-		n, err := f.Once(ctx)
-		if err != nil && ctx.Err() == nil {
+		if _, err := f.forward(ctx, parts); err != nil && ctx.Err() == nil {
 			f.Log.Warn("forwarding events failed; retrying", "error", err.Error())
 		}
-		if n == 0 || err != nil {
+		if poll {
 			t.Reset(f.Poll)
-		} else {
-			t.Reset(0)
 		}
 	}
 }
 
-// Once forwards every partition once and returns how many messages were published.
+// Once forwards every partition, again while one had a full batch, and returns how many messages were published.
 func (f *Forwarder) Once(ctx context.Context) (int, error) {
 	f.defaults()
-	total := 0
-	var firstErr error
+	return f.forward(ctx, f.all())
+}
+
+func (f *Forwarder) all() []streamPart {
+	var out []streamPart
 	for _, s := range f.Producer.Streams() {
 		for p := 0; p < s.Partitions; p++ {
-			n, err := f.partition(ctx, s, p)
+			out = append(out, streamPart{s.Name, p})
+		}
+	}
+	return out
+}
+
+// forward forwards parts, then again the ones whose batch was full, until none is; it returns how many messages were
+// published and the first error.
+func (f *Forwarder) forward(ctx context.Context, parts []streamPart) (int, error) {
+	total := 0
+	var firstErr error
+	for len(parts) > 0 && ctx.Err() == nil {
+		var full []streamPart
+		for _, sp := range parts {
+			n, err := f.partition(ctx, sp)
 			total += n
-			if err != nil && firstErr == nil {
-				firstErr = fmt.Errorf("%s/%d: %w", s.Name, p, err)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("%s/%d: %w", sp.stream, sp.n, err)
+				}
+				continue
+			}
+			if n == f.Batch {
+				full = append(full, sp)
 			}
 		}
+		parts = full
 	}
 	return total, firstErr
 }
 
-func (f *Forwarder) partition(ctx context.Context, s Stream, p int) (int, error) {
+// lease takes or renews the partition's lease (P6.11), but only once half of it has passed: within its first half
+// this forwarder still holds it, and the lease only reduces contention.
+func (f *Forwarder) lease(ctx context.Context, sp streamPart) (bool, error) {
+	f.mu.Lock()
+	until, ok := f.held[sp]
+	f.mu.Unlock()
+	if ok && time.Until(until) > f.Lease/2 {
+		return true, nil
+	}
+	asked := time.Now() // the database's lease ends Lease after it granted it, so no sooner than this plus Lease
 	held := false
 	err := f.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO be_outbox_partition (stream, partition) VALUES ($1, $2)
-			ON CONFLICT DO NOTHING`, s.Name, p); err != nil {
+			ON CONFLICT DO NOTHING`, sp.stream, sp.n); err != nil {
 			return err
 		}
 		tag, err := tx.Exec(ctx, `UPDATE be_outbox_partition SET lease_owner = $3,
 			lease_until = clock_timestamp() + make_interval(secs => $4)
 			WHERE stream = $1 AND partition = $2
 			  AND (lease_until IS NULL OR lease_until < clock_timestamp() OR lease_owner = $3)`,
-			s.Name, p, f.owner, f.Lease.Seconds())
+			sp.stream, sp.n, f.owner, f.Lease.Seconds())
 		held = err == nil && tag.RowsAffected() == 1
 		return err
 	})
-	if err != nil || !held {
+	f.mu.Lock()
+	if held {
+		f.held[sp] = asked.Add(f.Lease)
+	} else {
+		delete(f.held, sp)
+	}
+	f.mu.Unlock()
+	return held, err
+}
+
+func (f *Forwarder) partition(ctx context.Context, sp streamPart) (int, error) {
+	if held, err := f.lease(ctx, sp); err != nil || !held {
 		return 0, err // another replica holds the lease: it only reduces contention (P6.11)
 	}
-	if _, err := Number(ctx, f.DB, s.Name, p, f.Batch); err != nil {
-		return 0, err
-	}
-	rows, err := f.unpublished(ctx, s.Name, p)
+	var rows []Row
+	err := f.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+		// numbering and reading what is numbered and unpublished in one transaction: one round trip fewer an event
+		if _, err := numberIn(ctx, tx, sp.stream, sp.n, f.Batch); err != nil {
+			return err
+		}
+		var err error
+		rows, err = unpublishedIn(ctx, tx, sp.stream, sp.n, f.Batch)
+		return err
+	}, numberLimits...)
 	if err != nil || len(rows) == 0 {
 		return 0, err
 	}
@@ -217,40 +278,37 @@ func (f *Forwarder) message(ctx context.Context, r Row) (Message, bool, error) {
 	return Message{Subject: Subject(r.Stream, r.Partition, r.Type), Headers: r.Headers(f.Source, f.Impl), Data: payload}, claim, nil
 }
 
-func (f *Forwarder) unpublished(ctx context.Context, stream string, p int) ([]Row, error) {
+// unpublishedIn reads a partition's numbered, unpublished rows in position order, at most batch of them.
+func unpublishedIn(ctx context.Context, tx db.Tx, stream string, p, batch int) ([]Row, error) {
+	rows, err := tx.Query(ctx, `SELECT ord, event_id::text, type, occurred_at, record_id, version, projection,
+		coalesce(legal_entity, ''), subjects, coalesce(causation::text, ''), hops, trace, payload, digest, seq,
+		epoch_generation, epoch_timeline
+		FROM be_outbox WHERE stream = $1 AND partition = $2 AND seq IS NOT NULL AND published_at IS NULL
+		ORDER BY epoch_generation, epoch_timeline, seq LIMIT $3`, stream, p, batch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	var out []Row
-	err := f.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
-		out = out[:0]
-		rows, err := tx.Query(ctx, `SELECT ord, event_id::text, type, occurred_at, record_id, version, projection,
-			coalesce(legal_entity, ''), subjects, coalesce(causation::text, ''), hops, trace, payload, digest, seq,
-			epoch_generation, epoch_timeline
-			FROM be_outbox WHERE stream = $1 AND partition = $2 AND seq IS NOT NULL AND published_at IS NULL
-			ORDER BY epoch_generation, epoch_timeline, seq LIMIT $3`, stream, p, f.Batch)
-		if err != nil {
-			return err
+	for rows.Next() {
+		r := Row{Stream: stream, Partition: p}
+		var subjects, trace []byte
+		var proj string
+		if err := rows.Scan(&r.Ord, &r.EventID, &r.Type, &r.OccurredAt, &r.RecordID, &r.Version, &proj,
+			&r.LegalEntity, &subjects, &r.Causation, &r.Hops, &trace, &r.Payload, &r.Digest, &r.Seq,
+			&r.Epoch.Generation, &r.Epoch.Timeline); err != nil {
+			return nil, err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			r := Row{Stream: stream, Partition: p}
-			var subjects, trace []byte
-			var proj string
-			if err := rows.Scan(&r.Ord, &r.EventID, &r.Type, &r.OccurredAt, &r.RecordID, &r.Version, &proj,
-				&r.LegalEntity, &subjects, &r.Causation, &r.Hops, &trace, &r.Payload, &r.Digest, &r.Seq,
-				&r.Epoch.Generation, &r.Epoch.Timeline); err != nil {
-				return err
-			}
-			r.Projection = Projection(proj)
-			if subjects != nil {
-				_ = json.Unmarshal(subjects, &r.Subjects)
-			}
-			if trace != nil {
-				_ = json.Unmarshal(trace, &r.Trace)
-			}
-			out = append(out, r)
+		r.Projection = Projection(proj)
+		if subjects != nil {
+			_ = json.Unmarshal(subjects, &r.Subjects)
 		}
-		return rows.Err()
-	})
-	return out, err
+		if trace != nil {
+			_ = json.Unmarshal(trace, &r.Trace)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func (f *Forwarder) markPublished(ctx context.Context, ords, claimed []int64) error {
