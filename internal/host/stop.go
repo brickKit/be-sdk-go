@@ -82,6 +82,16 @@ type Server interface {
 	Name() string
 }
 
+// ServerIdleTimeout keeps an idle keep-alive connection open longer than any caller's client does (P1.20): a server
+// that closes first races the client reusing the connection, and a request that cannot be retried fails with EOF.
+const ServerIdleTimeout = 120 * time.Second
+
+// NewHTTPServer is the HTTP server of every surface that listens: request headers within 10 s, idle connections kept
+// for ServerIdleTimeout.
+func NewHTTPServer(h http.Handler) *http.Server {
+	return &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: ServerIdleTimeout}
+}
+
 // HTTPServer adapts an *http.Server.
 type HTTPServer struct{ *http.Server }
 
