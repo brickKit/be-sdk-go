@@ -285,7 +285,8 @@
       "status": "verified",
       "evidence": [
         "grpcx.TestOnlyPermittedComponentsMayCall",
-        "grpcx.TestConnectionsWithoutAValidIdentityAreRefused"
+        "grpcx.TestConnectionsWithoutAValidIdentityAreRefused",
+        "grpcx.TestClientsSendTheTargetsDerivedNameAsSNI"
       ]
     },
     "authz-definitions": {

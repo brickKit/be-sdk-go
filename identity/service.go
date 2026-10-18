@@ -172,6 +172,9 @@ func (s *ServiceTLS) ClientConfig(target string) *tls.Config {
 			c, _ := s.current()
 			return c, nil
 		},
+		// the target's derived DNS name as SNI, so a server that picks or checks by name (gRPC core's) sees the one its
+		// certificate carries (P8.5); the identity itself is checked below by its URI SAN
+		ServerName:         DNSName(s.Deployment, target),
 		InsecureSkipVerify: true, // replaced by VerifyPeerCertificate: the identity is a URI SAN, not a host name
 		VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error {
 			id, err := s.verify(raw, x509.ExtKeyUsageServerAuth)

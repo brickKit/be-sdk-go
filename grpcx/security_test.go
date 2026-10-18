@@ -90,3 +90,9 @@ func TestACertificateWithoutTheDerivedDNSNameIsRefused(t *testing.T) { // P8.5
 	_, err := identity.LoadServiceTLS(w.Deployment, "erp/sales", cert, key, ca, os.ReadFile)
 	assert.ErrorContains(t, err, `no DNS name "erp.sales.component.`+w.Deployment+`"`)
 }
+
+func TestClientsSendTheTargetsDerivedNameAsSNI(t *testing.T) { // P8.5: what gRPC core's server matches on
+	w := worldOf(t)
+	cfg := w.TLS(t, "erp/sales").ClientConfig("erp/inventory")
+	assert.Equal(t, identity.DNSName(w.Deployment, "erp/inventory"), cfg.ServerName)
+}

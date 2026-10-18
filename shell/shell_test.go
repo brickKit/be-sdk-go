@@ -160,6 +160,9 @@ func TestHostsMembersOnTheirOwnPorts(t *testing.T) {
 	assert.Contains(t, metrics, `component="demo/alpha"`)
 	assert.Contains(t, metrics, `component="demo/beta"`)
 
+	for _, id := range []string{"demo/alpha", "demo/beta"} { // P1.12: each member says it is ready, as alone
+		assert.Contains(t, stdout.String(), `"component":"`+id+`","version":"0.1.0","event":"ready"`, id)
+	}
 	cancel()
 	assert.Equal(t, 0, <-done)
 	c, _ := get(t, "http://127.0.0.1:"+strconv.Itoa(pa)+"/healthz")

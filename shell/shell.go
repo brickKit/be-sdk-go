@@ -235,6 +235,10 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 			return fail(m.Def.ID, "a member could not start", err)
 		}
 		m.SetState(host.Ready)
+		// each member says it is ready, with its own identity, as it does alone (P1.12; protocol 17: a member alone
+		// and in a shell behaves the same)
+		m.Logger.Info("ready", "event", "ready", "protocol", protocol.Version, "sdk", sdk.Version,
+			"startup_ms", time.Since(started).Milliseconds())
 	}
 	log.Info("ready", "event", "ready", "protocol", protocol.Version, "sdk", sdk.Version, "members", len(members),
 		"startup_ms", time.Since(started).Milliseconds())
