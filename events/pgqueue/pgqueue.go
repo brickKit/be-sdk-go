@@ -44,7 +44,14 @@ type Transport struct {
 	poll    time.Duration
 	onError atomic.Pointer[func(error)]
 	stop    context.CancelFunc
+	closing context.Context // ends when the transport closes
 	purged  chan struct{}
+
+	wakeMu     sync.Mutex // the subscriptions' wakers (P6.30, wake.go)
+	wakers     []*waker
+	listenOnce sync.Once
+	listening  atomic.Bool
+	listened   chan struct{}
 }
 
 // SetOnError sets where the errors of the background readers and the purge go (logged by the runtime); unset:
@@ -129,10 +136,10 @@ func Connect(ctx context.Context, busURL, name string, maxConns int32) (*Transpo
 	if err != nil {
 		return nil, fmt.Errorf("bus %s: %w", redact(busURL), err)
 	}
-	t := &Transport{pool: pool, cfg: cfg, schema: schema, poll: DefaultPoll, purged: make(chan struct{})}
-	var purgeCtx context.Context
-	purgeCtx, t.stop = context.WithCancel(context.Background())
-	go t.purgeLoop(purgeCtx)
+	t := &Transport{pool: pool, cfg: cfg, schema: schema, poll: DefaultPoll, purged: make(chan struct{}),
+		listened: make(chan struct{})}
+	t.closing, t.stop = context.WithCancel(context.Background())
+	go t.purgeLoop(t.closing)
 	return t, nil
 }
 
@@ -157,6 +164,7 @@ func size(m events.Message) int {
 }
 
 // Publish implements events.Transport: the insert's commit is the acknowledgement; a repeated message ID is a no-op.
+// A new message NOTIFYs the readers in the same statement (P6.30); NOTIFY is delivered on commit.
 func (t *Transport) Publish(ctx context.Context, m events.Message) error {
 	if size(m) > MaxMessage {
 		return events.ErrTooLarge
@@ -169,17 +177,19 @@ func (t *Transport) Publish(ctx context.Context, m events.Message) error {
 	if m.ID() != "" {
 		id = m.ID()
 	}
-	_, err = t.pool.Exec(ctx, "INSERT INTO "+t.t("be_bus_message")+` (msg_id, subject, headers, data) VALUES ($1, $2, $3, $4)
-		ON CONFLICT (msg_id) WHERE msg_id IS NOT NULL DO NOTHING`, id, m.Subject, headers, m.Data)
+	_, err = t.pool.Exec(ctx, `WITH m AS (INSERT INTO `+t.t("be_bus_message")+` (msg_id, subject, headers, data)
+		VALUES ($1, $2, $3, $4) ON CONFLICT (msg_id) WHERE msg_id IS NOT NULL DO NOTHING RETURNING 1)
+		SELECT pg_notify($5, $2) FROM m`, id, m.Subject, headers, m.Data, wakeChan)
 	return err
 }
 
 type subscription struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	done   func()
 }
 
-func (s *subscription) Stop() error { s.cancel(); s.wg.Wait(); return nil }
+func (s *subscription) Stop() error { s.cancel(); s.wg.Wait(); s.done(); return nil }
 
 // Subscribe implements events.Transport: the durable is created with spec when missing, otherwise its stored
 // settings apply.
@@ -203,10 +213,11 @@ func (t *Transport) Subscribe(ctx context.Context, spec events.SubscriptionSpec,
 		return nil, err
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
-	sub := &subscription{cancel: cancel}
+	w := t.register(stored)
+	sub := &subscription{cancel: cancel, done: func() { t.unregister(w) }}
 	for i := 0; i < stored.Concurrency; i++ {
 		sub.wg.Add(1)
-		go func() { defer sub.wg.Done(); t.work(runCtx, stored, h) }()
+		go func() { defer sub.wg.Done(); t.work(runCtx, stored, w, h) }()
 	}
 	return sub, nil
 }
@@ -248,9 +259,12 @@ func matches(s events.SubscriptionSpec, subject string) bool {
 // work claims first and moves the read position only when nothing is due (P6.28): one advance queues a batch, which
 // the next claims take, so a message costs its claim and its outcome; advancing before every claim cost a
 // transaction of several round trips a message.
-func (t *Transport) work(ctx context.Context, s events.SubscriptionSpec, h events.Handler) {
+// An idle round waits for the poll or the subscription's wake (P6.30), taken before the claim so that a wake during the
+// claim is not missed.
+func (t *Transport) work(ctx context.Context, s events.SubscriptionSpec, w *waker, h events.Handler) {
 	var gaveUp time.Time
 	for ctx.Err() == nil {
+		woken := w.current()
 		if time.Since(gaveUp) >= giveUpEvery {
 			if err := t.giveUp(ctx, s); err != nil && ctx.Err() == nil {
 				t.report(fmt.Errorf("bus subscription %s: %w", s.Durable, err))
@@ -272,8 +286,10 @@ func (t *Transport) work(ctx context.Context, s events.SubscriptionSpec, h event
 			}
 			// the position moved: more may follow at once, so only an idle round waits (the queue is shared by every
 			// stream, and waiting after each batch read past capped a subscription at batch/poll messages a second)
-			if err != nil || !moved {
+			if err != nil {
 				sleep(ctx, t.poll)
+			} else if !moved {
+				idle(ctx, t.poll, woken)
 			}
 			continue
 		}
@@ -473,7 +489,15 @@ func (t *Transport) Purge(ctx context.Context, retention time.Duration) (int64, 
 }
 
 // Close implements events.Transport.
-func (t *Transport) Close() error { t.stop(); <-t.purged; t.pool.Close(); return nil }
+func (t *Transport) Close() error {
+	t.stop()
+	<-t.purged
+	if t.listening.Load() {
+		<-t.listened
+	}
+	t.pool.Close()
+	return nil
+}
 
 // Migrate creates or updates the queue's tables in the bus schema, as the bus owner (provisioning, tests).
 func Migrate(ctx context.Context, ownerURL string, log *slog.Logger) error {
