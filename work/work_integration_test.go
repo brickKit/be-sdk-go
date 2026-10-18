@@ -307,3 +307,46 @@ func TestARunPastItsDeadlineIsRetried(t *testing.T) {
 	r.Stop()
 	assert.Equal(t, int32(2), runs.Load(), "retried after the timeout without waiting for the 30 s lease")
 }
+
+func TestACommitWakesAWorkerWithoutWaitingForThePoll(t *testing.T) { // P7.21
+	d, _ := dbtest.Schema(t, "work8", nil)
+	done := make(chan time.Time, 8)
+	job := Job{Name: "quick", Kind: Queue, Effect: Local,
+		Handle: func(context.Context, *Run) error { done <- time.Now(); return nil }}
+	r := replica(d, 30*time.Second, job)
+	r.Poll = time.Hour // only the wake can pick the items up
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { cancel(); r.Stop() }()
+	require.NoError(t, r.Start(ctx))
+	time.Sleep(100 * time.Millisecond) // the first poll at start has found nothing
+
+	committed := time.Now()
+	require.NoError(t, d.Tx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+		for range 3 {
+			if _, err := r.Enqueue(ctx, tx, "quick", nil); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+	for range 3 {
+		select {
+		case at := <-done:
+			assert.Less(t, at.Sub(committed), 2*time.Second, "run on the commit's wake, not on the hourly poll")
+		case <-time.After(5 * time.Second):
+			t.Fatal("an item enqueued by a committed transaction did not run without a poll")
+		}
+	}
+
+	// a rolled-back transaction wakes nothing and leaves nothing to run
+	require.Error(t, d.Tx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+		_, err := r.Enqueue(ctx, tx, "quick", nil)
+		require.NoError(t, err)
+		return errors.New("business rollback")
+	}))
+	select {
+	case <-done:
+		t.Fatal("a rolled-back item ran")
+	case <-time.After(300 * time.Millisecond):
+	}
+}

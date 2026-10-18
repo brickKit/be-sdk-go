@@ -28,6 +28,7 @@ type Runner struct {
 	names   []string
 	mu      sync.Mutex
 	running map[string]*Run
+	ready   chan struct{} // one signal per item a commit enqueued, at most one per worker (P7.21)
 	wg      sync.WaitGroup
 	stopped chan struct{}
 }
@@ -35,7 +36,8 @@ type Runner struct {
 // NewRunner creates a member's runner; jobs are added before Start.
 func NewRunner(d *db.DB, member string, log *slog.Logger) *Runner {
 	return &Runner{DB: d, Holder: member + "/" + ids.New().String(), Log: log, Lease: DefaultLease,
-		Poll: 500 * time.Millisecond, Concurrency: 4, jobs: map[string]*Job{}, running: map[string]*Run{}}
+		Poll: 500 * time.Millisecond, Concurrency: 4, jobs: map[string]*Job{}, running: map[string]*Run{},
+		ready: make(chan struct{}, 4)}
 }
 
 // Add declares jobs (the module's Jobs).
@@ -72,12 +74,28 @@ func (w *Runner) Enqueue(ctx context.Context, tx db.Tx, job string, args any) (s
 	id := ids.New().String()
 	_, err = tx.Exec(ctx, `INSERT INTO be_work_item (id, job, kind, state, max_attempts, effect_class, operation_id, args)
 		VALUES ($1, $2, 'queue', 'pending', $3, $4, $5, $6::jsonb)`, id, job, j.MaxAttempts, string(j.Effect), id+":"+job, string(b))
+	if err == nil {
+		tx.AfterCommit(w.signal)
+	}
 	return id, err
+}
+
+// signal wakes an idle worker once a commit that enqueued an item is visible (P7.21): without it every item waits half
+// a poll (measured: event arrival to the job's call p50 250 ms, p99 500 ms at a 500 ms poll). A full channel means every
+// worker is already woken; the poll covers other replicas' items, retries and takeovers.
+func (w *Runner) signal() {
+	select {
+	case w.ready <- struct{}{}:
+	default:
+	}
 }
 
 // Start runs everything until ctx ends; Stop then waits for the handlers and releases their leases.
 func (w *Runner) Start(ctx context.Context) error {
 	w.stopped = make(chan struct{})
+	if cap(w.ready) != w.Concurrency {
+		w.ready = make(chan struct{}, max(w.Concurrency, 1))
+	}
 	for _, name := range w.names {
 		if j := w.jobs[name]; j.Kind == Singleton {
 			if err := w.ensureSingleton(ctx, j); err != nil {
@@ -86,10 +104,10 @@ func (w *Runner) Start(ctx context.Context) error {
 		}
 	}
 	w.wg.Add(1)
-	go func() { defer w.wg.Done(); w.loop(ctx, time.Second, w.schedule) }()
+	go func() { defer w.wg.Done(); w.loop(ctx, time.Second, nil, w.schedule) }()
 	for i := 0; i < w.Concurrency; i++ {
 		w.wg.Add(1)
-		go func() { defer w.wg.Done(); w.loop(ctx, w.Poll, w.claimAndRun) }()
+		go func() { defer w.wg.Done(); w.loop(ctx, w.Poll, w.ready, w.claimAndRun) }()
 	}
 	for _, j := range w.jobs {
 		if j.Kind == Every {
@@ -97,7 +115,7 @@ func (w *Runner) Start(ctx context.Context) error {
 			w.wg.Add(1)
 			go func() {
 				defer w.wg.Done()
-				w.loop(ctx, j.Interval, func(ctx context.Context) bool {
+				w.loop(ctx, j.Interval, nil, func(ctx context.Context) bool {
 					ctx, cancel := context.WithTimeout(ctx, j.Timeout)
 					defer cancel()
 					if err := safely(func() error { return j.Handle(ctx, nil) }); err != nil && ctx.Err() == nil {
@@ -114,7 +132,8 @@ func (w *Runner) Start(ctx context.Context) error {
 // Stop waits for the loops to end (their context is already cancelled).
 func (w *Runner) Stop() { w.wg.Wait() }
 
-func (w *Runner) loop(ctx context.Context, every time.Duration, fn func(context.Context) bool) {
+// loop runs fn at once, then every interval, at once again while it finds more, and whenever wake signals (nil: never).
+func (w *Runner) loop(ctx context.Context, every time.Duration, wake <-chan struct{}, fn func(context.Context) bool) {
 	t := time.NewTimer(0)
 	defer t.Stop()
 	for {
@@ -122,6 +141,7 @@ func (w *Runner) loop(ctx context.Context, every time.Duration, fn func(context.
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-wake:
 		}
 		if fn(ctx) {
 			t.Reset(0) // there may be more
