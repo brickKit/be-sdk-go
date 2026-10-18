@@ -9,9 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/brickKit/be-sdk-go/v3/config"
 )
 
@@ -32,12 +29,15 @@ func StoreKeys() []config.Key {
 }
 
 // S3Store is the producer side of the claim check: the payload goes to the owner's bucket and prefix, and the
-// reference is a presigned read-only GET (P6.14). Credentials are read at every request, so a rotated file applies.
+// reference is a presigned read-only GET (P6.14). Both requests are signed with the SDK's own SigV4 (sigv4.go) over the
+// member's own transport: through the AWS SDK an upload with presigning cost about 1.2 ms of CPU (2.2 ms with 8 at
+// once), against 0.7 ms (1.2 ms). The secret is read at every upload, so a rotated file applies from the next one.
 type S3Store struct {
-	client  *s3.Client
-	presign *s3.PresignClient
-	bucket  string
-	prefix  string
+	signer *signer
+	client *http.Client
+	bucket string
+	prefix string
+	secret *config.Secret
 }
 
 // NewS3Store builds the store from a member's values; nil without OBJECT_STORE_URL.
@@ -50,37 +50,51 @@ func NewS3Store(v *config.Values) (*S3Store, error) {
 	if v.String("OBJECT_STORE_BUCKET") == "" || v.String("OBJECT_STORE_ACCESS_KEY") == "" || secret == nil {
 		return nil, fmt.Errorf("object storage: OBJECT_STORE_BUCKET, OBJECT_STORE_ACCESS_KEY and OBJECT_STORE_SECRET_KEY go with OBJECT_STORE_URL")
 	}
-	access := v.String("OBJECT_STORE_ACCESS_KEY")
-	creds := aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
-		return credentials.NewStaticCredentialsProvider(access, secret.Value(), "").Retrieve(context.Background())
-	})
-	client := s3.New(s3.Options{Region: v.String("OBJECT_STORE_REGION"), BaseEndpoint: aws.String(url),
-		Credentials: creds, UsePathStyle: true, HTTPClient: &http.Client{Timeout: 30 * time.Second}})
-	return &S3Store{client: client, presign: s3.NewPresignClient(client), bucket: v.String("OBJECT_STORE_BUCKET"),
-		prefix: v.String("OBJECT_STORE_PREFIX")}, nil
+	s, err := newSigner(url, v.String("OBJECT_STORE_REGION"), v.String("OBJECT_STORE_ACCESS_KEY"))
+	if err != nil {
+		return nil, err
+	}
+	return &S3Store{signer: s, client: memberHTTPClient(), bucket: v.String("OBJECT_STORE_BUCKET"),
+		prefix: v.String("OBJECT_STORE_PREFIX"), secret: secret}, nil
 }
 
 // Put implements ClaimStore.
 func (s *S3Store) Put(ctx context.Context, eventID string, data []byte) (string, error) {
 	key := s.prefix + "events/" + eventID
-	if _, err := s.client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key),
-		Body: bytes.NewReader(data), ContentLength: aws.Int64(int64(len(data))),
-		ContentType: aws.String("application/json")}); err != nil {
+	secret := s.secret.Value()
+	u, headers := s.signer.putHeaders(secret, s.bucket, key, sha256Hex(data), "application/json", len(data), time.Now())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, bytes.NewReader(data))
+	if err != nil {
 		return "", fmt.Errorf("object storage: putting %s: %w", key, err)
 	}
-	req, err := s.presign.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)},
-		s3.WithPresignExpires(ClaimTTL))
-	if err != nil {
-		return "", fmt.Errorf("object storage: presigning %s: %w", key, err)
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
-	return req.URL, nil
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("object storage: putting %s: %w", key, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		// the answer says why (a wrong secret, a missing bucket); it never carries the secret
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
+		return "", fmt.Errorf("object storage: putting %s: answered %d: %s", key, resp.StatusCode, b)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body) // the connection goes back to the pool
+	return s.signer.presignGet(secret, s.bucket, key, ClaimTTL, time.Now()), nil
+}
+
+// memberHTTPClient is one member's own client for object storage (never the process-wide default transport).
+func memberHTTPClient() *http.Client {
+	return &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{Proxy: nil, MaxIdleConnsPerHost: ClaimConcurrency * 2,
+		IdleConnTimeout: 90 * time.Second}} // calls.ClientIdleTimeout: below the servers' (P1.20)
 }
 
 // HTTPClaims is the subscriber side: a plain GET of the presigned address, no storage credentials (P6.14).
 type HTTPClaims struct{ Client *http.Client }
 
 // NewHTTPClaims returns the member's own reader (never the process-wide default client).
-func NewHTTPClaims() HTTPClaims { return HTTPClaims{Client: &http.Client{Timeout: 30 * time.Second}} }
+func NewHTTPClaims() HTTPClaims { return HTTPClaims{Client: memberHTTPClient()} }
 
 // Get implements ClaimReader.
 func (h HTTPClaims) Get(ctx context.Context, uri string) ([]byte, error) {
