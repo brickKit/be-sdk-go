@@ -286,3 +286,32 @@ func TestClaimUploadsOverlapAndPublishingKeepsItsOrder(t *testing.T) { // P6.10,
 	defer mu.Unlock()
 	assert.True(t, sort.IntsAreSorted(seqs), "published in position order: %v", seqs)
 }
+
+func TestTheCommitWakesTheForwarder(t *testing.T) { // P6.29
+	// at a low rate every event used to wait for the next poll (about 120 ms at 50/s with a 250 ms poll); the commit
+	// that wrote it now wakes the member's own forwarder
+	d, _ := source(t, "evsrc9")
+	one := Stream{Name: "demo.stock", Partitions: 1}
+	p, err := NewProducer("demo/evsrc9", []Stream{one}, nil)
+	require.NoError(t, err)
+	tr := NewMemory(0)
+	f := &Forwarder{DB: d, Producer: p, Transport: tr, Source: "demo/evsrc9", Impl: "6f1c2d3e-4a5b-4c6d-8e7f-901234567890",
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Poll: 10 * time.Second}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, f.Start(ctx))
+	got := make(chan time.Time, 1)
+	sub, err := tr.Subscribe(ctx, SubscriptionSpec{Durable: "wake", Streams: []string{"demo.stock"}},
+		func(context.Context, *Delivery) Outcome { got <- time.Now(); return Ack })
+	require.NoError(t, err)
+	defer sub.Stop()
+	time.Sleep(200 * time.Millisecond) // the forwarder's first round is over; the next poll is 10 s away
+	written := time.Now()
+	emit(t, d, p, 1)
+	select {
+	case at := <-got:
+		assert.Less(t, at.Sub(written), time.Second, "published right after the commit")
+	case <-time.After(5 * time.Second):
+		t.Fatal("not published within 5 s: the forwarder waited for its poll")
+	}
+}

@@ -48,6 +48,16 @@ func InTx(ctx context.Context) bool { return ctx.Value(txKey{}) != nil }
 type Tx struct {
 	tx     pgx.Tx
 	prefix string
+	after  *[]func()
+}
+
+// AfterCommit runs fn once the transaction has committed, never when it rolls back; a retried transaction keeps only
+// what the attempt that committed registered. Meant for in-process signals, such as waking the outbox forwarder
+// (P6.29): fn must not block or fail.
+func (t Tx) AfterCommit(fn func()) {
+	if t.after != nil {
+		*t.after = append(*t.after, fn)
+	}
 }
 
 // Exec runs a statement.
@@ -184,7 +194,8 @@ func (d *DB) once(ctx context.Context, fn func(context.Context, Tx) error, o txO
 			return err
 		}
 	}
-	if err = fn(context.WithValue(ctx, txKey{}, true), Tx{tx: tx, prefix: d.prefix}); err != nil {
+	var after []func()
+	if err = fn(context.WithValue(ctx, txKey{}, true), Tx{tx: tx, prefix: d.prefix, after: &after}); err != nil {
 		return err
 	}
 	if cutoff, ok := reqctx.Cutoff(ctx); ok {
@@ -199,7 +210,13 @@ func (d *DB) once(ctx context.Context, fn func(context.Context, Tx) error, o txO
 			return err
 		}
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	for _, f := range after {
+		f()
+	}
+	return nil
 }
 
 // CommitWindow is C_commit: the longest time from the pre-commit cutoff check to COMMIT.

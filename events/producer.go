@@ -32,11 +32,12 @@ type Producer struct {
 	source  string
 	streams map[string]Stream
 	claims  ClaimStore
+	written chan struct{} // a commit wrote outbox rows: the member's forwarder starts at once (P6.29)
 }
 
 // NewProducer declares the member's streams.
 func NewProducer(source string, streams []Stream, claims ClaimStore) (*Producer, error) {
-	p := &Producer{source: source, streams: map[string]Stream{}, claims: claims}
+	p := &Producer{source: source, streams: map[string]Stream{}, claims: claims, written: make(chan struct{}, 1)}
 	for _, s := range streams {
 		if err := s.Validate(); err != nil {
 			return nil, err
@@ -120,7 +121,18 @@ func (p *Producer) Emit(ctx context.Context, tx db.Tx, stream string, ev Event) 
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		id, s.Name, s.PartitionOf(ev.RecordID), ev.Type, time.Now().UTC(), ev.RecordID, ev.Version, string(ev.Projection),
 		legal, nullJSON(subjectsJSON), causationArg, hops, nullJSON(traceJSON), payload, Digest(id, payload))
+	if err == nil {
+		tx.AfterCommit(p.wake)
+	}
 	return id, err
+}
+
+// wake tells the forwarder that a commit wrote rows; one pending signal is enough, the forwarder takes all of them.
+func (p *Producer) wake() {
+	select {
+	case p.written <- struct{}{}:
+	default:
+	}
 }
 
 func nullJSON(b []byte) any {

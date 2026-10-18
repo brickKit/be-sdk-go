@@ -319,3 +319,21 @@ func TestAWriteWhoseCutoffPassedIsRolledBack(t *testing.T) { // P8.12, CK-AZ-04
 	require.NoError(t, admin(t, testDB).QueryRow(ctx, "SELECT name FROM alpha.items WHERE id = 2").Scan(&name))
 	assert.Equal(t, "cutoff", name)
 }
+
+func TestAfterCommitRunsOnlyOnCommit(t *testing.T) { // P6.29
+	host, port := fixture(t)
+	pool := sharedPool(t, host, port, 4)
+	a := NewDB("demo/alpha", pool, settings(host, port, "alpha", 4))
+	ctx := context.Background()
+	var ran []string
+	require.NoError(t, a.Tx(ctx, func(ctx context.Context, tx Tx) error {
+		tx.AfterCommit(func() { ran = append(ran, "committed") })
+		assert.Empty(t, ran, "not before the commit")
+		return nil
+	}))
+	_ = a.Tx(ctx, func(ctx context.Context, tx Tx) error {
+		tx.AfterCommit(func() { ran = append(ran, "rolled back") })
+		return errors.New("roll back")
+	})
+	assert.Equal(t, []string{"committed"}, ran)
+}

@@ -72,6 +72,7 @@ func (f *Forwarder) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-f.Producer.written: // a commit of this member wrote rows (P6.29); the poll covers other replicas'
 		}
 		n, err := f.Once(ctx)
 		if err != nil && ctx.Err() == nil {
