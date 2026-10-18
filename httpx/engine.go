@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -56,7 +55,20 @@ type Deps struct {
 	Guard Guard
 }
 
-var requestIDRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+// validRequestID reports whether a caller's request ID can be kept: 1 to 128 of [A-Za-z0-9._:-]. A loop rather than a
+// regular expression: it runs for every request.
+func validRequestID(s string) bool {
+	if len(s) == 0 || len(s) > 128 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == ':' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
 
 // NewEngine builds the member's user-surface engine. Routes must have been validated.
 func NewEngine(d Deps, routes *Routes) (*gin.Engine, error) {
@@ -84,8 +96,8 @@ func NewEngine(d Deps, routes *Routes) (*gin.Engine, error) {
 	platform(e, d)
 
 	for _, r := range routes.List() {
-		r := r
-		e.Handle(r.Method, r.Path, func(g *gin.Context) { serve(g, d, r, duration) })
+		r, template := r, Template(r.Path) // the template once per route, not per request
+		e.Handle(r.Method, r.Path, func(g *gin.Context) { serve(g, d, r, template, duration) })
 	}
 	e.NoRoute(func(g *gin.Context) {
 		errs.New(errs.ReasonNotFound, "no such route").WriteHTTP(g.Writer, traceIDOf(g.Request.Context()))
@@ -155,12 +167,12 @@ func traceIDOf(ctx context.Context) string {
 
 // serve runs one request through the chain: request ID, trace, deadline, body limit, handler, error mapping, access
 // log and metrics.
-func serve(g *gin.Context, d Deps, r Route, duration *prometheus.HistogramVec) {
+func serve(g *gin.Context, d Deps, r Route, template string, duration *prometheus.HistogramVec) {
 	start := time.Now()
 	req := g.Request
 
 	rid := req.Header.Get(HeaderRequestID)
-	if !requestIDRe.MatchString(rid) {
+	if !validRequestID(rid) {
 		rid = uuid.Must(uuid.NewV7()).String()
 	}
 	g.Header(HeaderRequestID, rid)
@@ -171,7 +183,6 @@ func serve(g *gin.Context, d Deps, r Route, duration *prometheus.HistogramVec) {
 	if auth := req.Header.Get("Authorization"); auth != "" {
 		ctx = reqctx.WithUserCredential(ctx, auth)
 	}
-	template := Template(r.Path)
 	ctx, span := d.Tracer.Start(ctx, r.Method+" "+template, trace.WithSpanKind(trace.SpanKindServer))
 	defer span.End()
 	traceID := span.SpanContext().TraceID().String()
