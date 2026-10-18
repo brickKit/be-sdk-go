@@ -206,6 +206,9 @@
         "events.TestLargePayloadsTravelByClaimCheck",
         "events.TestClaimUploadsOverlapAndPublishingKeepsItsOrder",
         "events.TestS3ClaimsRoundTripWithoutStorageCredentials",
+        "events.TestARotatedSecretIsUsedFromTheNextUpload",
+        "events.TestAPresignedGetEqualsTheAWSSigners",
+        "events.TestASignedPutEqualsTheAWSSigners",
         "launcher.TestEventsFlowBetweenComponentsOnBothTransports"
       ]
     },

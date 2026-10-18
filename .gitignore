@@ -1,1 +1,3 @@
 testdata/rapid/
+# test binaries left by go test -c, -cpuprofile or -o without a path outside the repository
+*.test

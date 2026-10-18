@@ -45,3 +45,37 @@ func TestS3ClaimsRoundTripWithoutStorageCredentials(t *testing.T) { // P6.14, CK
 	_, err = ResolveClaim(context.Background(), m, NewHTTPClaims())
 	assert.ErrorContains(t, err, "does not match its size and digest")
 }
+
+func TestARotatedSecretIsUsedFromTheNextUpload(t *testing.T) { // P6.14, P2.8
+	env := s3test.Env(t, "demo-rotate/")
+	secretFile := t.TempDir() + "/secret"
+	right := env["OBJECT_STORE_SECRET_KEY"]
+	require.NoError(t, os.WriteFile(secretFile, []byte(right), 0o600))
+	delete(env, "OBJECT_STORE_SECRET_KEY")
+	env["OBJECT_STORE_SECRET_KEY_FILE"] = secretFile
+	src := config.Env{LookupEnv: func(k string) (string, bool) { v, ok := env[k]; return v, ok }, Read: os.ReadFile}
+	values, problems := config.Parse(StoreKeys(), src)
+	require.Empty(t, problems)
+	store, err := NewS3Store(values)
+	require.NoError(t, err)
+	secret := values.Secret("OBJECT_STORE_SECRET_KEY")
+	put := func() (string, error) { return store.Put(context.Background(), ids.New().String(), []byte(`{"n":1}`)) }
+
+	uri, err := put()
+	require.NoError(t, err)
+	got, err := NewHTTPClaims().Get(context.Background(), uri)
+	require.NoError(t, err)
+	assert.Equal(t, `{"n":1}`, string(got), "the presigned address reads the object back")
+
+	require.NoError(t, os.WriteFile(secretFile, []byte(right+"-rotated-away"), 0o600))
+	_, err = secret.Refresh(os.ReadFile)
+	require.NoError(t, err)
+	_, err = put()
+	assert.ErrorContains(t, err, "answered 403", "the next upload signs with the file's new secret")
+
+	require.NoError(t, os.WriteFile(secretFile, []byte(right), 0o600))
+	_, err = secret.Refresh(os.ReadFile)
+	require.NoError(t, err)
+	_, err = put()
+	assert.NoError(t, err)
+}
