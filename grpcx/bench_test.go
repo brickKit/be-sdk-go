@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/calls"
 	"github.com/brickKit/be-sdk-go/v3/grpcx"
@@ -57,7 +58,8 @@ func benchEcho(b *testing.B, w *sectest.World) string {
 
 func benchEngine(b *testing.B, d grpcx.Deps, handle func(*httpx.Context) error) http.Handler {
 	var r httpx.Routes
-	r.Add(httpx.Route{Method: "POST", Path: "/api/echo", Operation: "demo.a.echo", Public: true, Handle: handle})
+	// public: the benchmark measures the surface without an authorization check (no view to verify against)
+	r.Add(httpx.Route{Method: "POST", Path: "/api/echo", Public: true, Handle: handle})
 	e, err := httpx.NewEngine(httpx.Deps{Member: d.Member, Logger: d.Logger, Registry: d.Registry, Tracer: d.Tracer,
 		Platform: httpx.Platform{Ready: func() (bool, string, []string) { return true, "", nil },
 			Describe: func() any { return nil }}}, &r)
@@ -109,10 +111,13 @@ func BenchmarkSystemCallOverMTLS(b *testing.B) {
 		b.Fatal(err)
 	}
 	in := wrapperspb.String(kib)
+	// a call needs a deadline to budget against, as every request on the user surface has one
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if err := conn.Invoke(context.Background(), echotest.Method, in, new(wrapperspb.StringValue), calls.Idempotent()); err != nil {
+		if err := conn.Invoke(ctx, echotest.Method, in, new(wrapperspb.StringValue), calls.Idempotent()); err != nil {
 			b.Fatal(err)
 		}
 	}
