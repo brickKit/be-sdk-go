@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/db"
@@ -17,6 +18,9 @@ const (
 	DefaultLease = 10 * time.Second
 	DefaultPoll  = 250 * time.Millisecond
 	DefaultBatch = 500
+	// ClaimConcurrency bounds the claim-check uploads of one batch in flight at once (P6.14): one at a time would
+	// cap a partition at 1/upload-time events a second whatever the machine.
+	ClaimConcurrency = 8
 )
 
 // Forwarder numbers and publishes a member's outbox (P6.10, P6.11).
@@ -130,20 +134,68 @@ func (f *Forwarder) partition(ctx context.Context, s Stream, p int) (int, error)
 			_ = f.markPublished(context.WithoutCancel(ctx), done, claimed)
 		}
 	}()
-	for _, r := range rows {
-		m, isClaim, err := f.message(ctx, r)
-		if err != nil {
-			return len(done), err
+	prepared, stop := f.prepare(ctx, rows)
+	defer stop()
+	for i, r := range rows {
+		p := <-prepared[i]
+		if p.err != nil {
+			return len(done), p.err
 		}
-		if err := f.Transport.Publish(ctx, m); err != nil {
+		if err := f.Transport.Publish(ctx, p.msg); err != nil {
 			return len(done), err // published later again: at least once (P6.10)
 		}
 		done = append(done, r.Ord)
-		if isClaim {
+		if p.claim {
 			claimed = append(claimed, r.Ord)
 		}
 	}
 	return len(done), nil
+}
+
+type preparedMessage struct {
+	msg   Message
+	claim bool
+	err   error
+}
+
+// prepare builds the batch's messages in the background, each delivered on its own channel so publishing goes on in
+// position order as soon as the next one is ready. Claim-check uploads run up to ClaimConcurrency at a time: they do
+// not depend on each other, and only the publishing order is fixed (P6.10). stop cancels what has not started and
+// waits for the uploads in flight.
+func (f *Forwarder) prepare(ctx context.Context, rows []Row) ([]chan preparedMessage, func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	out := make([]chan preparedMessage, len(rows))
+	for i := range out {
+		out[i] = make(chan preparedMessage, 1)
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		slots := make(chan struct{}, ClaimConcurrency)
+		for i, r := range rows {
+			if len(r.Payload) <= MaxPayload {
+				m, c, err := f.message(ctx, r)
+				out[i] <- preparedMessage{m, c, err}
+				continue
+			}
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				for j := i; j < len(rows); j++ {
+					out[j] <- preparedMessage{err: ctx.Err()}
+				}
+				return
+			}
+			wg.Add(1)
+			go func(i int, r Row) {
+				defer func() { <-slots; wg.Done() }()
+				m, c, err := f.message(ctx, r)
+				out[i] <- preparedMessage{m, c, err}
+			}(i, r)
+		}
+	}()
+	return out, func() { cancel(); wg.Wait() }
 }
 
 func (f *Forwarder) message(ctx context.Context, r Row) (Message, bool, error) {

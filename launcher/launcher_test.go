@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -161,4 +162,35 @@ func TestServeReadyAndGracefulStop(t *testing.T) {
 	}
 	c, _ := get(t, base+"/healthz")
 	assert.Equal(t, 0, c, "the listener is closed after the stop")
+}
+
+func TestResponsesAreNotHeldBackOnAKeptAliveConnection(t *testing.T) { // P1.19
+	// a response often leaves in more than one write; with Nagle on, the second waits for the client's delayed ACK
+	// (about 40 ms on Linux), so every request on a kept-alive connection takes that long whatever the work
+	port := freePort(t)
+	base := "http://127.0.0.1:" + strconv.Itoa(port)
+	d := &demo{release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() {
+		done <- Run(ctx, definition(d), Options{Env: env(secured(t, definition(d), map[string]string{"COMPONENT_ID": "demo/alpha",
+			"COMPONENT_VERSION": "3.0.0", "PORT": strconv.Itoa(port), "STOP_DRAIN_DELAY": "0s"})),
+			Stdout: io.Discard, Stderr: io.Discard})
+	}()
+	require.Eventually(t, func() bool { c, _ := get(t, base+"/readyz"); return c == 200 }, 5*time.Second, 20*time.Millisecond)
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 1}}
+	var took []time.Duration
+	for i := 0; i < 20; i++ {
+		started := time.Now()
+		resp, err := client.Get(base + "/.well-known/be-component")
+		require.NoError(t, err)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		took = append(took, time.Since(started))
+	}
+	sort.Slice(took, func(i, j int) bool { return took[i] < took[j] })
+	assert.Less(t, took[len(took)/2], 15*time.Millisecond, "median of 20 requests on one connection")
+	cancel()
+	close(d.release)
+	assert.Equal(t, ExitOK, <-done)
 }

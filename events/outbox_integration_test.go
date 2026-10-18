@@ -219,3 +219,70 @@ func atoi(s string) int {
 	}
 	return n
 }
+
+// slowClaims is object storage that takes a while per upload and records how many uploads overlapped.
+type slowClaims struct {
+	mu        sync.Mutex
+	now, peak int
+	delay     time.Duration
+}
+
+func (s *slowClaims) Put(ctx context.Context, eventID string, _ []byte) (string, error) {
+	s.mu.Lock()
+	s.now++
+	s.peak = max(s.peak, s.now)
+	s.mu.Unlock()
+	time.Sleep(s.delay)
+	s.mu.Lock()
+	s.now--
+	s.mu.Unlock()
+	return "s3://claims/" + eventID, nil
+}
+
+func TestClaimUploadsOverlapAndPublishingKeepsItsOrder(t *testing.T) { // P6.10, P6.14
+	d, _ := source(t, "evsrc8")
+	one := Stream{Name: "demo.stock", Partitions: 1}
+	claims := &slowClaims{delay: 40 * time.Millisecond}
+	p, err := NewProducer("demo/evsrc8", []Stream{one}, claims)
+	require.NoError(t, err)
+	const n = 12
+	big := make([]byte, MaxPayload+1)
+	for i := 0; i < n; i++ {
+		require.NoError(t, d.Tx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+			id := ids.New().String()
+			if _, err := tx.Exec(ctx, "INSERT INTO items VALUES ($1)", id); err != nil {
+				return err
+			}
+			_, err := p.Emit(ctx, tx, "demo.stock", Event{Type: "demo.stock.moved.v1", RecordID: id, Version: 1,
+				Projection: Full, Data: map[string]string{"blob": string(big)}})
+			return err
+		}))
+	}
+	tr := NewMemory(0)
+	f := &Forwarder{DB: d, Producer: p, Transport: tr, Source: "demo/evsrc8", Impl: "6f1c2d3e-4a5b-4c6d-8e7f-901234567890",
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	started := time.Now()
+	published, err := f.Once(context.Background())
+	took := time.Since(started)
+	require.NoError(t, err)
+	require.Equal(t, n, published)
+	assert.Greater(t, claims.peak, 1, "uploads of one batch overlap")
+	assert.LessOrEqual(t, claims.peak, ClaimConcurrency)
+	assert.Less(t, took, n*claims.delay/2, "one upload at a time caps a partition at 1/delay events a second")
+
+	var seqs []int
+	var mu sync.Mutex
+	sub, err := tr.Subscribe(context.Background(), SubscriptionSpec{Durable: "check", Streams: []string{"demo.stock"}},
+		func(_ context.Context, del *Delivery) Outcome {
+			mu.Lock()
+			defer mu.Unlock()
+			seqs = append(seqs, atoi(del.Headers[HeaderSeq]))
+			return Ack
+		})
+	require.NoError(t, err)
+	defer sub.Stop()
+	require.Eventually(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(seqs) == n }, 5*time.Second, 20*time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	assert.True(t, sort.IntsAreSorted(seqs), "published in position order: %v", seqs)
+}
