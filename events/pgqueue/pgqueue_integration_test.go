@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -148,4 +150,102 @@ func TestPurgeDropsMessagesPastTheRetention(t *testing.T) { // P6.27, CK-BUS-09
 		left = append(left, id)
 	}
 	assert.Equal(t, []string{newest}, left)
+}
+
+// backlog gives a new subscription n due deliveries of real messages, written directly (publishing 20 000 one by
+// one would take most of the test).
+func backlog(t *testing.T, n int) events.SubscriptionSpec {
+	ctx := context.Background()
+	s := events.SubscriptionSpec{Durable: "backlog_" + ids.New().String()[24:], MaxDeliver: 3, AckWait: 30 * time.Second}.Defaults()
+	admin := pgtest.Admin(t, pgtest.Database)
+	pgtest.Exec(t, admin, `INSERT INTO be_bus_test.be_bus_subscription (durable, streams, filters, max_deliver, ack_wait_ms,
+		backoff_ms) VALUES ('`+s.Durable+`', '{x}', '{}', 3, 30000, '{1000}')`)
+	_, err := admin.Exec(ctx, `WITH m AS (INSERT INTO be_bus_test.be_bus_message (subject, headers, data)
+			SELECT 'be.x.0.t.v1', '{}'::jsonb, '\x7b7d'::bytea FROM generate_series(1, $2) RETURNING seq)
+		INSERT INTO be_bus_test.be_bus_delivery (durable, seq) SELECT $1, seq FROM m`, s.Durable, n)
+	require.NoError(t, err)
+	t.Cleanup(func() { forget(t, s.Durable, "be.x.0.t.v1") })
+	return s
+}
+
+// forget removes what a test wrote straight into the shared test bus: every later subscription would read past it.
+func forget(t *testing.T, durable, subject string) {
+	admin := pgtest.Admin(t, pgtest.Database)
+	pgtest.Exec(t, admin, "DELETE FROM be_bus_test.be_bus_subscription WHERE durable = '"+durable+"'")
+	pgtest.Exec(t, admin, "DELETE FROM be_bus_test.be_bus_message WHERE subject = '"+subject+"'")
+}
+
+func TestASubscriptionCrossesOtherStreamsWithoutWaiting(t *testing.T) { // P6.23
+	// the queue is shared by every stream: a subscription reads past every message to keep its position, at most a
+	// batch per round; waiting a poll after each round that delivered nothing capped that at batch/poll a second
+	tr, stream := factory(t)
+	ctx := context.Background()
+	admin := pgtest.Admin(t, pgtest.Database)
+	other := "be.other" + stream[9:] + ".0.t.v1"
+	_, err := admin.Exec(ctx, `INSERT INTO be_bus_test.be_bus_message (subject, headers, data)
+		SELECT $1, '{}'::jsonb, '\x7b7d'::bytea FROM generate_series(1, 20000)`, other)
+	require.NoError(t, err)
+	durable := "cross_" + stream[9:]
+	t.Cleanup(func() { forget(t, durable, other) })
+	require.NoError(t, tr.EnsureStream(ctx, events.Stream{Name: stream, Partitions: 1}))
+	got := make(chan struct{}, 1)
+	started := time.Now()
+	sub, err := tr.Subscribe(ctx, events.SubscriptionSpec{Durable: durable, Streams: []string{stream}},
+		func(context.Context, *events.Delivery) events.Outcome { got <- struct{}{}; return events.Ack })
+	require.NoError(t, err)
+	defer sub.Stop()
+	require.NoError(t, tr.Publish(ctx, events.Message{Subject: "be." + stream + ".0.x.v1",
+		Headers: map[string]string{events.HeaderID: ids.New().String()}, Data: []byte("{}")}))
+	select {
+	case <-got:
+		assert.Less(t, time.Since(started), 2*time.Second, "past 20 000 messages of another stream")
+	case <-time.After(10 * time.Second):
+		t.Fatal("not delivered within 10 s: the subscription crawls past the other stream's messages")
+	}
+}
+
+func medianClaim(t *testing.T, tr *Transport, s events.SubscriptionSpec) time.Duration {
+	var took []time.Duration
+	for range 15 {
+		started := time.Now()
+		d, _, err := tr.claim(context.Background(), s)
+		took = append(took, time.Since(started))
+		require.NoError(t, err)
+		require.NotNil(t, d)
+	}
+	slices.Sort(took)
+	return took[len(took)/2]
+}
+
+func TestABacklogDoesNotSlowEachClaim(t *testing.T) { // P6.23
+	// every claim used to scan the subscription's whole backlog first: the more behind, the slower each message,
+	// so a subscriber that once fell behind could not catch up
+	tr, _ := factory(t)
+	small := medianClaim(t, tr.(*Transport), backlog(t, 20))
+	large := medianClaim(t, tr.(*Transport), backlog(t, 20000))
+	assert.Less(t, large, 3*small+2*time.Millisecond, "claims with 20 000 waiting (%v) against 20 waiting (%v)", large, small)
+}
+
+func TestAClaimWhoseMessageWasPurgedIsDropped(t *testing.T) { // P6.27
+	tr, _ := factory(t)
+	s := backlog(t, 2)
+	admin := pgtest.Admin(t, pgtest.Database)
+	var first int64
+	require.NoError(t, admin.QueryRow(context.Background(), `SELECT min(seq) FROM be_bus_test.be_bus_delivery
+		WHERE durable = $1`, s.Durable).Scan(&first))
+	pgtest.Exec(t, admin, "DELETE FROM be_bus_test.be_bus_message WHERE seq = "+strconv.FormatInt(first, 10))
+	var got *events.Delivery
+	for range 3 { // the orphan is dropped on the way; the real message follows
+		d, _, err := tr.(*Transport).claim(context.Background(), s)
+		require.NoError(t, err)
+		if d != nil {
+			got = d
+			break
+		}
+	}
+	require.NotNil(t, got, "the delivery with a message comes through")
+	var orphans int
+	require.NoError(t, admin.QueryRow(context.Background(), `SELECT count(*) FROM be_bus_test.be_bus_delivery
+		WHERE durable = $1 AND seq = $2`, s.Durable, first).Scan(&orphans))
+	assert.Zero(t, orphans, "the delivery of the purged message is gone")
 }

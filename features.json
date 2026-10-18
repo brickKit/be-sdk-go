@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.4",
+  "protocol": "3.0.0-alpha.5",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -212,6 +212,9 @@
         "events.TestTheSuiteFailsAnAdapterThatLosesAcks",
         "events/jetstream.TestJetStreamPassesTheSuite",
         "events/pgqueue.TestPostgresQueuePassesTheSuite",
+        "events/pgqueue.TestABacklogDoesNotSlowEachClaim",
+        "events/pgqueue.TestAClaimWhoseMessageWasPurgedIsDropped",
+        "events/pgqueue.TestASubscriptionCrossesOtherStreamsWithoutWaiting",
         "events/pgqueue.TestAnInFlightRowWithASmallerSequenceIsNotSkipped",
         "events/pgqueue.TestPurgeDropsMessagesPastTheRetention",
         "events/jetstream.TestStreamsKeepMessagesForTheTransportRetention"

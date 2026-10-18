@@ -245,7 +245,8 @@ func matches(s events.SubscriptionSpec, subject string) bool {
 
 func (t *Transport) work(ctx context.Context, s events.SubscriptionSpec, h events.Handler) {
 	for ctx.Err() == nil {
-		if err := t.advance(ctx, s); err != nil && ctx.Err() == nil {
+		moved, err := t.advance(ctx, s)
+		if err != nil && ctx.Err() == nil {
 			t.report(fmt.Errorf("bus subscription %s: %w", s.Durable, err))
 			sleep(ctx, t.poll)
 			continue
@@ -255,7 +256,11 @@ func (t *Transport) work(ctx context.Context, s events.SubscriptionSpec, h event
 			t.report(fmt.Errorf("bus subscription %s: %w", s.Durable, err))
 		}
 		if err != nil || d == nil {
-			sleep(ctx, t.poll)
+			// the position moved: more may follow at once, so only an idle round waits (the queue is shared by every
+			// stream, and waiting after each batch read past capped a subscription at batch/poll messages a second)
+			if err != nil || !moved {
+				sleep(ctx, t.poll)
+			}
 			continue
 		}
 		d.InProgress = func() error {
@@ -276,23 +281,23 @@ func sleep(ctx context.Context, d time.Duration) {
 }
 
 // advance moves the subscription's read position over committed messages below pg_snapshot_xmin, queueing a
-// delivery for every matching one (P6.23).
-func (t *Transport) advance(ctx context.Context, s events.SubscriptionSpec) error {
+// delivery for every matching one (P6.23). It reports whether the position moved.
+func (t *Transport) advance(ctx context.Context, s events.SubscriptionSpec) (bool, error) {
 	tx, err := t.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	var posXid, posSeq int64
 	if err := tx.QueryRow(ctx, "SELECT pos_xid::text::bigint, pos_seq FROM "+t.t("be_bus_subscription")+
 		" WHERE durable = $1 FOR UPDATE", s.Durable).Scan(&posXid, &posSeq); err != nil {
-		return err
+		return false, err
 	}
 	rows, err := tx.Query(ctx, "SELECT xid::text::bigint, seq, subject FROM "+t.t("be_bus_message")+`
 		WHERE (xid, seq) > ($1::bigint::text::xid8, $2) AND xid < pg_snapshot_xmin(pg_current_snapshot())
 		ORDER BY xid, seq LIMIT $3`, posXid, posSeq, advanceBatch)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var seqs []int64
 	lastXid, lastSeq := posXid, posSeq
@@ -301,7 +306,7 @@ func (t *Transport) advance(ctx context.Context, s events.SubscriptionSpec) erro
 		var subject string
 		if err := rows.Scan(&x, &q, &subject); err != nil {
 			rows.Close()
-			return err
+			return false, err
 		}
 		lastXid, lastSeq = x, q
 		if matches(s, subject) {
@@ -310,47 +315,52 @@ func (t *Transport) advance(ctx context.Context, s events.SubscriptionSpec) erro
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return err
+		return false, err
 	}
 	if lastXid == posXid && lastSeq == posSeq {
-		return nil
+		return false, nil
 	}
 	if len(seqs) > 0 {
 		if _, err := tx.Exec(ctx, "INSERT INTO "+t.t("be_bus_delivery")+` (durable, seq)
 			SELECT $1, unnest($2::bigint[]) ON CONFLICT DO NOTHING`, s.Durable, seqs); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if _, err := tx.Exec(ctx, "UPDATE "+t.t("be_bus_subscription")+
 		" SET pos_xid = $2::bigint::text::xid8, pos_seq = $3 WHERE durable = $1", s.Durable, lastXid, lastSeq); err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit(ctx)
+	return true, tx.Commit(ctx)
 }
 
 // claim takes one due delivery: ready and past its backoff, or in flight past its lease with deliveries left.
-// Exhausted deliveries whose lease expired are given up.
+// Exhausted deliveries whose lease expired are given up. Its cost does not grow with the backlog: the give-up looks
+// only at in-flight rows (a partial index), and a delivery whose message the retention purge removed (P6.27; the
+// purge removes the deliveries with it, this covers a delivery queued meanwhile) is dropped when it is claimed,
+// instead of every claim checking the whole backlog for such rows first.
 func (t *Transport) claim(ctx context.Context, s events.SubscriptionSpec) (*events.Delivery, string, error) {
-	// exhausted leases go, and so do deliveries whose message the retention purge removed (P6.27)
-	if _, err := t.pool.Exec(ctx, "DELETE FROM "+t.t("be_bus_delivery")+` d WHERE durable = $1 AND (
-			(in_flight AND lease_until < clock_timestamp() AND attempts >= $2) OR
-			NOT EXISTS (SELECT 1 FROM `+t.t("be_bus_message")+` m WHERE m.seq = d.seq))`, s.Durable, s.MaxDeliver); err != nil {
+	if _, err := t.pool.Exec(ctx, "DELETE FROM "+t.t("be_bus_delivery")+` WHERE durable = $1 AND in_flight
+			AND lease_until < clock_timestamp() AND attempts >= $2`, s.Durable, s.MaxDeliver); err != nil {
 		return nil, "", err
 	}
 	token := ids.New().String()
 	var seq int64
 	var attempts int
-	var subject string
+	var subject *string
 	var headers, data []byte
-	err := t.pool.QueryRow(ctx, "WITH due AS (SELECT seq FROM "+t.t("be_bus_delivery")+` WHERE durable = $1
-			AND ((NOT in_flight AND not_before <= clock_timestamp()) OR (in_flight AND lease_until < clock_timestamp()))
-			ORDER BY seq LIMIT 1 FOR UPDATE SKIP LOCKED)
-		UPDATE `+t.t("be_bus_delivery")+` d SET in_flight = true, attempts = d.attempts + 1, lease_token = $2,
+	// two paths, each along its own index in position order (P6.28): a single condition joined with OR let the
+	// planner fetch and sort the whole backlog when the statistics lagged behind it
+	dlv := t.t("be_bus_delivery")
+	err := t.pool.QueryRow(ctx, `WITH ready AS (SELECT seq FROM `+dlv+` WHERE durable = $1 AND NOT in_flight
+				AND not_before <= clock_timestamp() ORDER BY seq LIMIT 1 FOR UPDATE SKIP LOCKED),
+			expired AS (SELECT seq FROM `+dlv+` WHERE durable = $1 AND in_flight AND lease_until < clock_timestamp()
+				ORDER BY seq LIMIT 1 FOR UPDATE SKIP LOCKED),
+			due AS (SELECT min(seq) AS seq FROM (SELECT seq FROM ready UNION ALL SELECT seq FROM expired) c),
+		claimed AS (UPDATE `+t.t("be_bus_delivery")+` d SET in_flight = true, attempts = d.attempts + 1, lease_token = $2,
 			lease_until = clock_timestamp() + make_interval(secs => $3)
-		FROM due WHERE d.durable = $1 AND d.seq = due.seq
-		RETURNING d.seq, d.attempts, (SELECT subject FROM `+t.t("be_bus_message")+` m WHERE m.seq = d.seq),
-			(SELECT headers FROM `+t.t("be_bus_message")+` m WHERE m.seq = d.seq),
-			(SELECT data FROM `+t.t("be_bus_message")+` m WHERE m.seq = d.seq)`,
+			WHERE d.durable = $1 AND d.seq = (SELECT seq FROM due) RETURNING d.seq, d.attempts)
+		SELECT c.seq, c.attempts, m.subject, m.headers, m.data FROM claimed c
+			LEFT JOIN `+t.t("be_bus_message")+` m ON m.seq = c.seq`,
 		s.Durable, token, s.AckWait.Seconds()).Scan(&seq, &attempts, &subject, &headers, &data)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", nil
@@ -358,7 +368,12 @@ func (t *Transport) claim(ctx context.Context, s events.SubscriptionSpec) (*even
 	if err != nil {
 		return nil, "", err
 	}
-	m := events.Message{Subject: subject, Data: data, Headers: map[string]string{}}
+	if subject == nil { // its message is gone: nothing to deliver
+		_, err := t.pool.Exec(ctx, "DELETE FROM "+t.t("be_bus_delivery")+" WHERE durable = $1 AND lease_token = $2 AND in_flight",
+			s.Durable, token)
+		return nil, "", err
+	}
+	m := events.Message{Subject: *subject, Data: data, Headers: map[string]string{}}
 	if err := json.Unmarshal(headers, &m.Headers); err != nil {
 		return nil, "", err
 	}
