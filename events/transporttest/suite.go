@@ -235,6 +235,28 @@ var Cases = []Case{
 			}
 		}
 	}},
+	{"a last attempt that never settles is not delivered again", func(t T, f Factory) { // P6.20
+		// the third delivery's handler never answers, so its lease runs out; a second worker is free to claim, and
+		// it must not take the exhausted delivery again (even before any cleanup of exhausted deliveries runs)
+		tr, stream, ctx := setup(t, f)
+		rec := newRecorder()
+		s := spec(stream, "stuck")
+		s.Concurrency = 2
+		subscribe(t, tr, ctx, s, func(hctx context.Context, d *events.Delivery) events.Outcome {
+			rec.add(d)
+			if d.Attempt < 3 {
+				return events.Nak
+			}
+			<-hctx.Done() // never settles while the case runs
+			return events.Nak
+		})
+		must(t, tr.Publish(ctx, msg(stream, 0, "demo.thing_happened.v1", "stuck")))
+		eventually(t, 10*time.Second, func() bool { return rec.count() == 3 }, "three deliveries")
+		time.Sleep(2*AckWait + time.Second)
+		if n := rec.count(); n != 3 {
+			fail(t, "%d deliveries, the limit is 3", n)
+		}
+	}},
 	{"term ends the deliveries at once", func(t T, f Factory) {
 		tr, stream, ctx := setup(t, f)
 		rec := newRecorder()
