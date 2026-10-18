@@ -249,3 +249,29 @@ func TestAClaimWhoseMessageWasPurgedIsDropped(t *testing.T) { // P6.27
 		WHERE durable = $1 AND seq = $2`, s.Durable, first).Scan(&orphans))
 	assert.Zero(t, orphans, "the delivery of the purged message is gone")
 }
+
+func TestAPublishWakesAnIdleReaderWithoutWaitingForThePoll(t *testing.T) { // P6.30
+	tr, stream := factory(t)
+	tr.(*Transport).poll = time.Hour // only the wake can pick the message up
+	ctx := context.Background()
+	require.NoError(t, tr.EnsureStream(ctx, events.Stream{Name: stream, Partitions: 1}))
+	durable := "wake_" + stream[9:]
+	t.Cleanup(func() { forget(t, durable, "be."+stream+".0.x.v1") })
+	got := make(chan time.Time, 4)
+	sub, err := tr.Subscribe(ctx, events.SubscriptionSpec{Durable: durable, Streams: []string{stream}},
+		func(context.Context, *events.Delivery) events.Outcome { got <- time.Now(); return events.Ack })
+	require.NoError(t, err)
+	defer sub.Stop()
+	time.Sleep(500 * time.Millisecond) // listening, and the reader has read past the bus and is idle
+	for i := range 2 {
+		published := time.Now()
+		require.NoError(t, tr.Publish(ctx, events.Message{Subject: "be." + stream + ".0.x.v1",
+			Headers: map[string]string{events.HeaderID: ids.New().String()}, Data: []byte("{}")}))
+		select {
+		case at := <-got:
+			assert.Less(t, at.Sub(published), 2*time.Second, "message %d: delivered on the wake", i)
+		case <-time.After(10 * time.Second):
+			t.Fatalf("message %d was not delivered without a poll", i)
+		}
+	}
+}
