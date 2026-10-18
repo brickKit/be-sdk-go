@@ -190,7 +190,7 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 		if err != nil {
 			return fail(p.def.ID, "cannot listen on the member's port", err)
 		}
-		srv := &http.Server{Handler: m.Engine, ReadHeaderTimeout: 10 * time.Second}
+		srv := host.NewHTTPServer(m.Engine)
 		go func() { _ = srv.Serve(ln) }()
 		members, servers = append(members, m), append(servers, host.HTTPServer{Server: srv})
 		if m.System != nil {
@@ -215,7 +215,7 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 	if err != nil {
 		return fail(self.ID, "cannot listen on PORT", err)
 	}
-	ownSrv := &http.Server{Handler: own, ReadHeaderTimeout: 10 * time.Second}
+	ownSrv := host.NewHTTPServer(own)
 	go func() { _ = ownSrv.Serve(ln) }()
 	servers = append(servers, host.HTTPServer{Server: ownSrv})
 

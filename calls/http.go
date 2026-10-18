@@ -147,12 +147,16 @@ func transportResult(ctx context.Context, err error) Result {
 	return Result{Err: err, Code: errs.Unavailable}
 }
 
+// ClientIdleTimeout drops an idle outbound connection; servers keep theirs longer (P1.20), so the client is the
+// one that lets a connection go.
+const ClientIdleTimeout = 90 * time.Second
+
 // httpClient is the member's own transport (never the process-wide default client).
 func (m *Member) httpClient() *http.Client {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.client == nil {
-		t := &http.Transport{Proxy: nil, MaxIdleConnsPerHost: OutboundLimit, IdleConnTimeout: 90 * time.Second,
+		t := &http.Transport{Proxy: nil, MaxIdleConnsPerHost: OutboundLimit, IdleConnTimeout: ClientIdleTimeout,
 			DialContext: (&net.Dialer{Timeout: MaxAttemptTimeout, KeepAlive: 30 * time.Second}).DialContext}
 		m.client = &http.Client{Transport: t}
 	}

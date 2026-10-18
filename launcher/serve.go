@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"strconv"
 	"time"
 
@@ -92,7 +91,7 @@ func serve(ctx context.Context, def component.Definition, o Options) int {
 		log.Error("cannot listen on PORT", "error", err.Error())
 		return ExitFailure
 	}
-	srv := &http.Server{Handler: m.Engine, ReadHeaderTimeout: 10 * time.Second}
+	srv := host.NewHTTPServer(m.Engine)
 	serveErr := make(chan error, 2)
 	go func() { serveErr <- srv.Serve(ln) }()
 	servers := []host.Server{host.HTTPServer{Server: srv}}
