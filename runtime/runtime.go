@@ -66,22 +66,44 @@ func New(p Parts) *Runtime {
 // per dependency). ok=false: the dependency is absent.
 func (r *Runtime) HTTP(componentID string) (*calls.HTTP, bool) {
 	ep, ok := r.Dependency(componentID)
-	if !ok || r.calls == nil {
+	if !ok {
 		return nil, false
 	}
-	return r.calls.HTTP(componentID, ep.URL), true
+	return r.HTTPAt(componentID, ep.URL)
 }
 
 // GRPC returns the connection to a dependency's system surface (its "grpc" port). Mark idempotent methods with
 // calls.Idempotent() and commands with calls.IdempotencyKey(key). ok=false: the dependency is absent.
 func (r *Runtime) GRPC(componentID string) (*grpc.ClientConn, bool) {
 	ep, ok := r.DependencyPort(componentID, "grpc")
-	if !ok || r.calls == nil {
+	if !ok {
 		return nil, false
 	}
-	conn, err := r.calls.GRPC(componentID, ep.Host)
+	return r.GRPCAt(componentID, ep.Host)
+}
+
+// HTTPAt returns the client for a component's user surface at an address the configuration gives (a $endpoint:
+// reference, protocol P4.26): the same call policy as a dependency's, counted per component ID. ok=false: no address.
+func (r *Runtime) HTTPAt(componentID, address string) (*calls.HTTP, bool) {
+	if address == "" || r.calls == nil {
+		return nil, false
+	}
+	return r.calls.HTTP(componentID, address), true
+}
+
+// GRPCAt returns the connection to a component's system surface at an address the configuration gives
+// (http://host:port as $endpoint:<id>:grpc derives it, or host:port; protocol P4.26), over mTLS like any system call.
+// ok=false: no address, or it cannot be dialled.
+func (r *Runtime) GRPCAt(componentID, address string) (*grpc.ClientConn, bool) {
+	if address == "" || r.calls == nil {
+		return nil, false
+	}
+	if u, err := url.Parse(address); err == nil && u.Host != "" {
+		address = u.Host
+	}
+	conn, err := r.calls.GRPC(componentID, address)
 	if err != nil {
-		r.Logger.Error("the system surface of a dependency cannot be dialled", "dependency", componentID, "error", err.Error())
+		r.Logger.Error("the system surface of a component cannot be dialled", "component", componentID, "error", err.Error())
 		return nil, false
 	}
 	return conn, true

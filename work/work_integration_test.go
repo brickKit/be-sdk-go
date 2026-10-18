@@ -54,10 +54,15 @@ func enqueue(t *testing.T, d *db.DB, r *Runner, job string) string {
 
 func TestTwoReplicasRunACronSlotOnce(t *testing.T) { // P7.9, RT08
 	d, admin := dbtest.Schema(t, "work1", nil)
-	var runs atomic.Int32
+	// runs per slot: once started, the replicas also materialize the slots due by the database's clock (any day's
+	// 02:00 Berlin after the one this test plants), so the property is "every slot runs once", not "one run"
+	var mu sync.Mutex
+	runs := map[string]int{}
 	job := Job{Name: "daily", Kind: Cron, Effect: Local, Cron: "0 2 * * *", TimeZone: "Europe/Berlin",
 		Handle: func(ctx context.Context, r *Run) error {
-			runs.Add(1)
+			mu.Lock()
+			runs[r.Slot]++
+			mu.Unlock()
 			time.Sleep(50 * time.Millisecond)
 			return r.Complete(ctx, func(ctx context.Context, tx db.Tx) error {
 				_, err := tx.Exec(ctx, "INSERT INTO items VALUES ($1)", ids.New())
@@ -84,10 +89,15 @@ func TestTwoReplicasRunACronSlotOnce(t *testing.T) { // P7.9, RT08
 	cancel()
 	a.Stop()
 	b.Stop()
-	assert.Equal(t, int32(1), runs.Load())
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, runs["2026-10-17T02:00"], "the planted slot ran once: %v", runs)
+	for slot, n := range runs {
+		assert.Equal(t, 1, n, "slot %s ran %d times", slot, n)
+	}
 	var effects int
 	require.NoError(t, admin.QueryRow(context.Background(), "SELECT count(*) FROM items").Scan(&effects))
-	assert.Equal(t, 1, effects)
+	assert.Equal(t, len(runs), effects, "one effect per slot")
 }
 
 func TestStopReleasesTheLeaseForAnotherReplica(t *testing.T) { // P7.8, RT07

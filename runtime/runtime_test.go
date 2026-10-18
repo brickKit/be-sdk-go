@@ -1,10 +1,16 @@
 package runtime
 
 import (
+	"io"
+	"log/slog"
 	"testing"
 
+	"github.com/brickKit/be-sdk-go/v3/calls"
 	"github.com/brickKit/be-sdk-go/v3/config"
+	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestEnvPrefixMatchesBrickKit(t *testing.T) {
@@ -28,4 +34,24 @@ func TestDependencyAddresses(t *testing.T) {
 	assert.False(t, ok, "an empty value means absent, never an empty address")
 	_, ok = rt.Dependency("erp/credit")
 	assert.False(t, ok, "an optional dependency that is not installed is absent")
+}
+
+func TestConfiguredAddresses(t *testing.T) { // P4.26
+	m, err := calls.NewMember(prometheus.NewRegistry())
+	require.NoError(t, err)
+	logs := slog.New(slog.NewTextHandler(io.Discard, nil))
+	rt := New(Parts{Outbound: m, Logger: logs})
+	h, ok := rt.HTTPAt("test/probe-go2", "http://test-probe-go2-3-1-0:8602")
+	assert.True(t, ok)
+	assert.NotNil(t, h)
+	_, ok = rt.HTTPAt("test/probe-go2", "")
+	assert.False(t, ok, "no address, no client")
+	_, ok = rt.GRPCAt("test/probe-go2", "http://test-probe-go2-3-1-0:9602")
+	assert.False(t, ok, "never plaintext: without a service identity the system surface is not dialled")
+	m.SetTLS(sectest.New(t).TLS(t, "test/probe-go"))
+	conn, ok := rt.GRPCAt("test/probe-go2", "http://test-probe-go2-3-1-0:9602")
+	require.True(t, ok)
+	assert.Equal(t, "test-probe-go2-3-1-0:9602", conn.Target(), "the $endpoint form is dialled by host and port")
+	same, _ := rt.GRPCAt("test/probe-go2", "test-probe-go2-3-1-0:9602")
+	assert.Same(t, conn, same, "one connection per component and address, kept for the member's life")
 }
