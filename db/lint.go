@@ -85,6 +85,11 @@ func LintMigrations(files fs.FS, schema string) []LintProblem {
 					problems = append(problems, LintProblem{File: name, Rule: r.code, Reason: r.reason, Statement: short(stmt.code)})
 				}
 			}
+			if what := bodySessionState(stmt); what != "" {
+				problems = append(problems, LintProblem{File: name, Rule: "SESSION_IN_BODY", Reason: "the body leaves " +
+					what + " on the connection; use SET LOCAL, set_config(…, true) or pg_advisory_xact_lock (protocol P5.31)",
+					Statement: short(stmt.code)})
+			}
 			if schema != "" && own.MatchString(stmt.code) {
 				problems = append(problems, LintProblem{File: name, Rule: "SCHEMA_NAME", Reason: "the schema name is written into the migration; leave names unqualified", Statement: short(stmt.code)})
 			}
@@ -93,18 +98,24 @@ func LintMigrations(files fs.FS, schema string) []LintProblem {
 	return problems
 }
 
-type statement struct{ code string }
+// statement is one top-level statement: its code without comments, literals and dollar quoted bodies, and the bodies.
+type statement struct {
+	code   string
+	bodies []string
+}
 
 // statements splits SQL on top-level semicolons, dropping comments and the contents of string literals and dollar
 // quoted bodies (a function body is checked as part of its CREATE statement, never as statements of its own).
 func statements(sql string) []statement {
 	var out []statement
 	var b strings.Builder
+	var bodies []string
 	flush := func() {
 		if s := strings.TrimSpace(b.String()); s != "" {
-			out = append(out, statement{code: s})
+			out = append(out, statement{code: s, bodies: bodies})
 		}
 		b.Reset()
+		bodies = nil
 	}
 	for i := 0; i < len(sql); {
 		c := sql[i]
@@ -153,8 +164,10 @@ func statements(sql string) []statement {
 			if tag := dollarTag(sql[i:]); tag != "" {
 				j := strings.Index(sql[i+len(tag):], tag)
 				if j < 0 {
+					bodies = append(bodies, sql[i+len(tag):])
 					i = len(sql)
 				} else {
+					bodies = append(bodies, sql[i+len(tag):i+len(tag)+j])
 					i += len(tag) + j + len(tag)
 				}
 				b.WriteString("$$")

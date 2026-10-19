@@ -3,6 +3,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -360,4 +361,38 @@ func TestASessionSettingIsRefusedAndNothingReachesTheNextTransaction(t *testing.
 		}))
 		assert.NotEqual(t, "7MB", got, "a transaction's setting reached the next transaction")
 	}
+}
+
+func TestAConnectionAFunctionLeftASettingOnIsClosed(t *testing.T) { // P5.31
+	host, port := fixture(t)
+	var logged bytes.Buffer
+	p, err := Open(context.Background(), PoolConfig{Target: Target{Host: host, Port: port, Database: testDB}, User: "sdk_shell",
+		Password: secret(t, "shell-pw"), AppName: "be/go-core", MaxConns: 1, Prepared: true,
+		Log: slog.New(slog.NewTextHandler(&logged, nil))})
+	require.NoError(t, err)
+	t.Cleanup(p.Close)
+	a := NewDB("demo/alpha", p, settings(host, port, "alpha", 1))
+	ctx := context.Background()
+	admin := pgtest.Admin(t, testDB)
+	pgtest.Exec(t, admin, `CREATE OR REPLACE FUNCTION alpha.leak_time_zone() RETURNS void LANGUAGE plpgsql AS $$
+		BEGIN PERFORM set_config('TimeZone', 'Asia/Tokyo', false); END $$`)
+	t.Cleanup(func() { pgtest.Exec(t, admin, "DROP FUNCTION IF EXISTS alpha.leak_time_zone()") })
+
+	var pid1, pid2 int
+	var zone string
+	require.NoError(t, a.Tx(ctx, func(ctx context.Context, tx Tx) error {
+		if err := tx.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&pid1); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, "SELECT leak_time_zone()")
+		return err
+	}), "the transaction itself succeeds")
+	require.NoError(t, a.Tx(ctx, func(ctx context.Context, tx Tx) error {
+		return tx.QueryRow(ctx, "SELECT pg_backend_pid(), current_setting('TimeZone')").Scan(&pid2, &zone)
+	}))
+	assert.Equal(t, "UTC", zone, "the next transaction does not inherit the leaked time zone")
+	assert.NotEqual(t, pid1, pid2, "the one pooled connection was replaced")
+	assert.Contains(t, logged.String(), "P5.31")
+	assert.Contains(t, logged.String(), "parameter=TimeZone")
+	assert.Contains(t, logged.String(), "member=demo/alpha")
 }

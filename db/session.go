@@ -29,6 +29,12 @@ func leftOnConnection(sql string) string {
 		return "SET without LOCAL"
 	case "RESET", "DISCARD", "LISTEN", "UNLISTEN":
 		return word
+	case "DO":
+		for _, st := range statements(sql) {
+			if what := bodySessionState(st); what != "" {
+				return what + " in a DO block"
+			}
+		}
 	}
 	if (strings.Contains(sql, "et_config") || strings.Contains(sql, "ET_CONFIG")) && sessionSetConfig.MatchString(sql) {
 		return "set_config(…, false)"
@@ -88,4 +94,77 @@ func guard(sql string) error {
 		return sessionError(what)
 	}
 	return nil
+}
+
+// bodyOwner is a statement whose dollar quoted body runs later or now as procedural code.
+var bodyOwner = regexp.MustCompile(`(?i)^(create\s+(or\s+replace\s+)?(function|procedure)|do)\b`)
+
+// bodyStatement finds SET or RESET at the start of a body statement: at the body's start, after a semicolon, or after
+// BEGIN, DECLARE, THEN, ELSE or LOOP (RE2 has no look-ahead; the word after SET is checked separately).
+var bodyStatement = regexp.MustCompile(`(?i)(?:^|;|\b(?:begin|declare|then|else|loop))\s*\b(set|reset)\b`)
+
+// bodySessionState names the session state a function, procedure or DO body would leave on the connection, or ""
+// (P5.31): the statement-level rules of P5.30 applied inside the body. Strings run by a dynamic EXECUTE are not seen.
+func bodySessionState(st statement) string {
+	if !bodyOwner.MatchString(st.code) {
+		return ""
+	}
+	for _, body := range st.bodies {
+		code := withoutComments(body)
+		for _, m := range bodyStatement.FindAllStringSubmatchIndex(code, -1) {
+			if strings.EqualFold(code[m[2]:m[3]], "reset") {
+				return "RESET"
+			}
+			switch next, _ := firstWord(code[m[3]:]); next {
+			case "LOCAL", "TRANSACTION", "CONSTRAINTS":
+				continue
+			}
+			return "SET without LOCAL"
+		}
+		if sessionSetConfig.MatchString(code) {
+			return "set_config(…, false)"
+		}
+		if lower := strings.ToLower(code); strings.Contains(lower, "pg_advisory_lock") ||
+			strings.Contains(lower, "pg_try_advisory_lock") {
+			return "a session-level advisory lock"
+		}
+	}
+	return ""
+}
+
+// withoutComments drops -- and /* */ comments outside string literals.
+func withoutComments(sql string) string {
+	var b strings.Builder
+	for i := 0; i < len(sql); {
+		switch {
+		case sql[i] == '\'':
+			j := i + 1
+			for j < len(sql) && !(sql[j] == '\'' && (j+1 >= len(sql) || sql[j+1] != '\'')) {
+				if sql[j] == '\'' {
+					j++ // an escaped quote
+				}
+				j++
+			}
+			end := min(j+1, len(sql))
+			b.WriteString(sql[i:end])
+			i = end
+		case strings.HasPrefix(sql[i:], "--"):
+			j := strings.IndexByte(sql[i:], '\n')
+			if j < 0 {
+				return b.String()
+			}
+			i += j
+		case strings.HasPrefix(sql[i:], "/*"):
+			j := strings.Index(sql[i+2:], "*/")
+			if j < 0 {
+				return b.String()
+			}
+			b.WriteByte(' ')
+			i += j + 4
+		default:
+			b.WriteByte(sql[i])
+			i++
+		}
+	}
+	return b.String()
 }
