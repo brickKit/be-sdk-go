@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -349,4 +351,36 @@ func TestACommitWakesAWorkerWithoutWaitingForThePoll(t *testing.T) { // P7.21
 		t.Fatal("a rolled-back item ran")
 	case <-time.After(300 * time.Millisecond):
 	}
+}
+
+func TestABacklogDoesNotSlowEachClaim(t *testing.T) { // P7.22
+	d, admin := dbtest.Schema(t, "work9", nil)
+	r := replica(d, 30*time.Second, Job{Name: "bulk", Kind: Queue, Effect: Local,
+		Handle: func(context.Context, *Run) error { return nil }},
+		Job{Name: "other", Kind: Queue, Effect: Local, Handle: func(context.Context, *Run) error { return nil }})
+	median := func() time.Duration {
+		var took []time.Duration
+		for range 15 {
+			started := time.Now()
+			run, err := r.claim(context.Background())
+			took = append(took, time.Since(started))
+			require.NoError(t, err)
+			require.NotNil(t, run)
+		}
+		slices.Sort(took)
+		return took[len(took)/2]
+	}
+	insert := func(n int) {
+		pgtest.Exec(t, admin, `INSERT INTO be_work_item (id, job, kind, state, max_attempts, effect_class, operation_id, args,
+			run_at) SELECT gen_random_uuid(), CASE WHEN g % 2 = 0 THEN 'bulk' ELSE 'other' END, 'queue', 'pending', 3,
+			'local', gen_random_uuid()::text, '{}'::jsonb, now() - g * interval '1 ms' FROM generate_series(1, `+
+			strconv.Itoa(n)+`) g`)
+		pgtest.Exec(t, admin, "ANALYZE be_work_item")
+	}
+	insert(40)
+	small := median()
+	insert(20000)
+	large := median()
+	t.Logf("claim median: %v with 40 items due, %v with 20 000", small, large)
+	assert.Less(t, large, max(4*small, 3*time.Millisecond), "a claim must not grow with the backlog")
 }

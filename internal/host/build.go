@@ -295,7 +295,7 @@ func (m *Member) background(sh Shared) error {
 		}
 		for _, s := range subs.List() {
 			m.consumers = append(m.consumers, &events.Consumer{Member: m.Def.ID, Sub: s, DB: sh.DB, Log: m.Logger,
-				Claims: events.NewHTTPClaims()})
+				Claims: events.NewHTTPClaims(), Configured: int(m.Values.Int(events.ConcurrencyKey))})
 		}
 	}
 	return nil
