@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"context"
-	"github.com/brickKit/be-sdk-go/v3/sectest"
 	"io"
 	"strconv"
 	"testing"
@@ -17,6 +16,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/internal/echotest"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
+	"github.com/brickKit/be-sdk-go/v3/sectest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/wrapperspb"

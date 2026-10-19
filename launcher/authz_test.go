@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,17 +58,20 @@ func TestNotReadyUntilTheDefinitionsAreAccepted(t *testing.T) {
 	w.Refuse("DEFINITION_OWNER_MISMATCH")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
-	go func() { done <- Run(ctx, def, Options{Env: env(vars), Stdout: io.Discard, Stderr: io.Discard}) }()
+	var stdout syncBuffer
+	go func() { done <- Run(ctx, def, Options{Env: env(vars), Stdout: &stdout, Stderr: io.Discard}) }()
 	require.Eventually(t, func() bool { c, _ := get(t, base+"/healthz"); return c == 200 }, 5*time.Second, 20*time.Millisecond)
 	time.Sleep(300 * time.Millisecond)
 	c, _ := get(t, base+"/readyz")
 	assert.Equal(t, 503, c, "refused definitions: not ready")
+	assert.NotContains(t, stdout.String(), `"event":"ready"`, "the ready line is written when the member is ready (P1.12)")
 	_, ok := w.Submitted("demo/alpha", "3.0.0")
 	assert.False(t, ok)
 
 	w.Refuse("")
 	require.Eventually(t, func() bool { c, _ := get(t, base+"/readyz"); return c == 200 }, 5*time.Second, 50*time.Millisecond,
 		"ready once a retry is accepted")
+	assert.Equal(t, 1, strings.Count(stdout.String(), `"event":"ready"`), "and then the ready line, once")
 	set, ok := w.Submitted("demo/alpha", "3.0.0")
 	assert.True(t, ok)
 	sealed, err := def.Authz.Records(w.Deployment, "3.0.0")

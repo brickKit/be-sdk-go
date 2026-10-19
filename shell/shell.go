@@ -7,7 +7,6 @@ package shell
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -16,6 +15,7 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -77,7 +77,8 @@ var shellKeys = []config.Key{
 // Run runs the shell until ctx is cancelled and returns the exit code.
 func Run(ctx context.Context, self Identity, defs []component.Definition, o Options) int {
 	if len(o.Args) > 0 && o.Args[0] != "serve" {
-		fmt.Fprintf(o.Stderr, "{\"level\":\"ERROR\",\"msg\":\"a shell only serves; migrations run from each member's own image (entry %q)\"}\n", o.Args[0])
+		obs.NewLogger(obs.Member{ID: self.ID, Version: self.Version}, slog.LevelInfo, o.Stderr).
+			Error("a shell only serves; migrations run from each member's own image", "entry", o.Args[0])
 		return host.ExitUsage
 	}
 	started := time.Now()
@@ -91,7 +92,7 @@ func Run(ctx context.Context, self Identity, defs []component.Definition, o Opti
 		}
 	}
 	if len(problems) > 0 {
-		host.ReportConfig(o.Stderr, self.ID, problems)
+		host.ReportConfig(o.Stderr, obs.Member{ID: self.ID, Version: self.Version}, problems)
 		return host.ExitConfiguration
 	}
 	buildInfo, modOf := o.BuildInfo, o.ModuleOf
@@ -112,7 +113,7 @@ func Run(ctx context.Context, self Identity, defs []component.Definition, o Opti
 		for _, r := range refusals {
 			ps = append(ps, r.problem())
 		}
-		host.ReportConfig(o.Stderr, self.ID, ps)
+		host.ReportConfig(o.Stderr, obs.Member{ID: self.ID, Version: self.Version}, ps)
 		return host.ExitConfiguration
 	}
 
@@ -177,7 +178,7 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 			Out: o.Stdout, DB: database, Transport: transport, Keys: keys})
 		var cfgErr *host.ConfigError
 		if errors.As(err, &cfgErr) {
-			host.ReportConfig(o.Stderr, p.def.ID, cfgErr.Problems)
+			host.ReportConfig(o.Stderr, obs.Member{ID: p.def.ID, Version: p.def.Version}, cfgErr.Problems)
 			for _, s := range servers {
 				_ = s.Close()
 			}
@@ -230,18 +231,22 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 	}
 	bg, stopBg := context.WithCancel(context.Background())
 	defer stopBg()
+	// each member says it is ready, with its own identity, as it does alone (P1.12; protocol 17: a member alone and
+	// in a shell behaves the same); the shell says so when the last of them is
+	var pending atomic.Int64
+	pending.Store(int64(len(members)))
+	shellReady := func() {
+		if pending.Add(-1) == 0 {
+			log.Info("ready", "event", "ready", "protocol", protocol.Version, "sdk", sdk.Version, "members", len(members),
+				"startup_ms", time.Since(started).Milliseconds())
+		}
+	}
 	for _, m := range members { // in the order BrickKit lists them
 		if err := m.Start(bg); err != nil {
 			return fail(m.Def.ID, "a member could not start", err)
 		}
-		m.SetState(host.Ready)
-		// each member says it is ready, with its own identity, as it does alone (P1.12; protocol 17: a member alone
-		// and in a shell behaves the same)
-		m.Logger.Info("ready", "event", "ready", "protocol", protocol.Version, "sdk", sdk.Version,
-			"startup_ms", time.Since(started).Milliseconds())
+		m.MarkReady(started, shellReady)
 	}
-	log.Info("ready", "event", "ready", "protocol", protocol.Version, "sdk", sdk.Version, "members", len(members),
-		"startup_ms", time.Since(started).Milliseconds())
 	<-ctx.Done()
 
 	drain, timeout := sv.Duration("STOP_DRAIN_DELAY"), sv.Duration("STOP_TIMEOUT")
