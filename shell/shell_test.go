@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
+	"github.com/brickKit/be-sdk-go/v3/sectest"
 	"io"
 	"net"
 	"net/http"

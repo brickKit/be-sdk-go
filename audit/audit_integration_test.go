@@ -16,7 +16,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/brickKit/be-sdk-go/v3/internal/dbtest"
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
-	"github.com/brickKit/be-sdk-go/v3/internal/records"
+	"github.com/brickKit/be-sdk-go/v3/records"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

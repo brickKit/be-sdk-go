@@ -89,6 +89,10 @@ func TestSDKIsMergeSafe(t *testing.T) {
 		if filepath.Base(filepath.Dir(f.Pos.Filename)) == "grpcx" && strings.HasPrefix(f.Why, "a module never serves") {
 			continue // the SDK's own system-surface server
 		}
+		if filepath.Base(filepath.Dir(f.Pos.Filename)) == "sectest" &&
+			(strings.HasPrefix(f.Why, "a module never serves") || strings.HasPrefix(f.Why, "a module never listens")) {
+			continue // the test deployment's fake members: tests only, never imported by component code
+		}
 		left = append(left, f.String())
 	}
 	assert.Empty(t, left)

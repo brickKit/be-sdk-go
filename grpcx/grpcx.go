@@ -44,8 +44,13 @@ type Method struct {
 	// Timeout overrides the default deadline.
 	Timeout time.Duration
 	// Callers are the components allowed to call this method (P8.6); a caller is known by its verified certificate.
+	// AnyComponent admits every component of this deployment: a family contract's methods that every component
+	// calls (the authorization member's view verification, the audit intake); the method still learns the caller.
 	Callers []string
 }
+
+// AnyComponent in Method.Callers admits any caller whose certificate this deployment's trust root issued.
+const AnyComponent = "*"
 
 func (m Method) deadline() time.Duration {
 	switch {
@@ -183,7 +188,7 @@ func interceptor(d Deps, s *Services, duration *prometheus.HistogramVec) grpc.Un
 		defer cancel()
 
 		caller, ok := identity.Caller(ctx, d.TLS.Deployment)
-		if !ok || !slices.Contains(decl.Callers, caller) {
+		if !ok || !(slices.Contains(decl.Callers, caller) || slices.Contains(decl.Callers, AnyComponent)) {
 			log.Warn("a system call from a component not allowed to call this method", "method", info.FullMethod, "caller", caller)
 			return nil, errs.New(errs.ReasonPermissionDenied, "this component may not call this method").GRPCStatus().Err()
 		}

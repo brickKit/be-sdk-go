@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/brickKit/be-sdk-go/v3/calls"
-	"github.com/brickKit/be-sdk-go/v3/internal/records"
+	"github.com/brickKit/be-sdk-go/v3/records"
 	authzv3 "github.com/brickKit/contract-infra-authz/v3/gen/go/be/authz/v3"
 	"google.golang.org/grpc"
 )
