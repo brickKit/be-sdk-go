@@ -100,3 +100,18 @@ func (c *Context) NoContent(status int) error {
 	c.gin.Status(status)
 	return nil
 }
+
+// SetCookie adds a Set-Cookie header to the response (the identity member's session cookie, protocol 20). Call it
+// before writing the response.
+func (c *Context) SetCookie(ck *http.Cookie) {
+	http.SetCookie(c.gin.Writer, ck)
+}
+
+// Redirect answers with a redirect to location; status is 302, 303 or 307 (a login's hops, protocol 20).
+func (c *Context) Redirect(status int, location string) error {
+	if status != http.StatusFound && status != http.StatusSeeOther && status != http.StatusTemporaryRedirect {
+		return errs.New(errs.ReasonInternal, "a redirect is 302, 303 or 307")
+	}
+	c.gin.Redirect(status, location)
+	return nil
+}
