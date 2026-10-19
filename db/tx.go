@@ -181,7 +181,12 @@ func (d *DB) once(ctx context.Context, fn func(context.Context, Tx) error, o txO
 	if o.serializable {
 		iso = pgx.Serializable
 	}
-	tx, err := d.pool.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: iso})
+	conn, err := d.pool.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer d.pool.release(conn, d.member) // after the rollback below; checks what the transaction left (P5.31)
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: iso})
 	if err != nil {
 		return err
 	}

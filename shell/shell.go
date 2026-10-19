@@ -143,7 +143,7 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 		}
 		return host.ExitFailure
 	}
-	pools, err := openPools(ctx, self, sv, plans)
+	pools, err := openPools(ctx, self, sv, plans, log)
 	defer func() {
 		for _, p := range pools {
 			p.Close()

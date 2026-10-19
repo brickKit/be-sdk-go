@@ -35,8 +35,9 @@ func serve(ctx context.Context, def component.Definition, o Options) int {
 		// alone, the component connects with its own runtime login role (protocol 14, "connection pools")
 		s := db.SettingsFrom(values)
 		var err error
+		plog := obs.NewLogger(obs.Member{ID: def.ID, Version: def.Version}, obs.ParseLevel(values.String("LOG_LEVEL")), o.Stdout)
 		pool, err = db.Open(ctx, db.PoolConfig{Target: s.Target, User: s.User, Password: s.Password, AppName: def.ID,
-			MaxConns: int32(s.Foreground + s.Background), Prepared: s.Prepared})
+			MaxConns: int32(s.Foreground + s.Background), Prepared: s.Prepared, Log: plog})
 		if err != nil {
 			fmt.Fprintf(o.Stdout, "{\"level\":\"ERROR\",\"component\":%q,\"msg\":%q}\n", def.ID, err.Error())
 			return ExitConfiguration
