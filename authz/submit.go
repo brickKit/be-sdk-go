@@ -25,7 +25,8 @@ type Sealed struct {
 // the identity is stable for the component, kind and key, and the revision is the component's version. Validate
 // must have passed.
 func (d *Definitions) Records(deployment, version string) ([]Sealed, error) {
-	domain := strings.ReplaceAll(d.Component, "/", ".") + ".definition"
+	// the revision domain is a Key: a component ID's "/" and "-" are not allowed in one (test/probe-go2 -> test.probe_go2)
+	domain := strings.NewReplacer("/", ".", "-", "_").Replace(d.Component) + ".definition"
 	env := func(recordType, kind, key string) map[string]any {
 		return map[string]any{"record_type": recordType, "schema": "1.0", "deployment": deployment,
 			"authority": d.Component, "id": stableID(d.Component, kind, key),
