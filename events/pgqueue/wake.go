@@ -10,9 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Waking the readers (P6.30): a publish NOTIFYs wakeChan with the message's subject in the statement that inserts it;
-// one dedicated connection per transport LISTENs and wakes the idle readers of the subscriptions the subject matches.
-// The poll stays: while the connection is down, behind a pooler in transaction mode (no LISTEN there), and for rows
+// Waking the readers (P6.30): a publish NOTIFYs wakeChan with the message's subject once its insert has committed, in a
+// statement of its own (see Publish); one dedicated connection per transport LISTENs and wakes the idle readers of the
+// subscriptions the subject matches. The poll stays: while the connection is down, behind a pooler in transaction mode (no LISTEN there), and for rows
 // held back by the xmin barrier (P6.23). Without the wake every message waited half a poll at low load (measured:
 // arrival p50 about 55 ms at a 100 ms poll, against about 3 ms on JetStream).
 

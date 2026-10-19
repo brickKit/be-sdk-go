@@ -164,7 +164,11 @@ func size(m events.Message) int {
 }
 
 // Publish implements events.Transport: the insert's commit is the acknowledgement; a repeated message ID is a no-op.
-// A new message NOTIFYs the readers in the same statement (P6.30); NOTIFY is delivered on commit.
+// A new message then NOTIFYs the readers in a statement of its own (P6.30). A transaction that NOTIFYs takes an
+// instance-wide lock at commit and holds it until its commit record is flushed, so publishes that NOTIFY in the
+// inserting transaction commit one at a time (measured: about 435 a second from 8 publishers against about 2000
+// without); a NOTIFY alone writes nothing and holds the lock briefly. A NOTIFY that fails is reported, not returned:
+// the message is stored and the poll reads it.
 func (t *Transport) Publish(ctx context.Context, m events.Message) error {
 	if size(m) > MaxMessage {
 		return events.ErrTooLarge
@@ -177,10 +181,15 @@ func (t *Transport) Publish(ctx context.Context, m events.Message) error {
 	if m.ID() != "" {
 		id = m.ID()
 	}
-	_, err = t.pool.Exec(ctx, `WITH m AS (INSERT INTO `+t.t("be_bus_message")+` (msg_id, subject, headers, data)
-		VALUES ($1, $2, $3, $4) ON CONFLICT (msg_id) WHERE msg_id IS NOT NULL DO NOTHING RETURNING 1)
-		SELECT pg_notify($5, $2) FROM m`, id, m.Subject, headers, m.Data, wakeChan)
-	return err
+	tag, err := t.pool.Exec(ctx, `INSERT INTO `+t.t("be_bus_message")+` (msg_id, subject, headers, data)
+		VALUES ($1, $2, $3, $4) ON CONFLICT (msg_id) WHERE msg_id IS NOT NULL DO NOTHING`, id, m.Subject, headers, m.Data)
+	if err != nil || tag.RowsAffected() == 0 {
+		return err
+	}
+	if _, err := t.pool.Exec(ctx, "SELECT pg_notify($1, $2)", wakeChan, m.Subject); err != nil {
+		t.report(fmt.Errorf("bus wake after a publish (the poll reads the message): %w", err))
+	}
+	return nil
 }
 
 type subscription struct {
