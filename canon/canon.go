@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -88,6 +89,12 @@ func encode(b *bytes.Buffer, v any) error {
 		return encodeInt(b, x)
 	case float32, float64:
 		return fmt.Errorf("%w: floating point", ErrRefused)
+	case json.Number: // decoded with UseNumber: only integers are allowed
+		n, ok := new(big.Int).SetString(string(x), 10)
+		if !ok {
+			return fmt.Errorf("%w: number %s is not an integer", ErrRefused, x)
+		}
+		return encodeInt(b, n)
 	case string:
 		encodeString(b, x)
 	case []string:
@@ -175,10 +182,59 @@ func Digest(recordType string, major int, v any) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return DigestBytes(recordType, major, body), nil
+}
+
+// DigestBytes is Digest over bytes that are already canonical (a record as received, D76).
+func DigestBytes(recordType string, major int, body []byte) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s.v%d\n", recordType, major)
 	h.Write(body)
-	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// Parse decodes bytes received as a canonical record and refuses them unless they are exactly the canonical
+// encoding of what they decode to (key order, no whitespace, minimal escapes, no null or floating point, NFC
+// text). Numbers come back as json.Number.
+func Parse(raw []byte) (any, error) {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	var v any
+	if err := d.Decode(&v); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRefused, err)
+	}
+	if d.More() {
+		return nil, fmt.Errorf("%w: data after the value", ErrRefused)
+	}
+	again, err := Encode(nfc(v))
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(again, raw) {
+		return nil, fmt.Errorf("%w: the bytes are not in canonical form", ErrRefused)
+	}
+	return v, nil
+}
+
+// nfc normalizes every string and key, so that text not in NFC shows up as a difference.
+func nfc(v any) any {
+	switch x := v.(type) {
+	case string:
+		return Text(x)
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = nfc(e)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			out[Text(k)] = nfc(e)
+		}
+		return out
+	}
+	return v
 }
 
 // SortedSet orders a set's elements by their canonical bytes and drops duplicates.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	authzv3 "github.com/brickKit/contract-infra-authz/v3/gen/go/be/authz/v3"
 	"io"
 	"log/slog"
 	"net/url"
@@ -215,7 +216,12 @@ func (m *Member) userSurface(member obs.Member, values *config.Values, sh Shared
 	var err error
 	m.Engine, err = httpx.NewEngine(httpx.Deps{Member: member, Logger: m.Logger, Registry: m.Registry, Tracer: rt.Tracer,
 		Guard: g, Platform: httpx.Platform{
-			Ready:    func() (bool, string, []string) { s := m.State(); return s == Ready, s, nil },
+			Ready: func() (bool, string, []string) {
+				if s := m.State(); s != Ready || m.IsReady() {
+					return s == Ready, s, nil
+				}
+				return false, "definitions_pending", nil // not ready until the authorization member accepts them
+			},
 			Describe: func() any { return m.Describe() },
 		}}, &routes)
 	if err != nil {
@@ -258,6 +264,8 @@ func (m *Member) guard(values *config.Values, sh Shared, ops []string) (httpx.Gu
 		return nil, err
 	}
 	m.holder = authz.NewHolder(m.Def.ID, authz.GRPCSource{Conn: conn}, m.Logger)
+	m.definitions = authzv3.NewDefinitionServiceClient(conn)
+	m.deployment = values.String("DEPLOYMENT_ID")
 	return &guard.User{Defs: m.Def.Authz, Holder: m.holder, Log: m.Logger,
 		Verifier: &identity.Verifier{Issuer: values.String("IAM_ISSUER"), Audience: "be:deployment:" + values.String("DEPLOYMENT_ID"),
 			Keys: sh.Keys}}, nil

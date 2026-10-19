@@ -5,7 +5,9 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	authzv3 "github.com/brickKit/contract-infra-authz/v3/gen/go/be/authz/v3"
 	"io"
 	"log/slog"
 	"sync/atomic"
@@ -102,13 +104,22 @@ type Member struct {
 	runner    *work.Runner
 	hasJobs   bool
 	holder    *authz.Holder
-	tls       *identity.ServiceTLS
-	state     atomic.Value
-	reread    func(string) ([]byte, error)
+	// definitions submits the declared definitions at start; defsAccepted gates readiness (protected routes only).
+	definitions  authzv3.DefinitionServiceClient
+	deployment   string
+	defsAccepted atomic.Bool
+	tls          *identity.ServiceTLS
+	state        atomic.Value
+	reread       func(string) ([]byte, error)
 }
 
 // State returns the member's lifecycle state.
 func (m *Member) State() string { return m.state.Load().(string) }
+
+// IsReady reports the member ready: started, and with protected routes its definitions accepted.
+func (m *Member) IsReady() bool {
+	return m.State() == Ready && (m.holder == nil || m.defsAccepted.Load())
+}
 
 // SetState changes it (the launcher and the shell drive the transitions).
 func (m *Member) SetState(s string) { m.state.Store(s) }
@@ -147,14 +158,19 @@ func (m *Member) Start(bg context.Context) error {
 		})
 	}
 	if m.holder != nil {
-		// one verification before ready, so the first requests find a view; best effort: the authorization member
-		// may be down, and then protected requests answer a retryable 503 until it is back
+		// the definitions first, then one verification before ready, so the first requests find a view; both best
+		// effort: the authorization member may be down, and then the member stays not ready until it is back
 		first, cancel := context.WithTimeout(bg, 2*time.Second)
-		if err := m.holder.Verify(first); err != nil {
-			m.Logger.Warn("no authorization view yet; protected requests wait for one", "error", err.Error())
+		if m.submit(first) {
+			if err := m.holder.Verify(first); err != nil {
+				m.Logger.Warn("no authorization view yet; protected requests wait for one", "error", err.Error())
+			}
+			cancel()
+			go m.holder.Run(bg)
+		} else {
+			cancel()
+			go m.submitUntilAccepted(bg)
 		}
-		cancel()
-		go m.holder.Run(bg)
 	}
 	for _, c := range m.consumers {
 		sub, err := m.transport.Subscribe(bg, c.Spec(), c.Handle)
@@ -165,6 +181,45 @@ func (m *Member) Start(bg context.Context) error {
 	}
 	go m.rereadSecrets(bg)
 	return nil
+}
+
+// submit sends the declared definitions once (DefinitionService.Submit) and reports whether they were accepted.
+func (m *Member) submit(ctx context.Context) bool {
+	err := m.Def.Authz.Submit(ctx, m.definitions, m.deployment, m.Def.Version)
+	if err == nil {
+		m.defsAccepted.Store(true)
+		return true
+	}
+	var rejected *authz.RejectedError
+	if errors.As(err, &rejected) {
+		m.Logger.Error("the authorization member refused this version's definitions; the member stays not ready", "error", err.Error())
+	} else {
+		m.Logger.Warn("the definitions could not be submitted yet; the member stays not ready", "error", err.Error())
+	}
+	return false
+}
+
+// submitUntilAccepted retries the submission with a growing pause, then starts the view holder.
+func (m *Member) submitUntilAccepted(bg context.Context) {
+	pause := time.Second
+	for bg.Err() == nil {
+		select {
+		case <-bg.Done():
+			return
+		case <-time.After(pause):
+		}
+		ctx, cancel := context.WithTimeout(bg, 5*time.Second)
+		ok := m.submit(ctx)
+		if ok {
+			_ = m.holder.Verify(ctx)
+		}
+		cancel()
+		if ok {
+			m.holder.Run(bg)
+			return
+		}
+		pause = min(pause*2, 30*time.Second)
+	}
 }
 
 // Stop stops the module's work within ctx, then releases its outbound connections.

@@ -2,7 +2,6 @@ package audit
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -17,22 +16,22 @@ const (
 	TransferEvery = 5 * time.Second
 )
 
-// Wire is one record as it is sent to the audit component.
+// Wire is one record as it is sent to the audit component: the canonical bytes stored with the row (P8.21).
 type Wire struct {
-	ID     string          `json:"id"`
-	Seq    int64           `json:"seq"`
-	Epoch  string          `json:"epoch"` // <generation>.<timeline>
-	Digest string          `json:"digest"`
-	Record json.RawMessage `json:"record"`
+	ID     string
+	Seq    int64
+	Epoch  string // <generation>.<timeline>
+	Digest string
+	Record []byte
 }
 
 // Receipt is the audit component's answer for one record.
 type Receipt struct {
-	ID     string `json:"id"`
-	Status string `json:"status"` // received, conflict
-	Epoch  string `json:"epoch"`  // the audit database's epoch
-	Seq    int64  `json:"seq"`    // its storage sequence
-	Chain  string `json:"chain"`  // the source chain digest
+	ID     string
+	Status string // received; anything else (conflict, invalid, unknown) stops the record
+	Epoch  string // the audit database's epoch
+	Seq    int64  // its storage sequence
+	Chain  string // the source chain digest
 }
 
 // Sender delivers records to the audit component, idempotent by ID.
@@ -82,11 +81,9 @@ func (a *Auditor) Transfer(ctx context.Context, s Sender) (int, error) {
 	var batch []Wire
 	err := a.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
 		batch = batch[:0]
-		rows, err := tx.Query(ctx, `SELECT id::text, seq, epoch_generation, epoch_timeline, digest,
-			json_build_object('occurred_at', occurred_at, 'category', category, 'operation', operation, 'outcome', outcome,
-				'reason', reason, 'actor', actor, 'represented', represented, 'target', target, 'changes', changes,
-				'request', request)::text
-			FROM be_audit_log WHERE transfer_state = 'pending' AND seq IS NOT NULL ORDER BY ord LIMIT $1`, Batch)
+		rows, err := tx.Query(ctx, `SELECT id::text, seq, epoch_generation, epoch_timeline, digest, record
+			FROM be_audit_log WHERE transfer_state = 'pending' AND seq IS NOT NULL AND record IS NOT NULL
+			ORDER BY ord LIMIT $1`, Batch)
 		if err != nil {
 			return err
 		}
@@ -94,11 +91,10 @@ func (a *Auditor) Transfer(ctx context.Context, s Sender) (int, error) {
 		for rows.Next() {
 			var w Wire
 			var g, t int64
-			var rec string
-			if err := rows.Scan(&w.ID, &w.Seq, &g, &t, &w.Digest, &rec); err != nil {
+			if err := rows.Scan(&w.ID, &w.Seq, &g, &t, &w.Digest, &w.Record); err != nil {
 				return err
 			}
-			w.Epoch, w.Record = strconv.FormatInt(g, 10)+"."+strconv.FormatInt(t, 10), json.RawMessage(rec)
+			w.Epoch = strconv.FormatInt(g, 10) + "." + strconv.FormatInt(t, 10)
 			batch = append(batch, w)
 		}
 		return rows.Err()
@@ -112,9 +108,9 @@ func (a *Auditor) Transfer(ctx context.Context, s Sender) (int, error) {
 	}
 	err = a.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
 		for _, r := range receipts {
-			state := "received"
-			if r.Status == "conflict" {
-				state = "conflict"
+			state := "conflict" // conflict, invalid or a status this SDK does not know: never taken as received (P8.21)
+			if r.Status == "received" {
+				state = "received"
 			}
 			if _, err := tx.Exec(ctx, `UPDATE be_audit_log SET transfer_state = $2, receipt_epoch = $3, receipt_seq = $4,
 				receipt_chain = $5, received_at = now() WHERE id = $1 AND transfer_state = 'pending'`,

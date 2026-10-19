@@ -2,22 +2,20 @@ package audit
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/calls"
 	"github.com/brickKit/be-sdk-go/v3/work"
+	auditv3 "github.com/brickKit/infra-audit/contract/v3/gen/go/be/audit/v3"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
-// Methods of the audit component's system surface. Until its contract is generated the records travel as JSON in a
-// BytesValue.
+// Methods of the audit component's system surface (infra-audit's contract).
 const (
-	SubmitMethod    = "/be.audit.v3.Intake/Submit"
-	WatermarkMethod = "/be.audit.v3.Intake/Watermark"
+	SubmitMethod    = auditv3.IntakeService_Submit_FullMethodName
+	WatermarkMethod = auditv3.IntakeService_Watermark_FullMethodName
 )
 
 // SendTimeout bounds one run's sending to the audit component.
@@ -28,26 +26,40 @@ type GRPCSender struct{ Conn *grpc.ClientConn }
 
 // Send implements Sender.
 func (g GRPCSender) Send(ctx context.Context, records []Wire) ([]Receipt, error) {
-	body, err := json.Marshal(records)
+	in := &auditv3.SubmitRequest{}
+	for _, r := range records {
+		in.Items = append(in.Items, &auditv3.Item{Id: r.ID, Seq: r.Seq, Epoch: r.Epoch, Digest: r.Digest, Record: r.Record})
+	}
+	out, err := auditv3.NewIntakeServiceClient(g.Conn).Submit(ctx, in, calls.Idempotent())
 	if err != nil {
 		return nil, err
 	}
-	out := new(wrapperspb.BytesValue)
-	if err := g.Conn.Invoke(ctx, SubmitMethod, wrapperspb.Bytes(body), out, calls.Idempotent()); err != nil {
-		return nil, err
+	rs := make([]Receipt, 0, len(out.GetReceipts()))
+	for _, r := range out.GetReceipts() {
+		status := "conflict"
+		switch r.GetStatus() {
+		case auditv3.ReceiptStatus_RECEIPT_STATUS_RECEIVED:
+			status = "received"
+		case auditv3.ReceiptStatus_RECEIPT_STATUS_INVALID:
+			status = "invalid"
+		}
+		rs = append(rs, Receipt{ID: r.GetId(), Status: status, Epoch: r.GetEpoch(), Seq: r.GetSeq(), Chain: r.GetChain()})
 	}
-	var rs []Receipt
-	return rs, json.Unmarshal(out.Value, &rs)
+	return rs, nil
 }
 
 // Watermark reads the audit component's backed-up watermark.
 func (g GRPCSender) Watermark(ctx context.Context) (Watermark, error) {
-	out := new(wrapperspb.BytesValue)
-	if err := g.Conn.Invoke(ctx, WatermarkMethod, wrapperspb.Bytes([]byte("{}")), out, calls.Idempotent()); err != nil {
+	out, err := auditv3.NewIntakeServiceClient(g.Conn).Watermark(ctx, &auditv3.WatermarkRequest{}, calls.Idempotent())
+	if err != nil {
 		return Watermark{}, err
 	}
-	var w Watermark
-	return w, json.Unmarshal(out.Value, &w)
+	w := Watermark{Epoch: out.GetEpoch(), Seq: out.GetSeq(), BackedUpInEpoch: out.GetBackedUpInEpoch(),
+		Ancestors: map[string]int64{}}
+	for _, a := range out.GetAncestors() {
+		w.Ancestors[a.GetEpoch()] = a.GetFork()
+	}
+	return w, nil
 }
 
 // Job is the transfer as a singleton work item (P8.21): number, summarize finished denial windows, send until

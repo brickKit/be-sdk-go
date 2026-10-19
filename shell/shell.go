@@ -271,7 +271,7 @@ func ownSurface(self Identity, sv *config.Values, members []*host.Member) (http.
 			Ready: func() (bool, string, []string) {
 				var waiting []string
 				for _, m := range members {
-					if m.State() != host.Ready {
+					if !m.IsReady() {
 						waiting = append(waiting, m.Def.ID)
 					}
 				}
