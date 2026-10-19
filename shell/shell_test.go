@@ -221,11 +221,15 @@ func TestRefusesVersionMismatchAndBadConfigAllAtOnce(t *testing.T) {
 }
 
 func TestRefusesProcessKeysThatDisagree(t *testing.T) {
-	js := served(t, Served{ComponentID: "demo/alpha", Version: "0.1.0", HTTPPort: 18081, Config: map[string]string{"GREETING": "x", "OTEL_URL": "http://otel-a:4318"}},
+	// gamma leaves OTEL_URL unset: it does not use that resource, so it agrees with both (P2.11)
+	js := served(t, Served{ComponentID: "demo/gamma", Version: "0.1.0", HTTPPort: 18083, Config: map[string]string{"GREETING": "x"}},
+		Served{ComponentID: "demo/alpha", Version: "0.1.0", HTTPPort: 18081, Config: map[string]string{"GREETING": "x", "OTEL_URL": "http://otel-a:4318"}},
 		Served{ComponentID: "demo/beta", Version: "0.1.0", HTTPPort: 18082, Config: map[string]string{"GREETING": "x", "OTEL_URL": "http://otel-b:4318"}})
-	out := refuse(t, shellEnv(18080, js), buildInfo(map[string]string{"demo/alpha": "v0.1.0", "demo/beta": "v0.1.0"}),
-		def("demo/alpha", "0.1.0"), def("demo/beta", "0.1.0"))
+	out := refuse(t, shellEnv(18080, js), buildInfo(map[string]string{"demo/alpha": "v0.1.0", "demo/beta": "v0.1.0", "demo/gamma": "v0.1.0"}),
+		def("demo/alpha", "0.1.0"), def("demo/beta", "0.1.0"), def("demo/gamma", "0.1.0"))
 	assert.Contains(t, out, `demo/beta:OTEL_URL`)
+	assert.NotContains(t, out, `demo/gamma`)
+	assert.NotContains(t, out, `demo/alpha:OTEL_URL`)
 }
 
 func TestShellDoesNotMigrate(t *testing.T) {
@@ -257,4 +261,43 @@ func TestPackageOfAndModuleOf(t *testing.T) {
 	mod, _ = moduleOf(def("demo/alpha", "0.1.0"), bi)
 	require.NotNil(t, mod)
 	assert.Equal(t, "github.com/brickKit/be-sdk-go/v3", mod.Path)
+}
+
+// open is a member with only a public route and no security keys at all (like the identity member, which verifies no
+// tokens).
+type open struct{}
+
+func (open) Routes(r *httpx.Routes) error {
+	r.Add(httpx.Route{Method: http.MethodGet, Path: "/api/open", Public: true, Handle: func(c *httpx.Context) error {
+		return c.JSON(200, map[string]string{"from": "demo/open"})
+	}})
+	return nil
+}
+
+func TestAMemberWithoutTheSecurityKeysSharesTheShell(t *testing.T) { // P2.11
+	// listed first, the open member sets none of the process-level security keys; the shell takes them from the
+	// member that does, so the protected member still verifies tokens
+	po, pa, ps := freePort(t), freePort(t), freePort(t)
+	openDef := component.Definition{ID: "demo/open", Version: "0.1.0",
+		New: func(*runtime.Runtime) (component.Module, error) { return open{}, nil }}
+	defs := []component.Definition{openDef, def("demo/alpha", "0.1.0")}
+	secured := secure(t, defs[1:], Served{ComponentID: "demo/alpha", Version: "0.1.0", HTTPPort: pa,
+		Config: map[string]string{"GREETING": "hi from alpha"}})
+	js := served(t, Served{ComponentID: "demo/open", Version: "0.1.0", HTTPPort: po}, secured[0])
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	var stderr syncBuffer
+	go func() {
+		done <- Run(ctx, self, defs, Options{Env: shellEnv(ps, js), Stdout: io.Discard, Stderr: &stderr,
+			BuildInfo: buildInfo(map[string]string{"demo/open": "v0.1.0", "demo/alpha": "v0.1.0"}), ModuleOf: moduleByID})
+	}()
+	shellURL := "http://127.0.0.1:" + strconv.Itoa(ps)
+	require.Eventually(t, func() bool { c, _ := get(t, shellURL+"/readyz"); return c == 200 }, shellReady, 20*time.Millisecond,
+		stderr.String())
+	c, body := get(t, "http://127.0.0.1:"+strconv.Itoa(pa)+"/api/hello")
+	assert.Equal(t, 200, c, "the token is verified with the keys of the member that sets IAM_JWKS_URL: %s", body)
+	c, _ = get(t, "http://127.0.0.1:"+strconv.Itoa(po)+"/api/open")
+	assert.Equal(t, 200, c)
+	cancel()
+	assert.Equal(t, 0, <-done)
 }

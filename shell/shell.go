@@ -162,11 +162,15 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 	if transport != nil {
 		defer transport.Close()
 	}
-	var keys *identity.KeySet // one per process (protocol 17); IAM_JWKS_URL agrees across the members
-	if len(plans) > 0 {
-		if keys, err = host.OpenKeys(ctx, plans[0].values); err != nil {
+	var keys *identity.KeySet // one per process (protocol 17); IAM_JWKS_URL agrees across the members that set it
+	for _, p := range plans {
+		if p.values.String("IAM_JWKS_URL") == "" {
+			continue
+		}
+		if keys, err = host.OpenKeys(ctx, p.values); err != nil {
 			log.Warn("the identity keys could not be fetched yet", "error", err.Error())
 		}
+		break
 	}
 	for _, p := range plans {
 		var database *db.DB

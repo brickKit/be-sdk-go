@@ -177,7 +177,8 @@ func targetsAgree(members []planned) []refusal {
 // goVersion is the Go module version of a component version: v + version (the /vN path suffix is in the module path).
 func goVersion(v string) string { return "v" + v }
 
-// processKeysAgree checks that every key marked Process has the same value in every member that declares it (P2.11).
+// processKeysAgree checks that every key marked Process has the same value in every member that sets it (P2.11); a
+// member that leaves it unset does not use that resource (the identity member verifies no tokens) and agrees with any.
 func processKeysAgree(members []planned) []refusal {
 	type seen struct {
 		member string
@@ -190,11 +191,16 @@ func processKeysAgree(members []planned) []refusal {
 			if !k.Process {
 				continue
 			}
-			v, _ := m.values.Raw(k.Name)
+			v, set := m.values.Raw(k.Name)
 			if k.Secret { // compared by value, never shown
-				if s := m.values.Secret(k.Name); s != nil {
+				s := m.values.Secret(k.Name)
+				set = s != nil
+				if set {
 					v = s.Value()
 				}
+			}
+			if !set || v == "" {
+				continue
 			}
 			if f, ok := first[k.Name]; !ok {
 				first[k.Name] = seen{m.def.ID, v}
