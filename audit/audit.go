@@ -5,6 +5,7 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strconv"
@@ -88,17 +89,40 @@ func body(r Record, id string, at time.Time) (map[string]any, error) {
 	return b, nil
 }
 
-// canonMap round-trips a map through JSON so it contains only the encoder's types (numbers must be strings).
+// canonMap round-trips a map through JSON so it contains only the encoder's types: numbers stay json.Number, so an
+// integer (a version, a count) is encoded and a fraction is refused (decimals travel as strings, protocol 14).
 func canonMap(m map[string]any) (map[string]any, error) {
 	raw, err := json.Marshal(m)
 	if err != nil {
 		return nil, err
 	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
 	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := dec.Decode(&out); err != nil {
 		return nil, err
 	}
+	dropNulls(out)
 	return out, nil
+}
+
+// dropNulls removes the null members of every object: the canonical encoding has no null (security 09a), and an
+// absent member says the same as a null one (a record's state with no parent, no cash unit).
+func dropNulls(v any) {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, e := range x {
+			if e == nil {
+				delete(x, k)
+				continue
+			}
+			dropNulls(e)
+		}
+	case []any:
+		for _, e := range x {
+			dropNulls(e)
+		}
+	}
 }
 
 func jsonOrNil(v any) any {
