@@ -259,12 +259,10 @@ func matches(s events.SubscriptionSpec, subject string) bool {
 // work claims first and moves the read position only when nothing is due (P6.28): one advance queues a batch, which
 // the next claims take, so a message costs its claim and its outcome; advancing before every claim cost a
 // transaction of several round trips a message.
-// An idle round waits for the poll or the subscription's wake (P6.30), taken before the claim so that a wake during the
-// claim is not missed.
+// An idle round waits for the poll or a wake token of the subscription (P6.30).
 func (t *Transport) work(ctx context.Context, s events.SubscriptionSpec, w *waker, h events.Handler) {
 	var gaveUp time.Time
 	for ctx.Err() == nil {
-		woken := w.current()
 		if time.Since(gaveUp) >= giveUpEvery {
 			if err := t.giveUp(ctx, s); err != nil && ctx.Err() == nil {
 				t.report(fmt.Errorf("bus subscription %s: %w", s.Durable, err))
@@ -289,7 +287,7 @@ func (t *Transport) work(ctx context.Context, s events.SubscriptionSpec, w *wake
 			if err != nil {
 				sleep(ctx, t.poll)
 			} else if !moved {
-				idle(ctx, t.poll, woken)
+				idle(ctx, t.poll, w.tokens)
 			}
 			continue
 		}

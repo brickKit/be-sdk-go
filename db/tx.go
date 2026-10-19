@@ -60,18 +60,27 @@ func (t Tx) AfterCommit(fn func()) {
 	}
 }
 
-// Exec runs a statement.
+// Exec runs a statement; one that would leave state on the pooled connection fails (P5.30).
 func (t Tx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	if err := guard(sql); err != nil {
+		return pgconn.CommandTag{}, err
+	}
 	return t.tx.Exec(ctx, t.prefix+sql, args...)
 }
 
-// Query runs a query.
+// Query runs a query; see Exec.
 func (t Tx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	if err := guard(sql); err != nil {
+		return nil, err
+	}
 	return t.tx.Query(ctx, t.prefix+sql, args...)
 }
 
-// QueryRow runs a query returning at most one row.
+// QueryRow runs a query returning at most one row; see Exec.
 func (t Tx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if err := guard(sql); err != nil {
+		return errRow{err}
+	}
 	return t.tx.QueryRow(ctx, t.prefix+sql, args...)
 }
 
