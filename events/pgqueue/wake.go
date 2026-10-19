@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/events"
@@ -23,30 +22,24 @@ const (
 	relistenFrom = time.Second
 )
 
-// waker is one subscription's wake signal: closed and replaced on every matching notification, so a reader that took
-// it before its claim sees a wake that came during the claim.
+// waker is one subscription's wake signal: a token per matching notification, at most one per reader, so one message
+// wakes one idle reader rather than all of them (waking all made every reader claim and advance for one message). A
+// token left while every reader is busy is taken at the next idle round, so a notification during a claim is not lost.
 type waker struct {
-	spec events.SubscriptionSpec
-	mu   sync.Mutex
-	ch   chan struct{}
-}
-
-func (w *waker) current() <-chan struct{} {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.ch
+	spec   events.SubscriptionSpec
+	tokens chan struct{}
 }
 
 func (w *waker) fire() {
-	w.mu.Lock()
-	close(w.ch)
-	w.ch = make(chan struct{})
-	w.mu.Unlock()
+	select {
+	case w.tokens <- struct{}{}:
+	default: // every reader already has a wake waiting
+	}
 }
 
 // register adds a subscription's waker and starts the listener with the first one.
 func (t *Transport) register(spec events.SubscriptionSpec) *waker {
-	w := &waker{spec: spec, ch: make(chan struct{})}
+	w := &waker{spec: spec, tokens: make(chan struct{}, max(spec.Concurrency, 1))}
 	t.wakeMu.Lock()
 	t.wakers = append(t.wakers, w)
 	t.wakeMu.Unlock()
@@ -63,7 +56,7 @@ func (t *Transport) unregister(w *waker) {
 	t.wakeMu.Unlock()
 }
 
-// wake fires the wakers of the subscriptions subject belongs to.
+// wake gives one token to each subscription subject belongs to.
 func (t *Transport) wake(subject string) {
 	t.wakeMu.Lock()
 	defer t.wakeMu.Unlock()
@@ -117,11 +110,14 @@ func (t *Transport) listenConn() (listened bool, err error) {
 	}
 }
 
+// wakeAll wakes every reader of every subscription once.
 func (t *Transport) wakeAll() {
 	t.wakeMu.Lock()
 	defer t.wakeMu.Unlock()
 	for _, w := range t.wakers {
-		w.fire()
+		for range cap(w.tokens) {
+			w.fire()
+		}
 	}
 }
 

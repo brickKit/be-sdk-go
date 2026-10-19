@@ -251,6 +251,12 @@ func TestAClaimWhoseMessageWasPurgedIsDropped(t *testing.T) { // P6.27
 }
 
 func TestAPublishWakesAnIdleReaderWithoutWaitingForThePoll(t *testing.T) { // P6.30
+	for _, readers := range []int{1, 4} { // one reader, and a token per message among several
+		t.Run(strconv.Itoa(readers), func(t *testing.T) { wakesAnIdleReader(t, readers) })
+	}
+}
+
+func wakesAnIdleReader(t *testing.T, readers int) {
 	tr, stream := factory(t)
 	tr.(*Transport).poll = time.Hour // only the wake can pick the message up
 	ctx := context.Background()
@@ -258,12 +264,12 @@ func TestAPublishWakesAnIdleReaderWithoutWaitingForThePoll(t *testing.T) { // P6
 	durable := "wake_" + stream[9:]
 	t.Cleanup(func() { forget(t, durable, "be."+stream+".0.x.v1") })
 	got := make(chan time.Time, 4)
-	sub, err := tr.Subscribe(ctx, events.SubscriptionSpec{Durable: durable, Streams: []string{stream}},
+	sub, err := tr.Subscribe(ctx, events.SubscriptionSpec{Durable: durable, Streams: []string{stream}, Concurrency: readers},
 		func(context.Context, *events.Delivery) events.Outcome { got <- time.Now(); return events.Ack })
 	require.NoError(t, err)
 	defer sub.Stop()
-	time.Sleep(500 * time.Millisecond) // listening, and the reader has read past the bus and is idle
-	for i := range 2 {
+	time.Sleep(500 * time.Millisecond) // listening, and the readers have read past the bus and are idle
+	for i := range 3 {
 		published := time.Now()
 		require.NoError(t, tr.Publish(ctx, events.Message{Subject: "be." + stream + ".0.x.v1",
 			Headers: map[string]string{events.HeaderID: ids.New().String()}, Data: []byte("{}")}))

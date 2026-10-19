@@ -337,3 +337,27 @@ func TestAfterCommitRunsOnlyOnCommit(t *testing.T) { // P6.29
 	})
 	assert.Equal(t, []string{"committed"}, ran)
 }
+
+func TestASessionSettingIsRefusedAndNothingReachesTheNextTransaction(t *testing.T) { // P5.30, P5.5
+	host, port := fixture(t)
+	pool := sharedPool(t, host, port, 1)
+	a := NewDB("demo/alpha", pool, settings(host, port, "alpha", 1))
+	ctx := context.Background()
+	err := a.Tx(ctx, func(ctx context.Context, tx Tx) error {
+		_, err := tx.Exec(ctx, "SET work_mem = '7MB'")
+		return err
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "P5.30")
+	for range 3 { // one pooled connection, never reset on release
+		require.NoError(t, a.Tx(ctx, func(ctx context.Context, tx Tx) error {
+			_, err := tx.Exec(ctx, "SET LOCAL work_mem = '7MB'")
+			return err
+		}))
+		var got string
+		require.NoError(t, a.Tx(ctx, func(ctx context.Context, tx Tx) error {
+			return tx.QueryRow(ctx, "SELECT current_setting('work_mem')").Scan(&got)
+		}))
+		assert.NotEqual(t, "7MB", got, "a transaction's setting reached the next transaction")
+	}
+}

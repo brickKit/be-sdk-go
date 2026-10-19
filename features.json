@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.10",
+  "protocol": "3.0.0-alpha.11",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -139,7 +139,9 @@
         "launcher.TestDatabaseComponentMigratesAndServes",
         "launcher.TestDatabaseStartChecks",
         "ids.TestNewIsVersion7AndOrdered",
-        "shell.TestRefusesMembersOfOneTargetThatDisagreeOnPreparedStatements"
+        "shell.TestRefusesMembersOfOneTargetThatDisagreeOnPreparedStatements",
+        "db.TestStatementsThatWouldStayOnThePooledConnectionAreNamed",
+        "db.TestASessionSettingIsRefusedAndNothingReachesTheNextTransaction"
       ]
     },
     "document-numbers": {
