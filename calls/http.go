@@ -128,8 +128,20 @@ func (h *HTTP) attempt(ctx context.Context, req Request, body []byte, auth strin
 	if e, ok := errs.FromHTTP(resp, b); ok {
 		return Result{Err: e, Code: e.Code, Remote: e}, nil
 	}
-	return Result{Err: fmt.Errorf("%s answered %d", h.dep.ID, resp.StatusCode), Code: errs.CodeOfStatus(resp.StatusCode)}, nil
+	return Result{Err: &StatusError{Dependency: h.dep.ID, Status: resp.StatusCode, Body: b},
+		Code: errs.CodeOfStatus(resp.StatusCode)}, nil
 }
+
+// StatusError is a non-2xx answer without a protocol error body: an external product's own error (a refused OAuth
+// grant answers 400 with its error members). The call fails as before; a caller that knows the product reads the
+// status and body with errors.As.
+type StatusError struct {
+	Dependency string
+	Status     int
+	Body       []byte // at most 16 MiB
+}
+
+func (e *StatusError) Error() string { return fmt.Sprintf("%s answered %d", e.Dependency, e.Status) }
 
 // transportResult classifies a failure without an answer: the attempt's deadline, a dial failure (nothing was sent),
 // or a failure after sending.

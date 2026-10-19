@@ -218,3 +218,23 @@ func TestMetricsAndAccessLinesOfChapter10(t *testing.T) { // P10.2, P10.3, P10.6
 	assert.Regexp(t, `^[0-9a-f]{32}$`, access["trace_id"])
 	assert.NotContains(t, h.logs.String(), "secret-token-xyz") // P10.4
 }
+
+func TestCookiesAndRedirects(t *testing.T) { // a login's hops (protocol 20)
+	var r Routes
+	r.Add(Route{Method: "GET", Path: "/api/login", Public: true, Handle: func(c *Context) error {
+		c.SetCookie(&http.Cookie{Name: "be_session", Value: "s1", Path: "/", HttpOnly: true, Secure: true,
+			SameSite: http.SameSiteLaxMode})
+		return c.Redirect(http.StatusFound, "https://idp.test/authorize?state=x")
+	}})
+	r.Add(Route{Method: "GET", Path: "/api/bad", Public: true, Handle: func(c *Context) error {
+		return c.Redirect(http.StatusOK, "/elsewhere")
+	}})
+	h := newHarness(t, &r)
+	rec := h.do("GET", "/api/login", nil, nil)
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, "https://idp.test/authorize?state=x", rec.Header().Get("Location"))
+	ck := rec.Result().Cookies()
+	require.Len(t, ck, 1)
+	assert.True(t, ck[0].HttpOnly && ck[0].Secure && ck[0].SameSite == http.SameSiteLaxMode && ck[0].Value == "s1")
+	assert.Equal(t, http.StatusInternalServerError, h.do("GET", "/api/bad", nil, nil).Code, "only 302, 303 or 307")
+}
