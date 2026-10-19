@@ -89,6 +89,7 @@ type TxOption func(*txOptions)
 
 type txOptions struct {
 	serializable bool
+	snapshot     bool
 	statement    time.Duration
 	lock         time.Duration
 	idle         time.Duration
@@ -98,6 +99,10 @@ type txOptions struct {
 
 // Serializable runs the transaction at SERIALIZABLE (declared per transaction, protocol 14).
 func Serializable() TxOption { return func(o *txOptions) { o.serializable = true } }
+
+// Snapshot runs the transaction at REPEATABLE READ: every statement reads the same snapshot, so a read can return
+// data and the counters that describe it together (a source's batch read with its positions, protocol 02's S3).
+func Snapshot() TxOption { return func(o *txOptions) { o.snapshot = true } }
 
 // StatementTimeout overrides the statement timeout of this transaction (reports, background work).
 func StatementTimeout(d time.Duration) TxOption { return func(o *txOptions) { o.statement = d } }
@@ -178,8 +183,11 @@ func acquire(ctx context.Context, budget chan struct{}, foreground bool) error {
 
 func (d *DB) once(ctx context.Context, fn func(context.Context, Tx) error, o txOptions) (err error) {
 	iso := pgx.ReadCommitted
-	if o.serializable {
+	switch {
+	case o.serializable:
 		iso = pgx.Serializable
+	case o.snapshot:
+		iso = pgx.RepeatableRead
 	}
 	conn, err := d.pool.pool.Acquire(ctx)
 	if err != nil {

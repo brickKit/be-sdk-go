@@ -32,6 +32,7 @@ const (
 	Date    = "date"
 	Time    = "timestamptz"
 	UUID    = "uuid"
+	Boolean = "boolean" // filter only (eq: true or false); not a sort key
 )
 
 // Column is a field a list may filter or sort by. Sortable columns are not nullable.

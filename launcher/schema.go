@@ -1,0 +1,176 @@
+package launcher
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/brickKit/be-sdk-go/v3/component"
+	"github.com/brickKit/be-sdk-go/v3/config"
+	"github.com/brickKit/be-sdk-go/v3/db"
+	"github.com/brickKit/be-sdk-go/v3/internal/host"
+	"go.yaml.in/yaml/v3"
+)
+
+// fileKeys are the keys whose value is a file path BrickKit mounts (the service certificates, re-read on rotation).
+var fileKeys = map[string]bool{"SERVICE_TLS_CERT_FILE": true, "SERVICE_TLS_KEY_FILE": true, "SERVICE_TLS_CA_FILE": true}
+
+// ConfigSchema is the configSchema block of the component's component.yaml: exactly the keys the SDK reads for serve
+// and migrate (the component's own, the SDK's, the database's and the bus's), with their types, secrets and defaults.
+// own describes the component's own keys. A component's test compares its manifest with it, so the manifest never
+// declares a key nobody reads nor misses one that is read; the Python SDK's probes do the same (config_schema.py).
+func ConfigSchema(def component.Definition, own map[string]string) map[string]any {
+	seen := map[string]bool{}
+	var keys []config.Key
+	all := host.Keys(def)
+	if def.Migrations != nil { // the migrate entry reads the owner role and the direct address too
+		all = append(all, db.MigrateKeys()...)
+	}
+	for _, k := range all {
+		if !seen[k.Name] {
+			seen[k.Name] = true
+			keys = append(keys, k)
+		}
+	}
+	required := []string{}
+	props := map[string]any{}
+	for _, k := range keys {
+		if k.Required {
+			required = append(required, k.Name)
+		}
+		p := map[string]any{"type": schemaType(k.Type)}
+		if k.Type == config.Enum {
+			p["enum"] = append([]string(nil), k.Values...)
+		}
+		if k.Secret || fileKeys[k.Name] {
+			p["secret"] = true
+		}
+		if fileKeys[k.Name] {
+			p["mount"] = "file"
+		}
+		if d := describe(k, own[k.Name]); d != "" {
+			p["description"] = d
+		}
+		props[k.Name] = p
+	}
+	sort.Strings(required)
+	return map[string]any{"type": "object", "required": required, "properties": props}
+}
+
+func schemaType(t config.Type) string {
+	switch t {
+	case config.Integer:
+		return "integer"
+	case config.Boolean:
+		return "boolean"
+	}
+	return "string" // string, duration, enum
+}
+
+func describe(k config.Key, own string) string {
+	var parts []string
+	if own != "" {
+		parts = append(parts, own)
+	}
+	if k.Type == config.Duration {
+		parts = append(parts, "a duration (e.g. 2s, 500ms)")
+	}
+	if k.Default != nil {
+		d := k.Default
+		if dur, ok := d.(time.Duration); ok {
+			d = fmt.Sprintf("%gs", dur.Seconds())
+		}
+		parts = append(parts, fmt.Sprintf("SDK default %v", d))
+	}
+	if k.Process {
+		parts = append(parts, "process-level: the same for every member of a shell")
+	}
+	if fileKeys[k.Name] {
+		parts = append(parts, "a file path, re-read on rotation")
+	}
+	return strings.Join(parts, "; ")
+}
+
+// ManifestProblems compares the configSchema of a component.yaml with ConfigSchema: every key missing, extra or
+// declared differently, in key order. A component's test asserts it is empty and prints ConfigSchemaYAML otherwise.
+func ManifestProblems(manifest []byte, def component.Definition, own map[string]string) []string {
+	var doc struct {
+		ConfigSchema map[string]any `yaml:"configSchema"`
+	}
+	if err := yaml.Unmarshal(manifest, &doc); err != nil {
+		return []string{"component.yaml: " + err.Error()}
+	}
+	want := ConfigSchema(def, own)
+	got := doc.ConfigSchema
+	var out []string
+	gotReq := map[string]bool{}
+	if l, ok := got["required"].([]any); ok {
+		for _, v := range l {
+			gotReq[fmt.Sprint(v)] = true
+		}
+	}
+	for _, k := range want["required"].([]string) {
+		if !gotReq[k] {
+			out = append(out, k+": not listed as required")
+		}
+		delete(gotReq, k)
+	}
+	for k := range gotReq {
+		out = append(out, k+": listed as required, but the SDK does not require it")
+	}
+	wantProps := want["properties"].(map[string]any)
+	gotProps, _ := got["properties"].(map[string]any)
+	names := make([]string, 0, len(wantProps)+len(gotProps))
+	for k := range wantProps {
+		names = append(names, k)
+	}
+	for k := range gotProps {
+		if _, ok := wantProps[k]; !ok {
+			names = append(names, k)
+		}
+	}
+	sort.Strings(names)
+	for _, k := range names {
+		w, inWant := wantProps[k]
+		g, inGot := gotProps[k]
+		switch {
+		case !inGot:
+			out = append(out, k+": not declared")
+		case !inWant:
+			out = append(out, k+": declared, but nothing reads it")
+		case fmt.Sprint(normalize(g)) != fmt.Sprint(normalize(w)):
+			out = append(out, fmt.Sprintf("%s: declared as %v, the SDK reads %v", k, normalize(g), normalize(w)))
+		}
+	}
+	return out
+}
+
+// normalize makes a property comparable whichever way it was decoded (YAML gives []any, ConfigSchema []string).
+func normalize(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := map[string]any{}
+		for k, e := range x {
+			out[k] = normalize(e)
+		}
+		return out
+	case []any:
+		s := make([]string, len(x))
+		for i, e := range x {
+			s[i] = fmt.Sprint(e)
+		}
+		return s
+	}
+	return v
+}
+
+// ConfigSchemaYAML is ConfigSchema as the configSchema block of a component.yaml, to paste.
+func ConfigSchemaYAML(def component.Definition, own map[string]string) string {
+	var b strings.Builder
+	enc := yaml.NewEncoder(&b)
+	enc.SetIndent(2) // as the rest of a component.yaml
+	_ = enc.Encode(map[string]any{"configSchema": ConfigSchema(def, own)})
+	_ = enc.Close()
+	return b.String()
+}
