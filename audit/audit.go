@@ -15,6 +15,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/brickKit/be-sdk-go/v3/ids"
+	"github.com/brickKit/be-sdk-go/v3/internal/records"
 )
 
 // Categories (protocol 03, "what needs auditing").
@@ -114,8 +115,11 @@ func (a *Auditor) insert(ctx context.Context, tx db.Tx, r Record) (string, error
 	if err != nil {
 		return "", err
 	}
-	digest, err := canon.Digest("be.audit.record", 1, b)
+	raw, digest, err := records.Seal("be.audit.record", b)
 	if err != nil {
+		return "", err
+	}
+	if err := records.Validate("be.audit.record", b); err != nil { // a bad record is refused here, not at transfer
 		return "", err
 	}
 	actor, represented := any(nil), any(nil)
@@ -130,9 +134,9 @@ func (a *Auditor) insert(ctx context.Context, tx db.Tx, r Record) (string, error
 		reason = r.Reason
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO be_audit_log (id, occurred_at, category, operation, outcome, reason, actor, represented,
-		target, changes, request, digest) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		target, changes, request, digest, record) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		id, at, r.Category, r.Operation, r.Outcome, reason, actor, represented, jsonOrNil(nilMap(r.Target)),
-		jsonOrNil(nilMap(r.Changes)), jsonOrNil(nilMap(r.Request)), digest)
+		jsonOrNil(nilMap(r.Changes)), jsonOrNil(nilMap(r.Request)), digest, raw)
 	return id, err
 }
 

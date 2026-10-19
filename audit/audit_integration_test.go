@@ -4,14 +4,19 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"sync"
 	"testing"
 
+	protocol "github.com/brickKit/be-protocol/v3"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/brickKit/be-sdk-go/v3/internal/dbtest"
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
+	"github.com/brickKit/be-sdk-go/v3/internal/records"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -85,6 +90,8 @@ type fakeAudit struct {
 	seq    int64
 	down   bool
 	tamper string
+	// statuses answers a status of its own for an ID (invalid, or one the SDK does not know)
+	statuses map[string]string
 }
 
 func (f *fakeAudit) Send(_ context.Context, ws []Wire) ([]Receipt, error) {
@@ -95,6 +102,14 @@ func (f *fakeAudit) Send(_ context.Context, ws []Wire) ([]Receipt, error) {
 	}
 	var out []Receipt
 	for _, w := range ws {
+		if _, err := records.Open("be.audit.record", w.Record, w.Digest); err != nil {
+			out = append(out, Receipt{ID: w.ID, Status: "invalid"}) // the bytes are not the record the digest names
+			continue
+		}
+		if f.statuses[w.ID] != "" {
+			out = append(out, Receipt{ID: w.ID, Status: f.statuses[w.ID]})
+			continue
+		}
 		if prev, ok := f.stored[w.ID]; ok && prev != w.Digest || w.ID == f.tamper {
 			out = append(out, Receipt{ID: w.ID, Status: "conflict"})
 			continue
@@ -166,4 +181,81 @@ func TestNumberingTransferAndDeletion(t *testing.T) { // P8.20-P8.22, CK-AU-02..
 	_, resent, err = a.Purge(ctx, Watermark{Epoch: "2.1", Seq: 0, Ancestors: map[string]int64{"1.1": 3}, BackedUpInEpoch: true})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), resent)
+}
+
+// TestInvalidAndUnknownReceiptsStopTheRecord: a receipt that is not "received" never counts as received (P8.21).
+func TestInvalidAndUnknownReceiptsStopTheRecord(t *testing.T) {
+	d, admin := dbtest.Schema(t, "audit4", nil)
+	a := New(d)
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		require.NoError(t, d.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+			_, err := a.Write(ctx, tx, change("demo.order.confirm"))
+			return err
+		}))
+	}
+	_, err := a.Number(ctx)
+	require.NoError(t, err)
+	rows, _ := admin.Query(ctx, "SELECT id::text FROM be_audit_log ORDER BY seq")
+	ids, _ := pgx.CollectRows(rows, pgx.RowTo[string])
+	require.Len(t, ids, 3)
+	sender := &fakeAudit{stored: map[string]string{}, statuses: map[string]string{ids[0]: "invalid", ids[1]: "archived"}}
+	n, err := a.Transfer(ctx, sender)
+	require.NoError(t, err)
+	assert.Equal(t, 3, n)
+	assert.Equal(t, 1, count(t, admin, "transfer_state = 'received'"))
+	assert.Equal(t, 2, count(t, admin, "transfer_state = 'conflict'"), "invalid and an unknown status both stop the record")
+}
+
+// TestPurgeVectors: the protocol's audit-purge vector, one receipt against one watermark (P8.22).
+func TestPurgeVectors(t *testing.T) {
+	d, admin := dbtest.Schema(t, "audit5", nil)
+	a := New(d)
+	ctx := context.Background()
+	raw, err := fs.ReadFile(protocol.Vectors, "vectors/audit-purge.json")
+	require.NoError(t, err)
+	var v struct {
+		Cases []struct {
+			ID        string
+			Watermark struct {
+				Epoch           string
+				Seq             int64
+				Ancestors       map[string]int64
+				BackedUpInEpoch bool `json:"backed_up_in_epoch"`
+			}
+			Receipt struct {
+				Epoch    string
+				Seq      int64
+				Retained bool
+			}
+			Expect string
+		}
+	}
+	require.NoError(t, json.Unmarshal(raw, &v))
+	require.NotEmpty(t, v.Cases)
+	for _, c := range v.Cases {
+		pgtest.Exec(t, admin, "DELETE FROM be_audit_log")
+		var id string
+		require.NoError(t, d.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+			id, err = a.Write(ctx, tx, change("demo.order.confirm"))
+			return err
+		}))
+		age := "1 hour"
+		if c.Receipt.Retained {
+			age = "8 days"
+		}
+		pgtest.Exec(t, admin, fmt.Sprintf(`UPDATE be_audit_log SET transfer_state = 'received', receipt_epoch = '%s',
+			receipt_seq = %d, received_at = now() - interval '%s'`, c.Receipt.Epoch, c.Receipt.Seq, age))
+		w := c.Watermark
+		_, _, err := a.Purge(ctx, Watermark{Epoch: w.Epoch, Seq: w.Seq, Ancestors: w.Ancestors, BackedUpInEpoch: w.BackedUpInEpoch})
+		require.NoError(t, err, c.ID)
+		got := "keep"
+		switch {
+		case count(t, admin, "id = '"+id+"'") == 0:
+			got = "delete"
+		case count(t, admin, "transfer_state = 'pending'") == 1:
+			got = "resend"
+		}
+		assert.Equal(t, c.Expect, got, c.ID)
+	}
 }

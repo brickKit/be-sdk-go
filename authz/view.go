@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,10 +70,11 @@ type ShardAnswer struct {
 	View   *Shard `json:"view,omitempty"`
 }
 
-// VerifyAnswer is be.security.view_verify_answer.
+// VerifyAnswer is be.security.view_verify_answer; views arrive checked (schema, canonical bytes, digest).
 type VerifyAnswer struct {
 	Nonce              string        `json:"nonce"`
 	ComputedAt         string        `json:"computed_at"`
+	Instance           string        `json:"instance"` // the answering member instance
 	Shards             []ShardAnswer `json:"shards"`
 	RecoveryGeneration Revision      `json:"recovery_generation"`
 }
@@ -85,6 +87,10 @@ type Source interface {
 type held struct {
 	shard  Shard
 	sentAt time.Duration // suspend-aware reading when the request that renewed it was sent
+	// stopped: its revisions went back under the same recovery generation; unusable until a higher one.
+	stopped bool
+	// suspended: a whole answer was a rollback; unusable until an accepted answer renews or replaces it.
+	suspended bool
 }
 
 // Holder keeps a member's view shards and their validity. One per member.
@@ -95,13 +101,14 @@ type Holder struct {
 	Boot      func() time.Duration // the suspend-aware clock; replaceable in tests
 	Wall      func() time.Time
 
-	mu       sync.RWMutex
-	shards   map[string]*held
-	recovery int64
-	stopped  bool // a rollback was detected: nothing is used until a valid answer arrives
-	lastTick time.Duration
-	lastSkew time.Duration
-	verifyMu sync.Mutex
+	mu          sync.RWMutex
+	shards      map[string]*held
+	recovery    int64
+	hasRecovery bool   // false until the first accepted answer
+	instance    string // the member instance of the first accepted answer (P8.11)
+	lastTick    time.Duration
+	lastSkew    time.Duration
+	verifyMu    sync.Mutex
 }
 
 // NewHolder creates an empty holder: after a start there is no trusted view (P8.10).
@@ -190,30 +197,90 @@ func (h *Holder) Verify(ctx context.Context) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	switch {
-	case gen < h.recovery:
-		h.shards, h.stopped = map[string]*held{}, true
-		h.Log.Error("the authorization member answered with an older recovery generation: a rollback; the view is not used",
-			"held", h.recovery, "answered", gen)
-		return nil
-	case gen > h.recovery:
-		h.shards, h.recovery = map[string]*held{}, gen // every older shard is void
-	}
-	h.stopped = false
+	h.apply(ans, gen, sent)
+	return nil
+}
+
+// apply is security 03's acceptance table (P8.11), in order: a rollback of the whole answer, a higher recovery
+// generation, then shard by shard. It reports whether the answer was accepted.
+func (h *Holder) apply(ans VerifyAnswer, gen int64, sent time.Duration) bool {
+	foreign := h.instance != "" && ans.Instance != h.instance
 	for _, a := range ans.Shards {
+		if a.View != nil {
+			for _, r := range a.View.SecurityRevisions {
+				foreign = foreign || r.Instance != ans.Instance
+			}
+		}
+	}
+	if (h.hasRecovery && gen < h.recovery) || foreign {
+		for _, s := range h.shards {
+			s.suspended = true
+		}
+		h.Log.Error("an authorization view answer was a rollback (an older recovery generation or another member instance); the views are suspended",
+			"held_generation", h.recovery, "answered_generation", gen, "held_instance", h.instance, "answered_instance", ans.Instance)
+		return false
+	}
+	newer := !h.hasRecovery || gen > h.recovery
+	if newer {
+		h.shards = map[string]*held{} // every older shard is void, the stopped ones too
+	}
+	h.recovery, h.hasRecovery, h.instance = gen, true, ans.Instance
+	for _, a := range ans.Shards {
+		s, ok := h.shards[a.Shard]
 		switch a.Status {
 		case "unchanged":
-			if s, ok := h.shards[a.Shard]; ok {
-				s.sentAt = sent
+			if ok && !s.stopped {
+				s.sentAt, s.suspended = sent, false
 			}
 		case "changed":
-			if a.View != nil {
+			switch {
+			case a.View == nil, ok && s.stopped:
+			case ok && !newer && revisionsGoBack(s.shard.SecurityRevisions, a.View.SecurityRevisions):
+				s.stopped = true
+				h.Log.Error("an authorization view shard went back under the same recovery generation; it is stopped until the recovery generation advances",
+					"shard", a.Shard)
+			default:
 				h.shards[a.Shard] = &held{shard: *a.View, sentAt: sent}
 			}
 		case "closed": // not renewed: it runs out on its own
 		}
 	}
-	return nil
+	return true
+}
+
+// revisionsGoBack: one of the new revisions has an earlier epoch, or the same epoch and a lower value, than the held
+// revision of its domain.
+func revisionsGoBack(held, next []Revision) bool {
+	for _, n := range next {
+		for _, o := range held {
+			if o.Domain != n.Domain {
+				continue
+			}
+			if epochBefore(n.Epoch, o.Epoch) {
+				return true
+			}
+			nv, err1 := strconv.ParseInt(n.Value, 10, 64)
+			ov, err2 := strconv.ParseInt(o.Value, 10, 64)
+			if n.Epoch == o.Epoch && err1 == nil && err2 == nil && nv < ov {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// epochBefore orders epochs "<deployment recovery generation>.<timeline>" by the two integers.
+func epochBefore(a, b string) bool {
+	ag, at, _ := strings.Cut(a, ".")
+	bg, bt, _ := strings.Cut(b, ".")
+	x, _ := strconv.ParseInt(ag, 10, 64)
+	y, _ := strconv.ParseInt(bg, 10, 64)
+	if x != y {
+		return x < y
+	}
+	u, _ := strconv.ParseInt(at, 10, 64)
+	v, _ := strconv.ParseInt(bt, 10, 64)
+	return u < v
 }
 
 // Grant is what a lookup gives a request: the subject's segments for a resource type and the cutoff.
@@ -232,22 +299,20 @@ func (h *Holder) Lookup(resourceType, principal string, risk string) (Grant, err
 	now := h.Boot()
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	if !h.stopped {
-		for _, s := range h.shards {
-			if !slices.Contains(s.shard.Applicability, resourceType) || now >= s.sentAt+valid {
-				continue
-			}
-			entry := s.shard.Subjects[principal]
-			var segs []Segment
-			if !entry.AccountsDisabled {
-				for _, seg := range entry.Segments {
-					if seg.ResourceType == "" || seg.ResourceType == resourceType {
-						segs = append(segs, seg)
-					}
+	for _, s := range h.shards {
+		if s.stopped || s.suspended || !slices.Contains(s.shard.Applicability, resourceType) || now >= s.sentAt+valid {
+			continue
+		}
+		entry := s.shard.Subjects[principal]
+		var segs []Segment
+		if !entry.AccountsDisabled {
+			for _, seg := range entry.Segments {
+				if seg.ResourceType == "" || seg.ResourceType == resourceType {
+					segs = append(segs, seg)
 				}
 			}
-			return Grant{Segments: segs, Cutoff: s.sentAt + valid}, nil
 		}
+		return Grant{Segments: segs, Cutoff: s.sentAt + valid}, nil
 	}
 	return Grant{}, errs.New(errs.ReasonAuthorizationViewExpired, "no valid authorization view").With("resource_type", resourceType)
 }

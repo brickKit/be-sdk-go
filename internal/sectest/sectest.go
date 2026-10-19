@@ -21,15 +21,19 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/authz"
+	"github.com/brickKit/be-sdk-go/v3/canon"
 	"github.com/brickKit/be-sdk-go/v3/identity"
+	"github.com/brickKit/be-sdk-go/v3/internal/records"
+	authzv3 "github.com/brickKit/contract-infra-authz/v3/gen/go/be/authz/v3"
+	auditv3 "github.com/brickKit/infra-audit/contract/v3/gen/go/be/audit/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // Principals used by tests.
@@ -56,13 +60,18 @@ type World struct {
 	types    map[string]bool
 	gen      int
 	audited  map[string]json.RawMessage // record ID -> the record as received
+	// auditDigests and submitted are the fake members' memory; RefuseDefinitions makes Submit refuse.
+	auditDigests      map[string]string
+	submitted         map[string]string
+	RefuseDefinitions string
 }
 
 // New starts the issuer and the fake authorization member.
 func New(t testing.TB) *World {
 	t.Helper()
 	w := &World{Deployment: "0190f3a1-0000-7000-8000-00000000d001", dir: t.TempDir(), subjects: map[string]authz.SubjectEntry{},
-		types: map[string]bool{}, gen: 1, audited: map[string]json.RawMessage{}}
+		types: map[string]bool{}, gen: 1, audited: map[string]json.RawMessage{}, auditDigests: map[string]string{},
+		submitted: map[string]string{}}
 	_, w.signer, _ = ed25519.GenerateKey(rand.Reader)
 	jwks := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 		pub := w.signer.Public().(ed25519.PublicKey)
@@ -230,40 +239,151 @@ func Defs(component, resource string, ops ...string) *authz.Definitions {
 	return d
 }
 
-func (w *World) answer(req authz.VerifyRequest) authz.VerifyAnswer {
+// The fake authorization member's identity and the defaults it fills into granted segments.
+const (
+	Instance      = "authz-test-1"
+	segmentSource = "0190f3a1-0000-7000-8000-00000000500e"
+	viewID        = "0190f3a1-0000-7000-8000-0000000000a0"
+)
+
+// view is the one shard the fake member issues, as canonical bytes and their digest (D76).
+func (w *World) view() ([]byte, string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	shard := authz.Shard{Shard: "all", RecoveryGeneration: authz.Revision{Domain: "authz.recovery", Value: "1"},
-		Subjects: map[string]authz.SubjectEntry{}, Digest: "sha256:" + strconv.Itoa(w.gen)}
+	gen := strconv.Itoa(w.gen)
+	types := make([]any, 0, len(w.types))
 	for typ := range w.types {
-		shard.Applicability = append(shard.Applicability, typ)
+		types = append(types, typ)
 	}
+	applicability, err := canon.SortedSet(types)
+	if err != nil {
+		return nil, "", err
+	}
+	subjects := map[string]any{}
 	for p, e := range w.subjects {
-		shard.Subjects[p] = e
+		segs := make([]any, 0, len(e.Segments))
+		for _, seg := range e.Segments {
+			if seg.Source == "" {
+				seg.Source = segmentSource
+			}
+			if len(seg.Definition) == 0 {
+				seg.Definition, _ = json.Marshal(map[string]any{"owner_component": "test/fake", "kind": "resource",
+					"key": seg.ResourceType, "version": "3.0.0", "digest": "sha256:" + strings.Repeat("0", 64)})
+			}
+			c, err := seg.Canonical(seg.ResourceType)
+			if err != nil {
+				return nil, "", err
+			}
+			segs = append(segs, c)
+		}
+		set, err := canon.SortedSet(segs)
+		if err != nil {
+			return nil, "", err
+		}
+		subjects[p] = map[string]any{"segments": set, "accounts_disabled": e.AccountsDisabled}
 	}
-	return authz.VerifyAnswer{Nonce: req.Nonce, ComputedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		RecoveryGeneration: shard.RecoveryGeneration, Shards: []authz.ShardAnswer{{Shard: "all", Status: "changed", View: &shard}}}
+	rev := func(domain string) map[string]any {
+		return map[string]any{"domain": domain, "value": gen, "epoch": "1.1", "instance": Instance}
+	}
+	return records.Seal("be.security.view", map[string]any{"record_type": "be.security.view", "schema": "1.0",
+		"deployment": w.Deployment, "authority": "infra/authz", "id": viewID, "revision": rev("authz.view.all"),
+		"shard": "all", "recovery_generation": map[string]any{"domain": "authz.recovery", "value": "1"},
+		"security_revisions": []any{rev("authz.security.all")}, "applicability": applicability,
+		"subjects": subjects, "capabilities": []any{}})
 }
 
-type viewServer interface{}
+type authzMember struct {
+	authzv3.UnimplementedViewServiceServer
+	authzv3.UnimplementedDefinitionServiceServer
+	w *World
+}
+
+func (m authzMember) Verify(_ context.Context, in *authzv3.VerifyRequest) (*authzv3.VerifyResponse, error) {
+	raw, digest, err := m.w.view()
+	if err != nil {
+		return nil, err
+	}
+	out := &authzv3.VerifyResponse{Nonce: in.GetNonce(), ComputedAt: canon.Time(time.Now()), Instance: Instance,
+		RecoveryGeneration: &authzv3.RevisionRef{Domain: "authz.recovery", Value: "1"}}
+	for _, h := range in.GetHeld() {
+		if h.GetShard() == "all" && h.GetDigest() == digest {
+			out.Shards = append(out.Shards, &authzv3.ShardAnswer{Shard: "all", Status: authzv3.ShardStatus_SHARD_STATUS_UNCHANGED})
+			return out, nil
+		}
+	}
+	out.Shards = append(out.Shards, &authzv3.ShardAnswer{Shard: "all", Status: authzv3.ShardStatus_SHARD_STATUS_CHANGED,
+		View: raw, Digest: digest})
+	return out, nil
+}
+
+// Submit checks every definition as the member must (the contract's README) except the registry, and remembers
+// the accepted set per component and version.
+func (m authzMember) Submit(_ context.Context, in *authzv3.SubmitRequest) (*authzv3.SubmitResponse, error) {
+	w := m.w
+	reject := func(reason, digest, detail string) *authzv3.SubmitResponse {
+		return &authzv3.SubmitResponse{Status: authzv3.SubmitStatus_SUBMIT_STATUS_REJECTED,
+			Rejections: []*authzv3.Rejection{{Reason: reason, Digest: digest, Detail: detail}}}
+	}
+	w.mu.Lock()
+	refuse := w.RefuseDefinitions
+	w.mu.Unlock()
+	if refuse != "" {
+		return reject(refuse, "", "refused by the test"), nil
+	}
+	var sealed []authz.Sealed
+	for _, d := range in.GetDefinitions() {
+		var head struct {
+			RecordType string `json:"record_type"`
+			Authority  string `json:"authority"`
+		}
+		if err := json.Unmarshal(d.GetRecord(), &head); err != nil {
+			return reject("DEFINITION_INVALID", d.GetDigest(), err.Error()), nil
+		}
+		if head.RecordType != "be.security.resource_definition" && head.RecordType != "be.security.operation_definition" {
+			return reject("DEFINITION_INVALID", d.GetDigest(), "record type "+head.RecordType), nil
+		}
+		if _, err := records.Open(head.RecordType, d.GetRecord(), d.GetDigest()); err != nil {
+			return reject("DEFINITION_INVALID", d.GetDigest(), err.Error()), nil
+		}
+		if head.Authority != in.GetComponent() {
+			return reject("DEFINITION_OWNER_MISMATCH", d.GetDigest(), "authority "+head.Authority), nil
+		}
+		sealed = append(sealed, authz.Sealed{Digest: d.GetDigest()})
+	}
+	set, err := authz.SetDigest(in.GetComponent(), in.GetVersion(), sealed)
+	if err != nil {
+		return nil, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := in.GetComponent() + "@" + in.GetVersion()
+	if prev, ok := w.submitted[key]; ok && prev != set {
+		return reject("DEFINITION_VERSION_CONFLICT", "", "another set for this version"), nil
+	}
+	w.submitted[key] = set
+	return &authzv3.SubmitResponse{Status: authzv3.SubmitStatus_SUBMIT_STATUS_ACCEPTED, SetDigest: set}, nil
+}
+
+// Submitted returns the accepted definition set's digest for a component's version, if any.
+func (w *World) Submitted(component, version string) (string, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	d, ok := w.submitted[component+"@"+version]
+	return d, ok
+}
+
+// Refuse makes the fake member refuse every submission with a reason ("" accepts again).
+func (w *World) Refuse(reason string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.RefuseDefinitions = reason
+}
 
 func (w *World) startAuthz(t testing.TB) {
 	tls := w.TLS(t, "infra/authz")
 	srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(tls.ServerConfig())))
-	srv.RegisterService(&grpc.ServiceDesc{ServiceName: "be.authz.v3.ViewService", HandlerType: (*viewServer)(nil),
-		Methods: []grpc.MethodDesc{{MethodName: "Verify", Handler: func(_ any, ctx context.Context, dec func(any) error,
-			_ grpc.UnaryServerInterceptor) (any, error) {
-			in := new(wrapperspb.BytesValue)
-			if err := dec(in); err != nil {
-				return nil, err
-			}
-			var req authz.VerifyRequest
-			if err := json.Unmarshal(in.Value, &req); err != nil {
-				return nil, err
-			}
-			b, _ := json.Marshal(w.answer(req))
-			return wrapperspb.Bytes(b), nil
-		}}}}, struct{}{})
+	authzv3.RegisterViewServiceServer(srv, authzMember{w: w})
+	authzv3.RegisterDefinitionServiceServer(srv, authzMember{w: w})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -284,39 +404,46 @@ func (w *World) Audited() map[string]json.RawMessage {
 	return out
 }
 
+type auditMember struct {
+	auditv3.UnimplementedIntakeServiceServer
+	w *World
+}
+
+// Submit stores records idempotently by ID and checks them as the audit component must (contract/README.md).
+func (m auditMember) Submit(_ context.Context, in *auditv3.SubmitRequest) (*auditv3.SubmitResponse, error) {
+	w := m.w
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := &auditv3.SubmitResponse{}
+	for _, it := range in.GetItems() {
+		rec, err := records.Open("be.audit.record", it.GetRecord(), it.GetDigest())
+		switch {
+		case err != nil || rec["id"] != it.GetId():
+			out.Receipts = append(out.Receipts, &auditv3.Receipt{Id: it.GetId(), Status: auditv3.ReceiptStatus_RECEIPT_STATUS_INVALID})
+			continue
+		case w.auditDigests[it.GetId()] != "" && w.auditDigests[it.GetId()] != it.GetDigest():
+			out.Receipts = append(out.Receipts, &auditv3.Receipt{Id: it.GetId(), Status: auditv3.ReceiptStatus_RECEIPT_STATUS_CONFLICT})
+			continue
+		}
+		if _, seen := w.audited[it.GetId()]; !seen {
+			w.audited[it.GetId()] = json.RawMessage(it.GetRecord())
+			w.auditDigests[it.GetId()] = it.GetDigest()
+		}
+		out.Receipts = append(out.Receipts, &auditv3.Receipt{Id: it.GetId(), Status: auditv3.ReceiptStatus_RECEIPT_STATUS_RECEIVED,
+			Epoch: "1.1", Seq: int64(len(w.audited)), Chain: "sha256:test"})
+	}
+	return out, nil
+}
+
+// Watermark: nothing is backed up, so nothing is deleted.
+func (m auditMember) Watermark(context.Context, *auditv3.WatermarkRequest) (*auditv3.WatermarkResponse, error) {
+	return &auditv3.WatermarkResponse{Epoch: "1.1"}, nil
+}
+
 func (w *World) startAudit(t testing.TB) {
 	tls := w.TLS(t, "infra/audit")
 	srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(tls.ServerConfig())))
-	handle := func(fn func([]byte) any) func(any, context.Context, func(any) error, grpc.UnaryServerInterceptor) (any, error) {
-		return func(_ any, _ context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-			in := new(wrapperspb.BytesValue)
-			if err := dec(in); err != nil {
-				return nil, err
-			}
-			b, _ := json.Marshal(fn(in.Value))
-			return wrapperspb.Bytes(b), nil
-		}
-	}
-	srv.RegisterService(&grpc.ServiceDesc{ServiceName: "be.audit.v3.Intake", HandlerType: (*viewServer)(nil),
-		Methods: []grpc.MethodDesc{
-			{MethodName: "Submit", Handler: handle(func(body []byte) any {
-				var recs []struct {
-					ID     string          `json:"id"`
-					Record json.RawMessage `json:"record"`
-				}
-				_ = json.Unmarshal(body, &recs)
-				w.mu.Lock()
-				defer w.mu.Unlock()
-				var out []map[string]any
-				for _, r := range recs {
-					w.audited[r.ID] = r.Record
-					out = append(out, map[string]any{"id": r.ID, "status": "received", "epoch": "1.1",
-						"seq": len(w.audited), "chain": "sha256:test"})
-				}
-				return out
-			})},
-			{MethodName: "Watermark", Handler: handle(func([]byte) any { return map[string]any{"Epoch": "1.1", "Seq": 0} })},
-		}}, struct{}{})
+	auditv3.RegisterIntakeServiceServer(srv, auditMember{w: w})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
