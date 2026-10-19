@@ -51,7 +51,7 @@ func TestEachMemberServesItsSystemSurfaceOnItsOwnPort(t *testing.T) {
 				BuildInfo: buildInfo(map[string]string{"demo/alpha": "v0.1.0", "demo/beta": "v0.1.0"}), ModuleOf: moduleByID})
 	}()
 	require.Eventually(t, func() bool { c, _ := get(t, "http://127.0.0.1:"+strconv.Itoa(ps)+"/readyz"); return c == 200 },
-		5*time.Second, 20*time.Millisecond)
+		shellReady, 20*time.Millisecond)
 	out, err := calls.NewMember(nil)
 	require.NoError(t, err)
 	defer out.Close()

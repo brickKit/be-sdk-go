@@ -101,6 +101,11 @@ func envOf(m map[string]string) config.Env {
 
 var self = Identity{ID: "be/go-core", Version: "3.0.0"}
 
+// shellReady bounds the wait for a started shell to answer /readyz. 5 s was too short while the whole integration
+// suite loaded the machine (TestEachMemberServesItsSystemSurfaceOnItsOwnPort timed out once, then passed 8 of 8 alone):
+// the shell checks the database, builds TLS and starts every member first.
+const shellReady = 15 * time.Second
+
 func shellEnv(port int, membersJSON string, extra ...string) config.Env {
 	m := map[string]string{"COMPONENT_ID": "be/go-core", "COMPONENT_VERSION": "3.0.0", "PORT": strconv.Itoa(port),
 		"BRICKKIT_SERVED_MEMBERS_CONFIG": membersJSON, "STOP_DRAIN_DELAY": "100ms"}
@@ -146,7 +151,7 @@ func TestHostsMembersOnTheirOwnPorts(t *testing.T) {
 				BuildInfo: buildInfo(map[string]string{"demo/alpha": "v0.1.0", "demo/beta": "v0.1.0"}), ModuleOf: moduleByID})
 	}()
 	shellURL := "http://127.0.0.1:" + strconv.Itoa(ps)
-	require.Eventually(t, func() bool { c, _ := get(t, shellURL+"/readyz"); return c == 200 }, 5*time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool { c, _ := get(t, shellURL+"/readyz"); return c == 200 }, shellReady, 20*time.Millisecond)
 
 	_, body := get(t, "http://127.0.0.1:"+strconv.Itoa(pa)+"/api/hello")
 	assert.JSONEq(t, `{"from":"demo/alpha","greeting":"hi from alpha"}`, body, "each member reads its own config")
@@ -199,7 +204,7 @@ func TestRefusesReplaceUnlessAllowed(t *testing.T) {
 			Env: shellEnv(ps, js, "SHELL_ALLOW_REPLACE", "true"), Stdout: &stdout, Stderr: io.Discard, BuildInfo: bi, ModuleOf: moduleByID})
 	}()
 	require.Eventually(t, func() bool { c, _ := get(t, "http://127.0.0.1:"+strconv.Itoa(ps)+"/readyz"); return c == 200 },
-		5*time.Second, 20*time.Millisecond)
+		shellReady, 20*time.Millisecond)
 	cancel()
 	assert.Equal(t, 0, <-done)
 	assert.Contains(t, stdout.String(), "shell built for development")
