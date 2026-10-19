@@ -4,14 +4,15 @@ package host
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	authzv3 "github.com/brickKit/contract-infra-authz/v3/gen/go/be/authz/v3"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	authzv3 "github.com/brickKit/contract-infra-authz/v3/gen/go/be/authz/v3"
 
 	protocol "github.com/brickKit/be-protocol/v3"
 	sdk "github.com/brickKit/be-sdk-go/v3"
@@ -23,6 +24,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/events/bus"
 	"github.com/brickKit/be-sdk-go/v3/identity"
+	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/work"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
@@ -111,6 +113,10 @@ type Member struct {
 	tls          *identity.ServiceTLS
 	state        atomic.Value
 	reread       func(string) ([]byte, error)
+	// started and onReady are set by MarkReady; announced writes the ready line once (P1.12)
+	started   time.Time
+	onReady   func()
+	announced sync.Once
 }
 
 // State returns the member's lifecycle state.
@@ -123,6 +129,29 @@ func (m *Member) IsReady() bool {
 
 // SetState changes it (the launcher and the shell drive the transitions).
 func (m *Member) SetState(s string) { m.state.Store(s) }
+
+// MarkReady enters the ready state. The ready line (P1.12) is written, and then is called, when the member is ready:
+// at once, or, while its definitions wait for the authorization member, when they are accepted. then may be nil.
+func (m *Member) MarkReady(started time.Time, then func()) {
+	m.started, m.onReady = started, then
+	m.SetState(Ready)
+	m.announce()
+}
+
+// announce writes the ready line once the member is ready; MarkReady and the accepted submission both call it, so
+// whichever comes second writes it.
+func (m *Member) announce() {
+	if !m.IsReady() {
+		return
+	}
+	m.announced.Do(func() {
+		m.Logger.Info("ready", "event", "ready", "protocol", protocol.Version, "sdk", sdk.Version,
+			"startup_ms", time.Since(m.started).Milliseconds())
+		if m.onReady != nil {
+			m.onReady()
+		}
+	})
+}
 
 // Describe is the member's self-description (P1.8).
 func (m *Member) Describe() map[string]any {
@@ -188,6 +217,7 @@ func (m *Member) submit(ctx context.Context) bool {
 	err := m.Def.Authz.Submit(ctx, m.definitions, m.deployment, m.Def.Version)
 	if err == nil {
 		m.defsAccepted.Store(true)
+		m.announce()
 		return true
 	}
 	var rejected *authz.RejectedError
@@ -264,10 +294,9 @@ func (m *Member) rereadSecrets(ctx context.Context) {
 func init() { gin.SetMode(gin.ReleaseMode) }
 
 // ReportConfig writes configuration problems one JSON line each (P2.6), naming the member.
-func ReportConfig(w io.Writer, member string, problems []config.Problem) {
+func ReportConfig(w io.Writer, member obs.Member, problems []config.Problem) {
+	log := obs.NewLogger(member, slog.LevelInfo, w)
 	for _, p := range problems {
-		line, _ := json.Marshal(map[string]string{"level": "ERROR", "msg": "configuration", "component": member,
-			"key": p.Key, "kind": p.Kind, "expected": p.Expected, "got": p.Got})
-		fmt.Fprintln(w, string(line))
+		log.Error("configuration", "key", p.Key, "kind", p.Kind, "expected", p.Expected, "got", p.Got)
 	}
 }

@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"time"
 
-	protocol "github.com/brickKit/be-protocol/v3"
-	sdk "github.com/brickKit/be-sdk-go/v3"
 	"github.com/brickKit/be-sdk-go/v3/clock"
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/db"
@@ -24,22 +22,24 @@ type ListenFunc func(addr string) (net.Listener, error)
 
 func serve(ctx context.Context, def component.Definition, o Options) int {
 	started := time.Now()
+	member := obs.Member{ID: def.ID, Version: def.Version}
 	values, plat, problems := parseAll(def, o.Env)
 	if len(problems) > 0 {
-		host.ReportConfig(o.Stderr, def.ID, problems)
+		host.ReportConfig(o.Stderr, member, problems)
 		return ExitConfiguration
 	}
+	// the process's startup lines before the member's own logger exists: the same structured form (P10.2)
+	log := obs.NewLogger(member, obs.ParseLevel(values.String("LOG_LEVEL")), o.Stdout)
 	var pool *db.Pool
 	var database *db.DB
 	if def.Migrations != nil {
 		// alone, the component connects with its own runtime login role (protocol 14, "connection pools")
 		s := db.SettingsFrom(values)
 		var err error
-		plog := obs.NewLogger(obs.Member{ID: def.ID, Version: def.Version}, obs.ParseLevel(values.String("LOG_LEVEL")), o.Stdout)
 		pool, err = db.Open(ctx, db.PoolConfig{Target: s.Target, User: s.User, Password: s.Password, AppName: def.ID,
-			MaxConns: int32(s.Foreground + s.Background), Prepared: s.Prepared, Log: plog})
+			MaxConns: int32(s.Foreground + s.Background), Prepared: s.Prepared, Log: log})
 		if err != nil {
-			fmt.Fprintf(o.Stdout, "{\"level\":\"ERROR\",\"component\":%q,\"msg\":%q}\n", def.ID, err.Error())
+			log.Error("the database is not usable", "error", err.Error())
 			return ExitConfiguration
 		}
 		defer pool.Close()
@@ -48,30 +48,29 @@ func serve(ctx context.Context, def component.Definition, o Options) int {
 	var transport events.Transport
 	if len(def.Streams) > 0 || def.Subscribes {
 		// one bus connection per process (protocol 17)
-		blog := obs.NewLogger(obs.Member{ID: def.ID, Version: def.Version}, obs.ParseLevel(values.String("LOG_LEVEL")), o.Stdout)
 		var err error
-		if transport, err = bus.Open(ctx, values.Secret("BUS_URL").Value(), def.ID, blog); err != nil {
-			blog.Error("the bus is not usable", "error", err.Error())
+		if transport, err = bus.Open(ctx, values.Secret("BUS_URL").Value(), def.ID, log); err != nil {
+			log.Error("the bus is not usable", "error", err.Error())
 			return ExitStartupCheck
 		}
 		defer transport.Close()
 	}
 	keys, err := host.OpenKeys(ctx, values)
 	if err != nil {
-		fmt.Fprintf(o.Stdout, "{\"level\":\"WARN\",\"component\":%q,\"msg\":%q}\n", def.ID, err.Error())
+		log.Warn("the identity keys could not be fetched yet", "error", err.Error())
 	}
 	m, err := host.Build(ctx, def, values, host.Shared{Addresses: o.Env, Read: o.Env.ReadFile, Out: o.Stdout,
 		DB: database, Transport: transport, Keys: keys})
 	var cfgErr *host.ConfigError
 	if errors.As(err, &cfgErr) {
-		host.ReportConfig(o.Stderr, def.ID, cfgErr.Problems)
+		host.ReportConfig(o.Stderr, member, cfgErr.Problems)
 		return ExitConfiguration
 	}
 	if err != nil {
-		fmt.Fprintf(o.Stdout, "{\"level\":\"ERROR\",\"component\":%q,\"msg\":%q}\n", def.ID, err.Error())
+		log.Error("the member could not be built", "error", err.Error())
 		return ExitFailure
 	}
-	log := m.Logger
+	log = m.Logger
 	if err := clock.Check(); err != nil {
 		log.Error("start check failed: no clock that counts suspension (CLOCK_BOOTTIME)", "error", err.Error())
 		return ExitStartupCheck
@@ -121,9 +120,7 @@ func serve(ctx context.Context, def component.Definition, o Options) int {
 		}
 		return ExitFailure
 	}
-	m.SetState(host.Ready)
-	log.Info("ready", "event", "ready", "protocol", protocol.Version, "sdk", sdk.Version,
-		"startup_ms", time.Since(started).Milliseconds())
+	m.MarkReady(started, nil)
 
 	select {
 	case <-ctx.Done():

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	authzv3 "github.com/brickKit/contract-infra-authz/v3/gen/go/be/authz/v3"
 	"io"
 	"log/slog"
 	"net/url"
@@ -25,6 +24,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/brickKit/be-sdk-go/v3/work"
+	authzv3 "github.com/brickKit/contract-infra-authz/v3/gen/go/be/authz/v3"
 )
 
 // Shared is what the launcher or the shell hands every member: process-level resources and the member's own

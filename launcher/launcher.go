@@ -5,8 +5,8 @@ package launcher
 
 import (
 	"context"
-	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,6 +14,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/internal/host"
+	"github.com/brickKit/be-sdk-go/v3/obs"
 )
 
 // Exit codes (protocol chapter 01).
@@ -54,7 +55,8 @@ func Run(ctx context.Context, def component.Definition, o Options) int {
 	case "migrate":
 		return migrate(ctx, def, o)
 	}
-	fmt.Fprintf(o.Stderr, "{\"level\":\"ERROR\",\"msg\":\"unknown entry %q; use serve or migrate\"}\n", entry)
+	obs.NewLogger(obs.Member{ID: def.ID, Version: def.Version}, slog.LevelInfo, o.Stderr).
+		Error("unknown entry; use serve or migrate", "entry", entry)
 	return ExitUsage
 }
 

@@ -5,17 +5,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	protocol "github.com/brickKit/be-protocol/v3"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	protocol "github.com/brickKit/be-protocol/v3"
 
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/config"
@@ -81,6 +84,43 @@ func TestUnknownEntry(t *testing.T) {
 	code := Run(context.Background(), definition(&demo{}), Options{Args: []string{"dance"}, Env: env(nil), Stderr: &stderr, Stdout: io.Discard})
 	assert.Equal(t, ExitUsage, code)
 	assert.Contains(t, stderr.String(), "dance")
+	structuredLines(t, stderr.String())
+}
+
+// structuredLines checks that every line is a structured log line (P10.2): RFC 3339 UTC time to the millisecond,
+// level, msg, component and version.
+func structuredLines(t *testing.T, out string) {
+	t.Helper()
+	timeForm := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		var l map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &l), line)
+		ts, _ := l["time"].(string)
+		assert.Regexp(t, timeForm, ts, line)
+		for _, k := range []string{"level", "msg", "component", "version"} {
+			assert.NotEmpty(t, l[k], "%s missing: %s", k, line)
+		}
+	}
+}
+
+func TestStartupLinesAreStructured(t *testing.T) {
+	// the identity member is not up yet: the warning before the member's logger exists is a structured line too
+	port := freePort(t)
+	d := &demo{release: make(chan struct{})}
+	close(d.release)
+	ctx, cancel := context.WithCancel(context.Background())
+	var stdout syncBuffer
+	done := make(chan int, 1)
+	vars := secured(t, definition(d), map[string]string{"COMPONENT_ID": "demo/alpha", "COMPONENT_VERSION": "3.0.0",
+		"PORT": strconv.Itoa(port), "STOP_DRAIN_DELAY": "10ms"})
+	vars["IAM_JWKS_URL"] = "http://127.0.0.1:" + strconv.Itoa(freePort(t)) + "/jwks" // nothing listens there
+	go func() { done <- Run(ctx, definition(d), Options{Env: env(vars), Stdout: &stdout, Stderr: io.Discard}) }()
+	require.Eventually(t, func() bool { return strings.Contains(stdout.String(), `"event":"ready"`) }, 5*time.Second,
+		20*time.Millisecond)
+	cancel()
+	assert.Equal(t, ExitOK, <-done)
+	assert.Contains(t, stdout.String(), "the identity keys could not be fetched yet")
+	structuredLines(t, stdout.String())
 }
 
 func TestConfigurationErrorsAllAtOnce(t *testing.T) {
@@ -92,6 +132,7 @@ func TestConfigurationErrorsAllAtOnce(t *testing.T) {
 	for _, want := range []string{`"key":"PORT"`, `"key":"LOG_LEVEL"`, `"key":"COMPONENT_VERSION"`} {
 		assert.Contains(t, out, want)
 	}
+	structuredLines(t, out)
 }
 
 func TestModuleFailuresDoNotCrash(t *testing.T) {
