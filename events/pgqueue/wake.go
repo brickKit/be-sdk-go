@@ -10,17 +10,49 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Waking the readers (P6.30): a publish NOTIFYs wakeChan with the message's subject once its insert has committed, in a
-// statement of its own (see Publish); one dedicated connection per transport LISTENs and wakes the idle readers of the
-// subscriptions the subject matches. The poll stays: while the connection is down, behind a pooler in transaction mode (no LISTEN there), and for rows
-// held back by the xmin barrier (P6.23). Without the wake every message waited half a poll at low load (measured:
-// arrival p50 about 55 ms at a 100 ms poll, against about 3 ms on JetStream).
+// Waking the readers (P6.30): once a publish's insert has committed, the transport's notifier NOTIFYs wakeChan with the
+// message's subject in a statement of its own (see Publish and notifyLoop); one dedicated connection per transport
+// LISTENs and wakes the idle readers of the subscriptions the subject matches. The poll stays: while the connection is
+// down, behind a pooler in transaction mode (no LISTEN there), and for rows held back by the xmin barrier (P6.23).
+// Without the wake every message waited half a poll at low load (measured: arrival p50 about 55 ms at a 100 ms poll,
+// against about 3 ms on JetStream).
 
 const (
 	wakeChan     = "be_bus_wake"
 	relistenMax  = 30 * time.Second
 	relistenFrom = time.Second
+	notifyQueue  = 4096 // NOTIFYs waiting to be sent; past it a publish's NOTIFY is dropped and the poll reads the message
 )
+
+// notifyLoop sends the publishes' NOTIFYs, one a new message in the order they were queued, off the publish path.
+// Not in the inserting transaction: a transaction that NOTIFYs takes an instance-wide lock at commit and holds it until
+// its commit record is flushed, so concurrent publishes would commit one at a time (measured with 8 publishers: about
+// 3 500 messages a second against about 10 000); a NOTIFY alone writes nothing and holds it briefly. Not on the publish
+// path either: a publisher that publishes in order (the forwarder) would wait a second round trip a message (measured:
+// a Python publisher at 200 a second went from about 13 to 19 ms). One notification a message, never merged: each
+// wakes one idle reader (waker). A NOTIFY that fails is reported; the message is stored and the poll reads it.
+func (t *Transport) notifyLoop() {
+	defer close(t.notified)
+	for {
+		select {
+		case <-t.closing.Done():
+			return
+		case subject := <-t.notes:
+			_, err := t.pool.Exec(t.closing, "SELECT pg_notify($1, $2)", wakeChan, subject)
+			if err != nil && t.closing.Err() == nil {
+				t.report(fmt.Errorf("bus wake after a publish (the poll reads the message): %w", err))
+			}
+		}
+	}
+}
+
+// notify queues a new message's NOTIFY; a full queue drops it.
+func (t *Transport) notify(subject string) {
+	select {
+	case t.notes <- subject:
+	default:
+	}
+}
 
 // waker is one subscription's wake signal: a token per matching notification, at most one per reader, so one message
 // wakes one idle reader rather than all of them (waking all made every reader claim and advance for one message). A

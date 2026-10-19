@@ -52,6 +52,8 @@ type Transport struct {
 	listenOnce sync.Once
 	listening  atomic.Bool
 	listened   chan struct{}
+	notes      chan string // subjects waiting for their NOTIFY (notifyLoop, wake.go)
+	notified   chan struct{}
 }
 
 // SetOnError sets where the errors of the background readers and the purge go (logged by the runtime); unset:
@@ -137,9 +139,10 @@ func Connect(ctx context.Context, busURL, name string, maxConns int32) (*Transpo
 		return nil, fmt.Errorf("bus %s: %w", redact(busURL), err)
 	}
 	t := &Transport{pool: pool, cfg: cfg, schema: schema, poll: DefaultPoll, purged: make(chan struct{}),
-		listened: make(chan struct{})}
+		listened: make(chan struct{}), notes: make(chan string, notifyQueue), notified: make(chan struct{})}
 	t.closing, t.stop = context.WithCancel(context.Background())
 	go t.purgeLoop(t.closing)
+	go t.notifyLoop()
 	return t, nil
 }
 
@@ -164,11 +167,9 @@ func size(m events.Message) int {
 }
 
 // Publish implements events.Transport: the insert's commit is the acknowledgement; a repeated message ID is a no-op.
-// A new message then NOTIFYs the readers in a statement of its own (P6.30). A transaction that NOTIFYs takes an
-// instance-wide lock at commit and holds it until its commit record is flushed, so publishes that NOTIFY in the
-// inserting transaction commit one at a time (measured: about 435 a second from 8 publishers against about 2000
-// without); a NOTIFY alone writes nothing and holds the lock briefly. A NOTIFY that fails is reported, not returned:
-// the message is stored and the poll reads it.
+// A new message is then handed to the transport's notifier, which NOTIFYs the readers in a statement of its own
+// (P6.30, wake.go): not in the inserting transaction, which would make concurrent publishes commit one at a time, and
+// not on the publish path, which would make a publisher that publishes in order wait a second round trip a message.
 func (t *Transport) Publish(ctx context.Context, m events.Message) error {
 	if size(m) > MaxMessage {
 		return events.ErrTooLarge
@@ -186,9 +187,7 @@ func (t *Transport) Publish(ctx context.Context, m events.Message) error {
 	if err != nil || tag.RowsAffected() == 0 {
 		return err
 	}
-	if _, err := t.pool.Exec(ctx, "SELECT pg_notify($1, $2)", wakeChan, m.Subject); err != nil {
-		t.report(fmt.Errorf("bus wake after a publish (the poll reads the message): %w", err))
-	}
+	t.notify(m.Subject)
 	return nil
 }
 
@@ -499,6 +498,7 @@ func (t *Transport) Purge(ctx context.Context, retention time.Duration) (int64, 
 func (t *Transport) Close() error {
 	t.stop()
 	<-t.purged
+	<-t.notified
 	if t.listening.Load() {
 		<-t.listened
 	}
