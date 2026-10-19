@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/brickKit/be-sdk-go/v3/component"
-	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
+	"github.com/brickKit/be-sdk-go/v3/sectest"
 )
 
 var worlds sync.Map

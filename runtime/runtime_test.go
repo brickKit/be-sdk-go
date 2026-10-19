@@ -7,7 +7,7 @@ import (
 
 	"github.com/brickKit/be-sdk-go/v3/calls"
 	"github.com/brickKit/be-sdk-go/v3/config"
-	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
+	"github.com/brickKit/be-sdk-go/v3/sectest"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

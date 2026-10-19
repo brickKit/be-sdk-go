@@ -315,8 +315,8 @@
         "launcher.TestProtectedRoutesNeedTheSecurityConfiguration",
         "canon.TestCanonicalVectors",
         "authz.TestSegmentCanonicalVectors",
-        "internal/records.TestSecurityRecordVectors",
-        "internal/records.TestOpenRefusesWhatIsNotExactlyCanonical",
+        "records.TestSecurityRecordVectors",
+        "records.TestOpenRefusesWhatIsNotExactlyCanonical",
         "launcher.TestNotReadyUntilTheDefinitionsAreAccepted"
       ]
     },

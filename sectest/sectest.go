@@ -1,5 +1,6 @@
-// Package sectest is a test deployment's security: a token issuer with its published keys, a trust root issuing
-// component certificates, and a fake authorization member answering view verifications over mTLS. Tests only.
+// Package sectest is a test deployment's security for the SDK's and components' own tests (as besdk.testing in Python):
+// a token issuer with its published keys, a trust root issuing
+// component certificates, and fake authorization and audit members over mTLS. Never import it from component code.
 package sectest
 
 import (
@@ -29,7 +30,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/authz"
 	"github.com/brickKit/be-sdk-go/v3/canon"
 	"github.com/brickKit/be-sdk-go/v3/identity"
-	"github.com/brickKit/be-sdk-go/v3/internal/records"
+	"github.com/brickKit/be-sdk-go/v3/records"
 	authzv3 "github.com/brickKit/contract-infra-authz/v3/gen/go/be/authz/v3"
 	auditv3 "github.com/brickKit/infra-audit/contract/v3/gen/go/be/audit/v3"
 	"google.golang.org/grpc"

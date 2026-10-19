@@ -51,6 +51,23 @@ func TestOnlyPermittedComponentsMayCall(t *testing.T) { // P8.6, CK-ID-04
 	assert.True(t, errs.Is(say(other), "be", errs.ReasonPermissionDenied))
 }
 
+func TestAnyComponentAdmitsEveryComponentOfTheDeploymentOnly(t *testing.T) { // P8.6: family contract methods
+	addr := serveOnlyFor(t, "infra/authz", grpcx.AnyComponent)
+	for _, id := range []string{"erp/sales", "erp/billing"} {
+		c, err := member(t, id).GRPC("infra/authz", addr)
+		require.NoError(t, err)
+		assert.NoError(t, say(c), id)
+	}
+	w := worldOf(t)
+	cert, key, ca := w.CertsIn(t, "0190f3a1-0000-7000-8000-00000000d002", "erp/sales")
+	tls, err := identity.LoadServiceTLS("0190f3a1-0000-7000-8000-00000000d002", "erp/sales", cert, key, ca, os.ReadFile)
+	require.NoError(t, err)
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(tls.ClientConfig("infra/authz"))))
+	require.NoError(t, err)
+	defer conn.Close()
+	assert.Error(t, say(conn), "a certificate of another deployment is still refused")
+}
+
 func TestConnectionsWithoutAValidIdentityAreRefused(t *testing.T) { // P8.5, CK-ID-04
 	addr := serveOnlyFor(t, "erp/inventory", "erp/sales")
 	w := worldOf(t)

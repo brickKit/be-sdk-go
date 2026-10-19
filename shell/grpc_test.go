@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"context"
-	"github.com/brickKit/be-sdk-go/v3/internal/sectest"
+	"github.com/brickKit/be-sdk-go/v3/sectest"
 	"io"
 	"strconv"
 	"testing"
