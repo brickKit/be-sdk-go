@@ -248,10 +248,16 @@ func (w *Runner) claim(ctx context.Context) (*Run, error) {
 		var unknown bool
 		var calls []byte
 		row := &Run{}
-		err := tx.QueryRow(ctx, `WITH c AS (
-				SELECT id FROM be_work_item WHERE job = ANY($1) AND (
-					(state IN ('pending', 'retry_wait') AND run_at <= now()) OR (state = 'running' AND lease_until <= now()))
-				ORDER BY run_at LIMIT 1 FOR UPDATE SKIP LOCKED)
+		// P7.22: an expired lease first, else the earliest due item, each through its own ordered partial index, so a
+		// backlog does not slow a claim (an OR over both indexes fetched and sorted the whole backlog)
+		err := tx.QueryRow(ctx, `WITH expired AS (
+				SELECT id FROM be_work_item WHERE job = ANY($1) AND state = 'running' AND lease_until <= now()
+				ORDER BY lease_until LIMIT 1 FOR UPDATE SKIP LOCKED),
+			due AS (
+				SELECT id FROM be_work_item WHERE job = ANY($1) AND state IN ('pending', 'retry_wait') AND run_at <= now()
+					AND NOT EXISTS (SELECT 1 FROM expired)
+				ORDER BY run_at LIMIT 1 FOR UPDATE SKIP LOCKED),
+			c AS (SELECT id FROM expired UNION ALL SELECT id FROM due)
 			UPDATE be_work_item w SET state = 'running', epoch = w.epoch + 1, attempts = w.attempts + 1, holder = $2,
 				lease_until = now() + make_interval(secs => $3), claim_db_generation = e.generation,
 				claim_db_timeline = e.timeline

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 
+	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"go.opentelemetry.io/otel/propagation"
@@ -43,9 +44,36 @@ type Sub struct {
 	Streams []string // event streams it reads
 	Types   []string // event types it handles; empty: every type of the streams
 	Handle  HandleFunc
-	// MaxDeliver, AckWait, Concurrency override the protocol's defaults.
+	// MaxDeliver, AckWait, Concurrency override the protocol's defaults; the deployment's
+	// BUS_SUBSCRIPTION_CONCURRENCY overrides Concurrency (P6.31).
 	MaxDeliver  int
 	Concurrency int
+	// Ordered marks a subscription that depends on arrival order: it always handles one message at a time, whatever
+	// the deployment sets.
+	Ordered bool
+}
+
+// ConcurrencyKey is the deployment's setting of how many messages each subscription of a member handles at once.
+const ConcurrencyKey = "BUS_SUBSCRIPTION_CONCURRENCY"
+
+// ConsumerKeys are the keys of a member that subscribes (P6.31).
+func ConsumerKeys() []config.Key {
+	lo, hi := int64(1), int64(64)
+	return []config.Key{{Name: ConcurrencyKey, Type: config.Integer, Min: &lo, Max: &hi}}
+}
+
+// Concurrency is a subscription's effective concurrency (P6.31): 1 when ordered, else the deployment's setting
+// (configured, 0 when unset), else the declaration, else 1.
+func Concurrency(s Sub, configured int) int {
+	switch {
+	case s.Ordered:
+		return 1
+	case configured > 0:
+		return configured
+	case s.Concurrency > 0:
+		return s.Concurrency
+	}
+	return 1
 }
 
 // Subscriptions collects a module's subscriptions.
@@ -69,6 +97,8 @@ type Consumer struct {
 	DB     *db.DB
 	Claims ClaimReader
 	Log    *slog.Logger
+	// Configured is the member's BUS_SUBSCRIPTION_CONCURRENCY, 0 when unset (P6.31).
+	Configured int
 }
 
 // Spec is the transport subscription of this consumer.
@@ -80,7 +110,7 @@ func (c *Consumer) Spec() SubscriptionSpec {
 		}
 	}
 	return SubscriptionSpec{Durable: DurableName(c.Member, c.Sub.Name), Streams: c.Sub.Streams, Filters: filters,
-		MaxDeliver: c.Sub.MaxDeliver, Concurrency: c.Sub.Concurrency}.Defaults()
+		MaxDeliver: c.Sub.MaxDeliver, Concurrency: Concurrency(c.Sub, c.Configured)}.Defaults()
 }
 
 // Handle is the transport handler: claim check, hop limit, inbox and business write in one transaction; a failure on
