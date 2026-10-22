@@ -2,6 +2,7 @@ package launcher
 
 import (
 	"fmt"
+	"io/fs"
 	"sort"
 	"strings"
 	"time"
@@ -143,6 +144,45 @@ func ManifestProblems(manifest []byte, def component.Definition, own map[string]
 			out = append(out, fmt.Sprintf("%s: declared as %v, the SDK reads %v", k, normalize(g), normalize(w)))
 		}
 	}
+	return out
+}
+
+// EventProblems compares the events.publishes list of a component.yaml with the event contracts the component
+// publishes: contracts holds one <event type>.schema.json per published type (the component's contract/events/).
+// Every contract must be listed and every listed type must have a contract; BrickKit's dependency report and the
+// project's event topology come from the list. Subscriptions are known only to the running module, so the
+// component keeps events.subscribes in step itself.
+func EventProblems(manifest []byte, contracts fs.FS) []string {
+	var doc struct {
+		Events struct {
+			Publishes []string `yaml:"publishes"`
+		} `yaml:"events"`
+	}
+	if err := yaml.Unmarshal(manifest, &doc); err != nil {
+		return []string{"component.yaml: " + err.Error()}
+	}
+	files, err := fs.Glob(contracts, "*.schema.json")
+	if err != nil {
+		return []string{"event contracts: " + err.Error()}
+	}
+	have := map[string]bool{}
+	for _, f := range files {
+		have[strings.TrimSuffix(f, ".schema.json")] = true
+	}
+	listed := map[string]bool{}
+	var out []string
+	for _, e := range doc.Events.Publishes {
+		listed[e] = true
+		if !have[e] {
+			out = append(out, e+": in events.publishes, but there is no "+e+".schema.json")
+		}
+	}
+	for _, f := range files {
+		if e := strings.TrimSuffix(f, ".schema.json"); !listed[e] {
+			out = append(out, e+": has a contract, but is not in events.publishes")
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 

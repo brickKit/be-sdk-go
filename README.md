@@ -43,7 +43,7 @@ func main() { launcher.Main(sales.Definition) }
 
 ### 事件
 
-产生事件的组件在定义里声明 `Streams`，在业务事务内调用 `rt.Events.Emit`；SDK 负责编号、转发与信封。超过 64 KiB 的载荷经对象存储：生产者配置自己的 `OBJECT_STORE_*`，转发时写入并发出预签名的只读地址，订阅者不需要存储凭据。消费事件的组件声明 `Subscribes` 并实现 `Subscriptions`，处理函数在 SDK 开的事务里执行，收件表与业务写入同时提交，重复投递只生效一次，最后一次仍失败的记为死信。两者都需要数据库与 `BUS_URL`。
+产生事件的组件在定义里声明 `Streams`，在业务事务内调用 `rt.Events.Emit`；SDK 负责编号、转发与信封。超过 64 KiB 的载荷经对象存储：生产者配置自己的 `OBJECT_STORE_*`，转发时写入并发出预签名的只读地址，订阅者不需要存储凭据。消费事件的组件声明 `Subscribes` 并实现 `Subscriptions`，处理函数在 SDK 开的事务里执行，收件表与业务写入同时提交，重复投递只生效一次，最后一次仍失败的记为死信。两者都需要数据库与 `BUS_URL`。发布的事件类型同时列在 `component.yaml` 的 `events.publishes`：组件的测试用 `launcher.EventProblems` 核对它与 `contract/events/` 下的契约一一对应；订阅的列在 `events.subscribes`，由组件自己保持一致。
 
 ### 后台工作
 
