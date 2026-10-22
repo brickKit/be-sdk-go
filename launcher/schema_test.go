@@ -53,3 +53,20 @@ func TestManifestProblemsNamesEveryDifference(t *testing.T) {
 	assert.Contains(t, got, "EXTRA: declared, but nothing reads it")
 	assert.Contains(t, got, "GREETING: not declared")
 }
+
+func TestEventProblemsNamesEveryDifference(t *testing.T) {
+	contracts := fstest.MapFS{
+		"demo.alpha.changed.v1.schema.json": {Data: []byte("{}")},
+		"demo.alpha.closed.v1.schema.json":  {Data: []byte("{}")},
+		"README.md":                         {Data: []byte("not a contract")},
+	}
+	manifest := []byte("events:\n  publishes:\n    - demo.alpha.changed.v1\n    - demo.alpha.renamed.v1\n")
+	assert.Equal(t, []string{
+		"demo.alpha.closed.v1: has a contract, but is not in events.publishes",
+		"demo.alpha.renamed.v1: in events.publishes, but there is no demo.alpha.renamed.v1.schema.json",
+	}, EventProblems(manifest, contracts))
+
+	all := []byte("events:\n  publishes: [demo.alpha.changed.v1, demo.alpha.closed.v1]\n")
+	assert.Empty(t, EventProblems(all, contracts))
+	assert.Empty(t, EventProblems([]byte("kind: Component\n"), fstest.MapFS{}), "no events and no contracts")
+}

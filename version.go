@@ -2,4 +2,4 @@
 package sdk
 
 // Version is this SDK's version, reported in the self-description (protocol P1.8).
-const Version = "3.0.0-alpha.25"
+const Version = "3.0.0-alpha.26"
