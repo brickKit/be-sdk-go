@@ -93,18 +93,30 @@ func describe(k config.Key, own string) string {
 	return strings.Join(parts, "; ")
 }
 
-// ManifestProblems compares the configSchema of a component.yaml with ConfigSchema: every key missing, extra or
-// declared differently, in key order. A component's test asserts it is empty and prints ConfigSchemaYAML otherwise.
+// ManifestProblems compares a component.yaml with the code: metadata.name and metadata.version with the definition's
+// ID and Version (a release that bumps one and not the other would refuse to start), then the configSchema with
+// ConfigSchema: every key missing, extra or declared differently, in key order. A component's test asserts it is
+// empty and prints ConfigSchemaYAML otherwise.
 func ManifestProblems(manifest []byte, def component.Definition, own map[string]string) []string {
 	var doc struct {
+		Metadata struct {
+			Name    string `yaml:"name"`
+			Version string `yaml:"version"`
+		} `yaml:"metadata"`
 		ConfigSchema map[string]any `yaml:"configSchema"`
 	}
 	if err := yaml.Unmarshal(manifest, &doc); err != nil {
 		return []string{"component.yaml: " + err.Error()}
 	}
+	var out []string
+	if doc.Metadata.Name != def.ID {
+		out = append(out, fmt.Sprintf("metadata.name: %q, the code is %q", doc.Metadata.Name, def.ID))
+	}
+	if doc.Metadata.Version != def.Version {
+		out = append(out, fmt.Sprintf("metadata.version: %q, the code is %q", doc.Metadata.Version, def.Version))
+	}
 	want := ConfigSchema(def, own)
 	got := doc.ConfigSchema
-	var out []string
 	gotReq := map[string]bool{}
 	if l, ok := got["required"].([]any); ok {
 		for _, v := range l {
