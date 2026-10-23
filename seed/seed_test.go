@@ -128,3 +128,31 @@ func TestWaitGrantedWaitsForTheBodyToBeChecked(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "404")
 }
+
+func TestUntilGrantedSendsTheWriteAgainWhileTheGrantIsMissing(t *testing.T) {
+	var calls int
+	var keys []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		switch {
+		case calls == 1:
+			w.WriteHeader(404) // not visible yet
+		case calls == 2:
+			w.WriteHeader(403) // visible, not allowed yet
+		default:
+			_, _ = w.Write([]byte(`{"id":"w1"}`))
+		}
+	}))
+	defer srv.Close()
+	code, out, err := NewClient(srv.URL, "tok").UntilGranted(5*time.Second, "POST", "/api/x", map[string]any{"a": 1},
+		"Idempotency-Key", "seed:x")
+	require.NoError(t, err)
+	assert.Equal(t, 200, code)
+	assert.Equal(t, "w1", out["id"])
+	assert.Equal(t, []string{"seed:x", "seed:x", "seed:x"}, keys, "the same request every time")
+	calls = -100 // never granted: the last answer comes back after the timeout
+	code, _, err = NewClient(srv.URL, "tok").UntilGranted(300*time.Millisecond, "POST", "/api/x", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 404, code)
+}
