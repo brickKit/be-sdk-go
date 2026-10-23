@@ -139,6 +139,22 @@ func (c Client) WaitGranted(method, path string, timeout time.Duration) error {
 	}
 }
 
+// UntilGranted sends one request until the grant that allows it has reached the component: while it answers 403 or
+// 404 (not allowed, not visible: nothing was written) it waits and sends it again; any other answer is returned. For
+// the first write of a seed to a component that checks the request (its body, its Idempotency-Key) before the
+// operation, where WaitGranted cannot tell. A 404 that is not about the grant (a referenced record is missing) comes
+// back after timeout.
+func (c Client) UntilGranted(timeout time.Duration, method, path string, body any, header ...string) (int, map[string]any, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		code, out, err := c.Do(method, path, body, header...)
+		if err != nil || (code != 403 && code != 404) || time.Now().After(deadline) {
+			return code, out, err
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
 // Since is the start of the seed grants' validity: a fixed instant, so a second run sends the same change.
 const Since = "2026-01-01T00:00:00Z"
 
