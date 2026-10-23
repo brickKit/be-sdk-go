@@ -181,8 +181,10 @@ func TestPlatformEndpoints(t *testing.T) {
 	p := problem(t, rec)
 	assert.Equal(t, errs.ReasonNotReady, p.Reason)
 	assert.Equal(t, map[string]string{"state": "starting", "waiting": "demo/beta"}, p.Metadata)
+	assert.Equal(t, 503, h.do("HEAD", "/readyz", nil, nil).Code)
 	h.ready = true
 	assert.Equal(t, 200, h.do("GET", "/readyz", nil, nil).Code)
+	assert.Equal(t, 200, h.do("HEAD", "/readyz", nil, nil).Code)
 
 	assert.Contains(t, h.do("GET", "/.well-known/be-component", nil, nil).Body.String(), "demo/alpha")
 

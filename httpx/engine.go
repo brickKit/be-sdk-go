@@ -109,7 +109,7 @@ func platform(e *gin.Engine, d Deps) {
 	health := func(g *gin.Context) { g.String(http.StatusOK, "ok") }
 	e.GET("/healthz", health)
 	e.HEAD("/healthz", health)
-	e.GET("/readyz", func(g *gin.Context) {
+	ready := func(g *gin.Context) {
 		ready, state, waiting := d.Platform.Ready()
 		if ready {
 			g.String(http.StatusOK, "ok")
@@ -120,7 +120,9 @@ func platform(e *gin.Engine, d Deps) {
 			er = er.With("waiting", joinComma(waiting))
 		}
 		er.WriteHTTP(g.Writer, "")
-	})
+	}
+	e.GET("/readyz", ready)
+	e.HEAD("/readyz", ready) // a probe may check readiness with HEAD (P1.6)
 	e.GET("/.well-known/be-component", func(g *gin.Context) { g.JSON(http.StatusOK, d.Platform.Describe()) })
 	if d.Platform.Metrics != nil {
 		e.GET("/metrics", gin.WrapH(d.Platform.Metrics))
