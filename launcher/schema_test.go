@@ -38,10 +38,10 @@ func TestConfigSchemaDeclaresWhatTheSDKReads(t *testing.T) {
 func TestManifestProblemsNamesEveryDifference(t *testing.T) {
 	def := component.Definition{ID: "demo/beta", Version: "3.0.0",
 		Keys: []config.Key{{Name: "GREETING", Type: config.String, Required: true}}}
-	ok := []byte("metadata:\n  name: demo/beta\n  version: 3.0.0\n" + ConfigSchemaYAML(def, nil))
+	ok := []byte("metadata:\n  id: demo/beta\n  name: Beta\n  version: 3.0.0\n" + ConfigSchemaYAML(def, nil))
 	assert.Empty(t, ManifestProblems(ok, def, nil), "the generated block matches itself")
 	bad := []byte(`metadata:
-  name: demo/beta
+  id: demo/beta
   version: 3.0.1
 configSchema:
   type: object
@@ -57,7 +57,7 @@ configSchema:
 	assert.Contains(t, got, "GREETING: not declared")
 	assert.Contains(t, got, `metadata.version: "3.0.1", the code is "3.0.0"`)
 	assert.Contains(t, ManifestProblems(ok, component.Definition{ID: "demo/gamma", Version: "3.0.0", Keys: def.Keys}, nil),
-		`metadata.name: "demo/beta", the code is "demo/gamma"`)
+		`metadata.id: "demo/beta", the code is "demo/gamma"`)
 }
 
 func TestEventProblemsNamesEveryDifference(t *testing.T) {
