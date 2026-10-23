@@ -93,14 +93,14 @@ func describe(k config.Key, own string) string {
 	return strings.Join(parts, "; ")
 }
 
-// ManifestProblems compares a component.yaml with the code: metadata.name and metadata.version with the definition's
+// ManifestProblems compares a component.yaml with the code: metadata.id and metadata.version with the definition's
 // ID and Version (a release that bumps one and not the other would refuse to start), then the configSchema with
 // ConfigSchema: every key missing, extra or declared differently, in key order. A component's test asserts it is
 // empty and prints ConfigSchemaYAML otherwise.
 func ManifestProblems(manifest []byte, def component.Definition, own map[string]string) []string {
 	var doc struct {
 		Metadata struct {
-			Name    string `yaml:"name"`
+			ID      string `yaml:"id"`
 			Version string `yaml:"version"`
 		} `yaml:"metadata"`
 		ConfigSchema map[string]any `yaml:"configSchema"`
@@ -109,8 +109,8 @@ func ManifestProblems(manifest []byte, def component.Definition, own map[string]
 		return []string{"component.yaml: " + err.Error()}
 	}
 	var out []string
-	if doc.Metadata.Name != def.ID {
-		out = append(out, fmt.Sprintf("metadata.name: %q, the code is %q", doc.Metadata.Name, def.ID))
+	if doc.Metadata.ID != def.ID {
+		out = append(out, fmt.Sprintf("metadata.id: %q, the code is %q", doc.Metadata.ID, def.ID))
 	}
 	if doc.Metadata.Version != def.Version {
 		out = append(out, fmt.Sprintf("metadata.version: %q, the code is %q", doc.Metadata.Version, def.Version))
