@@ -238,3 +238,20 @@ func TestCookiesAndRedirects(t *testing.T) { // a login's hops (protocol 20)
 	assert.True(t, ck[0].HttpOnly && ck[0].Secure && ck[0].SameSite == http.SameSiteLaxMode && ck[0].Value == "s1")
 	assert.Equal(t, http.StatusInternalServerError, h.do("GET", "/api/bad", nil, nil).Code, "only 302, 303 or 307")
 }
+
+func TestByteResponses(t *testing.T) { // a downloaded document, such as an invoice's PDF
+	var r Routes
+	pdf := []byte("%PDF-1.7\n")
+	r.Add(Route{Method: "POST", Path: "/api/doc", Public: true, Handle: func(c *Context) error {
+		return c.Bytes(http.StatusOK, "application/pdf", pdf)
+	}})
+	r.Add(Route{Method: "POST", Path: "/api/untyped", Public: true, Handle: func(c *Context) error {
+		return c.Bytes(http.StatusOK, "", pdf)
+	}})
+	h := newHarness(t, &r)
+	rec := h.do("POST", "/api/doc", nil, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "application/pdf", rec.Header().Get("Content-Type"))
+	assert.Equal(t, pdf, rec.Body.Bytes())
+	assert.Equal(t, http.StatusInternalServerError, h.do("POST", "/api/untyped", nil, nil).Code, "a media type is required")
+}

@@ -95,6 +95,16 @@ func (c *Context) JSON(status int, v any) error {
 	return nil
 }
 
+// Bytes writes a body of the media type as it is: a document the user downloads, such as a rendered PDF. Errors still
+// answer problem JSON (return them instead of writing).
+func (c *Context) Bytes(status int, mediaType string, body []byte) error {
+	if mediaType == "" {
+		return errs.New(errs.ReasonInternal, "a byte response needs its media type")
+	}
+	c.gin.Data(status, mediaType, body)
+	return nil
+}
+
 // NoContent writes an empty response with the status.
 func (c *Context) NoContent(status int) error {
 	c.gin.Status(status)
