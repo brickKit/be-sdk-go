@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/reqctx"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -35,6 +37,7 @@ func (m *Member) SetCredentials(c Credentials) { m.mu.Lock(); m.creds = c; m.mu.
 func (m *Member) SetTLS(t *identity.ServiceTLS) { m.mu.Lock(); m.tls = t; m.mu.Unlock() }
 
 type idempotentOption struct{ grpc.EmptyCallOption }
+type backgroundOption struct{ grpc.EmptyCallOption }
 type keyOption struct {
 	grpc.EmptyCallOption
 	key string
@@ -43,6 +46,10 @@ type keyOption struct {
 // Idempotent marks a call to a method the contract declares free of side effects or idempotent: only such calls are
 // retried (P4.6).
 func Idempotent() grpc.CallOption { return idempotentOption{} }
+
+// Background marks the SDK's own background call to the authorization member (view verification, definition
+// submission; P4.27): one at a time per member on its own schedule, so the breaker neither counts it nor holds it.
+func Background() grpc.CallOption { return backgroundOption{} }
 
 // IdempotencyKey sends the command's idempotency key, the same on every attempt (P4.2).
 func IdempotencyKey(key string) grpc.CallOption { return keyOption{key: key} }
@@ -60,7 +67,12 @@ func (m *Member) GRPC(id, target string) (*grpc.ClientConn, error) {
 		return nil, fmt.Errorf("system surface of %s: this member has no service identity (SERVICE_TLS_*)", id)
 	}
 	dep := m.dependencyLocked(id, "grpc")
-	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(credentials.NewTLS(m.tls.ClientConfig(id))),
+	// passthrough hands the host name to the dialer, which resolves it for every connection: a dependency that
+	// restarted on another address (a container's new IP) is reached at once, where gRPC's own resolver waits at
+	// least 30 s between resolutions (P4.28). The reconnection backoff is capped for the same reason.
+	conn, err := grpc.NewClient("passthrough:///"+target,
+		grpc.WithTransportCredentials(credentials.NewTLS(m.tls.ClientConfig(id))),
+		grpc.WithConnectParams(grpc.ConnectParams{Backoff: reconnect, MinConnectTimeout: 5 * time.Second}),
 		grpc.WithUnaryInterceptor(m.unary(dep)))
 	if err != nil {
 		return nil, fmt.Errorf("system surface of %s at %s: %w", id, target, err)
@@ -72,14 +84,20 @@ func (m *Member) GRPC(id, target string) (*grpc.ClientConn, error) {
 	return conn, nil
 }
 
+// reconnect is gRPC's default backoff with the longest pause cut from 120 s to 5 s: after a dependency has been
+// down a while its connection is retried every few seconds, not every two minutes.
+var reconnect = backoff.Config{BaseDelay: time.Second, Multiplier: 1.6, Jitter: 0.2, MaxDelay: 5 * time.Second}
+
 func (m *Member) unary(dep *Dependency) grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker,
 		opts ...grpc.CallOption) error {
-		idempotent, key := false, ""
+		idempotent, background, key := false, false, ""
 		for _, o := range opts {
 			switch x := o.(type) {
 			case idempotentOption:
 				idempotent = true
+			case backgroundOption:
+				background = true
 			case keyOption:
 				key = x.key
 			}
@@ -95,7 +113,7 @@ func (m *Member) unary(dep *Dependency) grpc.UnaryClientInterceptor {
 			}
 			auth = a
 		}
-		return dep.Do(ctx, idempotent, func(actx context.Context) Result {
+		return dep.do(ctx, idempotent, !background, func(actx context.Context) Result {
 			md, _ := metadata.FromOutgoingContext(actx)
 			md = md.Copy()
 			if id := reqctx.RequestID(actx); id != "" {

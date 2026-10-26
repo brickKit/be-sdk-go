@@ -51,7 +51,7 @@ func TestConfiguredAddresses(t *testing.T) { // P4.26
 	m.SetTLS(sectest.New(t).TLS(t, "test/probe-go"))
 	conn, ok := rt.GRPCAt("test/probe-go2", "http://test-probe-go2-3-1-0:9602")
 	require.True(t, ok)
-	assert.Equal(t, "test-probe-go2-3-1-0:9602", conn.Target(), "the $endpoint form is dialled by host and port")
+	assert.Equal(t, "passthrough:///test-probe-go2-3-1-0:9602", conn.Target(), "the $endpoint form is dialled by host and port, resolved per connection (P4.28)")
 	same, _ := rt.GRPCAt("test/probe-go2", "test-probe-go2-3-1-0:9602")
 	assert.Same(t, conn, same, "one connection per component and address, kept for the member's life")
 }

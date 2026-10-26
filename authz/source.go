@@ -24,7 +24,7 @@ func (g GRPCSource) Verify(ctx context.Context, req VerifyRequest) (VerifyAnswer
 	for _, h := range req.Held {
 		in.Held = append(in.Held, &authzv3.HeldShard{Shard: h.Shard, Digest: h.Digest})
 	}
-	out, err := authzv3.NewViewServiceClient(g.Conn).Verify(ctx, in, calls.Idempotent())
+	out, err := authzv3.NewViewServiceClient(g.Conn).Verify(ctx, in, calls.Idempotent(), calls.Background())
 	if err != nil {
 		return VerifyAnswer{}, err
 	}

@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.47.3
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.9
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.3
-	github.com/brickKit/be-protocol/v3 v3.0.0-alpha.21
+	github.com/brickKit/be-protocol/v3 v3.0.0-alpha.23
 	github.com/brickKit/contract-infra-authz/v3 v3.0.0-alpha.1
 	github.com/brickKit/infra-audit/contract/v3 v3.0.0-alpha.1
 	github.com/cockroachdb/apd/v3 v3.2.3

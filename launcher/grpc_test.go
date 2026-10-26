@@ -83,3 +83,16 @@ func TestSystemModuleWithoutGRPCPortFails(t *testing.T) {
 	assert.Equal(t, ExitFailure, code)
 	assert.Contains(t, out.String(), "no GRPCPort")
 }
+
+// TestSystemConnectionsResolveTheHostOnEveryConnection: a dependency that restarts on another address (a container's
+// new IP) is reached at once, without gRPC's 30 s between name resolutions (P4.28): the host name goes to the dialer,
+// which resolves it for every connection.
+func TestSystemConnectionsResolveTheHostOnEveryConnection(t *testing.T) {
+	out, err := calls.NewMember(nil)
+	require.NoError(t, err)
+	defer out.Close()
+	out.SetTLS(worldOf(t).TLS(t, "demo/client"))
+	conn, err := out.GRPC("infra/authz", "infra-authz:9223")
+	require.NoError(t, err)
+	assert.Equal(t, "passthrough:///infra-authz:9223", conn.CanonicalTarget())
+}

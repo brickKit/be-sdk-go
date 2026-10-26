@@ -18,21 +18,52 @@ import (
 	"time"
 
 	sdkauthz "github.com/brickKit/be-sdk-go/v3/authz"
+	"github.com/brickKit/be-sdk-go/v3/errs"
 )
 
 // Client calls one component's user surface with a bearer token.
 type Client struct {
 	Base, Token string
 	HTTP        *http.Client
+	// Patience is how long Do keeps sending a request that answers a retryable 503, Pause how long it waits between.
+	Patience, Pause time.Duration
 }
 
-// NewClient is a client of the component at base, as the holder of token.
+// NewClient is a client of the component at base, as the holder of token. Patience covers a member that has just
+// restarted: its view arrives within seconds, or after the authorization member's own restart.
 func NewClient(base, token string) Client {
-	return Client{Base: base, Token: token, HTTP: &http.Client{Timeout: 30 * time.Second}}
+	return Client{Base: base, Token: token, HTTP: &http.Client{Timeout: 30 * time.Second}, Patience: 90 * time.Second,
+		Pause: time.Second}
 }
 
-// Do sends one request; header holds name and value pairs. The body is decoded as an object when it is one.
+// Do sends a request; header holds name and value pairs. The body is decoded as an object when it is one. An answer
+// that says nothing was done (503 with a reason the protocol's catalog marks retryable: not ready, no authorization
+// view yet, a dependency unavailable) is waited out: the same request is sent again for up to Patience, and the last
+// answer comes back. Seeds are written to be run again, so a repeated request is safe.
 func (c Client) Do(method, path string, body any, header ...string) (int, map[string]any, error) {
+	deadline := time.Now().Add(c.Patience)
+	for {
+		code, out, err := c.once(method, path, body, header...)
+		if err != nil || !notDone(code, out) || time.Now().After(deadline) {
+			return code, out, err
+		}
+		time.Sleep(c.Pause)
+	}
+}
+
+// notDone reports a 503 whose platform reason the catalog marks retryable.
+func notDone(code int, out map[string]any) bool {
+	if code != http.StatusServiceUnavailable {
+		return false
+	}
+	reason, _ := out["reason"].(string)
+	domain, _ := out["domain"].(string)
+	e, ok := errs.Platform(reason)
+	return ok && domain == errs.PlatformDomain && e.Retry == errs.RetryYes
+}
+
+// once sends the request one time.
+func (c Client) once(method, path string, body any, header ...string) (int, map[string]any, error) {
 	var r io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)

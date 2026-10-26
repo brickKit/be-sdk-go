@@ -157,3 +157,41 @@ func TestUntilGrantedSendsTheWriteAgainWhileTheGrantIsMissing(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 404, code)
 }
+
+// TestDoWaitsOutAnswersThatSayNothingWasDone: a 503 the protocol's catalog marks retryable (not ready, no
+// authorization view yet, a dependency down) means the request was not carried out; a seed may meet one right after
+// a member restarts (P8.24, P4.27), so the client waits and sends the same request again, up to Patience. Any other
+// 503 comes back at once.
+func TestDoWaitsOutAnswersThatSayNothingWasDone(t *testing.T) {
+	var calls int
+	reason := "AUTHORIZATION_VIEW_EXPIRED"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls < 3 {
+			w.WriteHeader(503)
+			_, _ = w.Write([]byte(`{"reason":"` + reason + `","domain":"be","status":503}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"w1"}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	c.Pause = 10 * time.Millisecond
+	out, err := c.Must("POST", "/api/x", map[string]any{"a": 1})
+	require.NoError(t, err)
+	assert.Equal(t, "w1", out["id"])
+	assert.Equal(t, 3, calls)
+
+	calls, reason = 0, "SOMETHING_ELSE"
+	code, _, err := c.Do("POST", "/api/x", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 503, code, "a 503 the catalog does not mark retryable is not sent again")
+	assert.Equal(t, 1, calls)
+
+	calls, reason = -1000, "NOT_READY"
+	c.Patience = 100 * time.Millisecond
+	code, out, err = c.Do("POST", "/api/x", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 503, code, "after Patience the last answer comes back")
+	assert.Equal(t, "NOT_READY", out["reason"])
+}

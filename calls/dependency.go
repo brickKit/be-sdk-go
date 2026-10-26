@@ -36,6 +36,11 @@ func (d *Dependency) Budget() *Budget { return d.budget }
 // Do runs one call: at most MaxAttempts attempts, each given its own shrinking timeout. attempt must honour its
 // context and report what came back. The returned error is the caller's answer upward (P4.19).
 func (d *Dependency) Do(ctx context.Context, idempotent bool, attempt func(context.Context) Result) error {
+	return d.do(ctx, idempotent, true, attempt)
+}
+
+// do is Do; without viaBreaker the breaker neither holds nor counts the call (P4.27).
+func (d *Dependency) do(ctx context.Context, idempotent, viaBreaker bool, attempt func(context.Context) Result) error {
 	if db.InTx(ctx) {
 		return errs.New(errs.ReasonInternal, "").Wrap(errors.New("NETWORK_IN_TX: an outbound call inside a database transaction"))
 	}
@@ -59,8 +64,12 @@ func (d *Dependency) Do(ctx context.Context, idempotent bool, attempt func(conte
 			d.metrics.rejected(d, "deadline_budget")
 			return errs.New(errs.ReasonDeadlineBudgetExhausted, "not enough time was left to call a dependency").With("dependency", d.ID)
 		}
-		permit, admitted := d.breaker.Start(d.now())
-		d.metrics.state(d)
+		var permit Permit
+		admitted := true
+		if viaBreaker {
+			permit, admitted = d.breaker.Start(d.now())
+			d.metrics.state(d)
+		}
 		if !admitted {
 			if n > 1 {
 				return Upward(lastClass, last, idempotent, d.ID)
@@ -73,7 +82,9 @@ func (d *Dependency) Do(ctx context.Context, idempotent bool, attempt func(conte
 		r := attempt(actx)
 		cancel()
 		class := Classify(r, errors.Is(ctx.Err(), context.Canceled))
-		d.breaker.End(permit, d.now(), class.BreakerOutcome())
+		if viaBreaker {
+			d.breaker.End(permit, d.now(), class.BreakerOutcome())
+		}
 		d.budget.Record(class.BudgetOutcome())
 		d.metrics.attempt(d, class)
 		d.metrics.state(d)
