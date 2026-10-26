@@ -38,6 +38,7 @@ const (
 	ReasonAuthorizationViewExpired = "AUTHORIZATION_VIEW_EXPIRED"
 	ReasonRecoveryInProgress       = "RECOVERY_IN_PROGRESS"
 	ReasonMemberSwitchInProgress   = "MEMBER_SWITCH_IN_PROGRESS"
+	ReasonDefinitionPending        = "DEFINITION_PENDING"
 	ReasonCapabilityUnsupported    = "CAPABILITY_UNSUPPORTED"
 	ReasonResultUnknown            = "RESULT_UNKNOWN"
 	ReasonAuditCapacityExhausted   = "AUDIT_CAPACITY_EXHAUSTED"
@@ -99,6 +100,7 @@ func init() {
 		{ReasonAuthorizationViewExpired, Unavailable, 0, RetryYes, "The authorization view has expired"},
 		{ReasonRecoveryInProgress, Unavailable, 0, RetryYes, "The deployment is being recovered"},
 		{ReasonMemberSwitchInProgress, Unavailable, 0, RetryYes, "A provider switch is in progress"},
+		{ReasonDefinitionPending, Unavailable, 0, RetryYes, "A definition the change needs has not been accepted yet"},
 		{ReasonCapabilityUnsupported, Unimplemented, 0, RetryNo, "This capability is not supported"},
 		{ReasonResultUnknown, DeadlineExceeded, 0, RetryQueryFirst, "The result is not known yet; query it"},
 		{ReasonAuditCapacityExhausted, Unavailable, 0, RetryYes, "Audited operations are paused until the audit backlog drains"},
