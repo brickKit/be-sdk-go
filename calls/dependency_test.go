@@ -11,6 +11,9 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func newDep(t *testing.T) *Dependency {
@@ -158,4 +161,38 @@ func TestDeadlines(t *testing.T) {
 		return Result{Err: context.Canceled, Code: errs.Cancelled}
 	})
 	assert.True(t, errs.Is(err, "be", errs.ReasonRequestCancelled))
+}
+
+// TestBackgroundCallsAreNeitherCountedNorHeldByTheBreaker: the SDK's own background calls to the authorization member
+// (P4.27) go out while the breaker is open, and their failures and successes do not move it.
+func TestBackgroundCallsAreNeitherCountedNorHeldByTheBreaker(t *testing.T) {
+	m, err := NewMember(nil)
+	require.NoError(t, err)
+	d := m.Dependency("infra/authz", "grpc")
+	d.sleep = func(context.Context, time.Duration) error { return nil }
+	call := m.unary(d)
+	var sent atomic.Int32
+	down := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error {
+		sent.Add(1)
+		return status.Error(codes.Unavailable, "connection refused")
+	}
+	up := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error {
+		sent.Add(1)
+		return nil
+	}
+	for i := 0; i < 2*BreakerWindow; i++ {
+		_ = call(withDeadline(t, 5*time.Second), "/m", nil, nil, nil, down, Idempotent(), Background())
+	}
+	assert.Equal(t, Closed, d.Breaker().State(), "background failures are not counted")
+
+	for i := 0; i < BreakerWindow; i++ {
+		_ = call(withDeadline(t, 5*time.Second), "/m", nil, nil, nil, down)
+	}
+	require.Equal(t, Open, d.Breaker().State(), "ordinary failures open it")
+	before := sent.Load()
+	require.NoError(t, call(withDeadline(t, 5*time.Second), "/m", nil, nil, nil, up, Idempotent(), Background()))
+	assert.Equal(t, before+1, sent.Load(), "a background call is sent while the breaker is open")
+	assert.Equal(t, Open, d.Breaker().State(), "and its success does not close it")
+	err = call(withDeadline(t, 5*time.Second), "/m", nil, nil, nil, up, Idempotent())
+	assert.True(t, errs.Is(err, "be", errs.ReasonCircuitOpen), "ordinary calls are still held: %v", err)
 }

@@ -111,7 +111,7 @@ func (d *Definitions) Submit(ctx context.Context, c authzv3.DefinitionServiceCli
 	for _, s := range sealed {
 		req.Definitions = append(req.Definitions, &authzv3.Definition{Record: s.Raw, Digest: s.Digest})
 	}
-	ans, err := c.Submit(ctx, req, calls.Idempotent())
+	ans, err := c.Submit(ctx, req, calls.Idempotent(), calls.Background())
 	if err != nil {
 		return err
 	}

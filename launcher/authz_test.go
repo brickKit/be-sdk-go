@@ -45,9 +45,11 @@ func TestProtectedRoutesNeedTheSecurityConfiguration(t *testing.T) {
 	}
 }
 
-// TestNotReadyUntilTheDefinitionsAreAccepted: a member with protected routes submits its definitions at start and is
-// ready only once the authorization member accepts them; a refusal keeps it not ready and it retries.
-func TestNotReadyUntilTheDefinitionsAreAccepted(t *testing.T) {
+// TestReadyWithoutWaitingForTheDefinitions: a member with protected routes submits its definitions at start; while the
+// authorization member refuses them (or cannot be reached) the member is ready all the same (P8.24: on Kubernetes the
+// submission may need the member's own readiness), its protected routes answer AUTHORIZATION_VIEW_EXPIRED (P8.13),
+// and it retries until they are accepted.
+func TestReadyWithoutWaitingForTheDefinitions(t *testing.T) {
 	port := freePort(t)
 	base := "http://127.0.0.1:" + strconv.Itoa(port)
 	d := &demo{release: make(chan struct{})}
@@ -60,26 +62,27 @@ func TestNotReadyUntilTheDefinitionsAreAccepted(t *testing.T) {
 	done := make(chan int, 1)
 	var stdout syncBuffer
 	go func() { done <- Run(ctx, def, Options{Env: env(vars), Stdout: &stdout, Stderr: io.Discard}) }()
-	require.Eventually(t, func() bool { c, _ := get(t, base+"/healthz"); return c == 200 }, 5*time.Second, 20*time.Millisecond)
-	time.Sleep(300 * time.Millisecond)
-	c, _ := get(t, base+"/readyz")
-	assert.Equal(t, 503, c, "refused definitions: not ready")
-	assert.NotContains(t, stdout.String(), `"event":"ready"`, "the ready line is written when the member is ready (P1.12)")
+	require.Eventually(t, func() bool { c, _ := get(t, base+"/readyz"); return c == 200 }, 5*time.Second, 20*time.Millisecond,
+		"ready although the definitions were refused")
+	assert.Equal(t, 1, strings.Count(stdout.String(), `"event":"ready"`), "the ready line (P1.12)")
+	code, body := get(t, base+"/api/hello")
+	assert.Equal(t, 503, code, "no view before the definitions are accepted")
+	assert.Contains(t, string(body), "AUTHORIZATION_VIEW_EXPIRED")
 	_, ok := w.Submitted("demo/alpha", "3.0.0")
 	assert.False(t, ok)
+	assert.NotContains(t, stdout.String(), `"event":"definitions_accepted"`)
 
 	w.Refuse("")
-	require.Eventually(t, func() bool { c, _ := get(t, base+"/readyz"); return c == 200 }, 5*time.Second, 50*time.Millisecond,
-		"ready once a retry is accepted")
-	assert.Equal(t, 1, strings.Count(stdout.String(), `"event":"ready"`), "and then the ready line, once")
+	require.Eventually(t, func() bool { c, _ := get(t, base+"/api/hello"); return c == 200 }, 5*time.Second, 50*time.Millisecond,
+		"a retry is accepted and a view arrives")
+	assert.Equal(t, 1, strings.Count(stdout.String(), `"event":"definitions_accepted"`), "the acceptance is logged once")
+	assert.Equal(t, 1, strings.Count(stdout.String(), `"event":"ready"`), "and the ready line stays single")
 	set, ok := w.Submitted("demo/alpha", "3.0.0")
 	assert.True(t, ok)
 	sealed, err := def.Authz.Records(w.Deployment, "3.0.0")
 	require.NoError(t, err)
 	want, _ := authz.SetDigest("demo/alpha", "3.0.0", sealed)
 	assert.Equal(t, want, set, "the member accepted exactly the declared definitions")
-	code, _ := get(t, base+"/api/hello")
-	assert.Equal(t, 200, code, "and a view arrives after the acceptance")
 	cancel()
 	close(d.release)
 	<-done

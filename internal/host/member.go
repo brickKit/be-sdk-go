@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -106,51 +105,33 @@ type Member struct {
 	runner    *work.Runner
 	hasJobs   bool
 	holder    *authz.Holder
-	// definitions submits the declared definitions at start; defsAccepted gates readiness (protected routes only).
+	// definitions submits the declared definitions at start; readiness does not wait for them (P8.24), and until
+	// defsAccepted the view holder does not run, so protected requests answer AUTHORIZATION_VIEW_EXPIRED.
 	definitions  authzv3.DefinitionServiceClient
 	deployment   string
 	defsAccepted atomic.Bool
 	tls          *identity.ServiceTLS
 	state        atomic.Value
 	reread       func(string) ([]byte, error)
-	// started and onReady are set by MarkReady; announced writes the ready line once (P1.12)
-	started   time.Time
-	onReady   func()
-	announced sync.Once
 }
 
 // State returns the member's lifecycle state.
 func (m *Member) State() string { return m.state.Load().(string) }
 
-// IsReady reports the member ready: started, and with protected routes its definitions accepted.
-func (m *Member) IsReady() bool {
-	return m.State() == Ready && (m.holder == nil || m.defsAccepted.Load())
-}
+// IsReady reports the member ready.
+func (m *Member) IsReady() bool { return m.State() == Ready }
 
 // SetState changes it (the launcher and the shell drive the transitions).
 func (m *Member) SetState(s string) { m.state.Store(s) }
 
-// MarkReady enters the ready state. The ready line (P1.12) is written, and then is called, when the member is ready:
-// at once, or, while its definitions wait for the authorization member, when they are accepted. then may be nil.
+// MarkReady enters the ready state, writes the ready line (P1.12) and then calls then (may be nil).
 func (m *Member) MarkReady(started time.Time, then func()) {
-	m.started, m.onReady = started, then
 	m.SetState(Ready)
-	m.announce()
-}
-
-// announce writes the ready line once the member is ready; MarkReady and the accepted submission both call it, so
-// whichever comes second writes it.
-func (m *Member) announce() {
-	if !m.IsReady() {
-		return
+	m.Logger.Info("ready", "event", "ready", "protocol", protocol.Version, "sdk", sdk.Version,
+		"startup_ms", time.Since(started).Milliseconds())
+	if then != nil {
+		then()
 	}
-	m.announced.Do(func() {
-		m.Logger.Info("ready", "event", "ready", "protocol", protocol.Version, "sdk", sdk.Version,
-			"startup_ms", time.Since(m.started).Milliseconds())
-		if m.onReady != nil {
-			m.onReady()
-		}
-	})
 }
 
 // Describe is the member's self-description (P1.8).
@@ -188,7 +169,8 @@ func (m *Member) Start(bg context.Context) error {
 	}
 	if m.holder != nil {
 		// the definitions first, then one verification before ready, so the first requests find a view; both best
-		// effort: the authorization member may be down, and then the member stays not ready until it is back
+		// effort: the authorization member may be down or, on Kubernetes, reachable only once this member (or its
+		// shell) is ready, so readiness does not wait (P8.24); the submission goes on in the background
 		first, cancel := context.WithTimeout(bg, 2*time.Second)
 		if m.submit(first) {
 			if err := m.holder.Verify(first); err != nil {
@@ -216,15 +198,16 @@ func (m *Member) Start(bg context.Context) error {
 func (m *Member) submit(ctx context.Context) bool {
 	err := m.Def.Authz.Submit(ctx, m.definitions, m.deployment, m.Def.Version)
 	if err == nil {
-		m.defsAccepted.Store(true)
-		m.announce()
+		if m.defsAccepted.CompareAndSwap(false, true) {
+			m.Logger.Info("definitions accepted", "event", "definitions_accepted")
+		}
 		return true
 	}
 	var rejected *authz.RejectedError
 	if errors.As(err, &rejected) {
-		m.Logger.Error("the authorization member refused this version's definitions; the member stays not ready", "error", err.Error())
+		m.Logger.Error("the authorization member refused this version's definitions; protected requests wait for a view", "error", err.Error())
 	} else {
-		m.Logger.Warn("the definitions could not be submitted yet; the member stays not ready", "error", err.Error())
+		m.Logger.Warn("the definitions could not be submitted yet; protected requests wait for a view", "error", err.Error())
 	}
 	return false
 }

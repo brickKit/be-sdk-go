@@ -217,10 +217,8 @@ func (m *Member) userSurface(member obs.Member, values *config.Values, sh Shared
 	m.Engine, err = httpx.NewEngine(httpx.Deps{Member: member, Logger: m.Logger, Registry: m.Registry, Tracer: rt.Tracer,
 		Guard: g, Platform: httpx.Platform{
 			Ready: func() (bool, string, []string) {
-				if s := m.State(); s != Ready || m.IsReady() {
-					return s == Ready, s, nil
-				}
-				return false, "definitions_pending", nil // not ready until the authorization member accepts them
+				s := m.State()
+				return s == Ready, s, nil
 			},
 			Describe: func() any { return m.Describe() },
 		}}, &routes)
