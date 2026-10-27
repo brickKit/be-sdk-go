@@ -62,6 +62,32 @@ func (g GRPCSender) Watermark(ctx context.Context) (Watermark, error) {
 	return w, nil
 }
 
+// Drain numbers and sends batch after batch until less than a batch is left, so a backlog travels continuously
+// (P8.21); it returns how many were settled. Numbering one batch a run would cap a member at Batch records per
+// TransferEvery.
+func (a *Auditor) Drain(ctx context.Context, s Sender) (int, error) {
+	total := 0
+	for {
+		numbered, err := a.Number(ctx)
+		if err != nil {
+			return total, fmt.Errorf("numbering audit records: %w", err)
+		}
+		for {
+			n, err := a.Transfer(ctx, s)
+			total += n
+			if err != nil {
+				return total, err
+			}
+			if n < Batch {
+				break
+			}
+		}
+		if numbered < Batch {
+			return total, nil
+		}
+	}
+}
+
 // Job is the transfer as a singleton work item (P8.21): number, summarize finished denial windows, send until
 // nothing is pending, refresh the backlog, and delete what the backup covers. Without a sender the records stay
 // local and the backlog grows (and is alerted on).
@@ -78,15 +104,8 @@ func (a *Auditor) Job(sender *GRPCSender, log *slog.Logger) work.Job {
 				// calls need a deadline (P4.4): each batch gets one
 				ctx, cancel := context.WithTimeout(ctx, SendTimeout)
 				defer cancel()
-				for {
-					n, err := a.Transfer(ctx, sender)
-					if err != nil {
-						log.Warn("audit records could not be transferred; they stay local", "error", err.Error())
-						break
-					}
-					if n < Batch {
-						break
-					}
+				if _, err := a.Drain(ctx, sender); err != nil {
+					log.Warn("audit records could not be transferred; they stay local", "error", err.Error())
 				}
 				if w, err := sender.Watermark(ctx); err == nil {
 					if _, _, err := a.Purge(ctx, w); err != nil {
