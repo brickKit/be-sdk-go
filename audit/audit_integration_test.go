@@ -183,6 +183,28 @@ func TestNumberingTransferAndDeletion(t *testing.T) { // P8.20-P8.22, CK-AU-02..
 	assert.Equal(t, int64(1), resent)
 }
 
+// TestBacklogDrainsInOneRun: a backlog larger than a batch travels in one run, batch after batch, numbering
+// included (P8.21: "continuous under backlog"); a run that numbers one batch caps a member at 100 records a second.
+func TestBacklogDrainsInOneRun(t *testing.T) { // P8.21, CK-AU-03
+	d, admin := dbtest.Schema(t, "audit6", nil)
+	a := New(d)
+	ctx := context.Background()
+	const backlog = 2*Batch + 234
+	require.NoError(t, d.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+		for i := 0; i < backlog; i++ {
+			if _, err := a.Write(ctx, tx, change("demo.order.confirm")); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+	n, err := a.Drain(ctx, &fakeAudit{stored: map[string]string{}})
+	require.NoError(t, err)
+	assert.Equal(t, backlog, n)
+	assert.Equal(t, backlog, count(t, admin, "transfer_state = 'received'"))
+	assert.Zero(t, count(t, admin, "seq IS NULL"), "every row numbered")
+}
+
 // TestInvalidAndUnknownReceiptsStopTheRecord: a receipt that is not "received" never counts as received (P8.21).
 func TestInvalidAndUnknownReceiptsStopTheRecord(t *testing.T) {
 	d, admin := dbtest.Schema(t, "audit4", nil)

@@ -348,6 +348,7 @@
         "audit.TestChangesAreAuditedWithTheirTransaction",
         "audit.TestDenialsPastTheBudgetAreCountedNotLost",
         "audit.TestNumberingTransferAndDeletion",
+        "audit.TestBacklogDrainsInOneRun",
         "launcher.TestOthersSeeNothingAndFieldsFollowTheSegments",
         "audit.TestPurgeVectors",
         "audit.TestInvalidAndUnknownReceiptsStopTheRecord"
