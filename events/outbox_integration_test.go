@@ -376,3 +376,31 @@ func TestAWakeForwardsItsPartitionAndNeverPostponesThePoll(t *testing.T) { // P6
 	}
 	assert.Less(t, seenAt.Sub(written), time.Second, "forwarded by the poll, at its own pace")
 }
+
+func TestAPollTouchesOnlyThePartitionsWithRowsToForward(t *testing.T) { // P6.32
+	// an idle member's poll used to open a full numbering transaction for every partition, empty or not; it now
+	// finds the partitions with unnumbered or unpublished rows first and forwards only those
+	d, admin := source(t, "evsrc11")
+	four := Stream{Name: "demo.stock", Partitions: 4}
+	p, err := NewProducer("demo/evsrc11", []Stream{four}, nil)
+	require.NoError(t, err)
+	tr := NewMemory(0)
+	f := &Forwarder{DB: d, Producer: p, Transport: tr, Source: "demo/evsrc11", Impl: "6f1c2d3e-4a5b-4c6d-8e7f-901234567890",
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	counted := func(q string) int {
+		var n int
+		require.NoError(t, admin.QueryRow(context.Background(), q).Scan(&n))
+		return n
+	}
+	_, err = f.Once(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, counted("SELECT count(*) FROM be_outbox_partition"), "no partition had anything: no transaction, no counter row")
+
+	emit(t, d, p, 1)
+	published, err := f.Once(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, published)
+	assert.Equal(t, 1, counted("SELECT count(*) FROM be_outbox_partition"), "only the partition the event went to")
+	assert.Equal(t, counted("SELECT partition FROM be_outbox"), counted("SELECT partition FROM be_outbox_partition"))
+	assert.Zero(t, counted("SELECT count(*) FROM be_outbox WHERE published_at IS NULL"))
+}
