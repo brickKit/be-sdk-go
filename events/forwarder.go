@@ -72,8 +72,8 @@ func (f *Forwarder) Start(ctx context.Context) error {
 }
 
 // run forwards on two signals (P6.29): a commit of this member wakes it for the partitions that commit wrote to, and
-// the poll takes every partition at its own pace, for other replicas' rows and retries. A wake never postpones the
-// poll: under a steady stream of commits it would never come.
+// the poll takes, at its own pace, every partition that has rows to forward (P6.32), for other replicas' rows and
+// retries. A wake never postpones the poll: under a steady stream of commits it would never come.
 func (f *Forwarder) run(ctx context.Context) {
 	t := time.NewTimer(0)
 	defer t.Stop()
@@ -88,7 +88,14 @@ func (f *Forwarder) run(ctx context.Context) {
 		case <-f.Producer.written:
 			parts = f.Producer.takeWritten()
 		}
-		if _, err := f.forward(ctx, parts); err != nil && ctx.Err() == nil {
+		var err error
+		if poll {
+			parts, err = f.pending(ctx, parts)
+		}
+		if err == nil {
+			_, err = f.forward(ctx, parts)
+		}
+		if err != nil && ctx.Err() == nil {
 			f.Log.Warn("forwarding events failed; retrying", "error", err.Error())
 		}
 		if poll {
@@ -97,10 +104,60 @@ func (f *Forwarder) run(ctx context.Context) {
 	}
 }
 
-// Once forwards every partition, again while one had a full batch, and returns how many messages were published.
+// Once forwards every partition that has rows to forward, again while one had a full batch, and returns how many
+// messages were published.
 func (f *Forwarder) Once(ctx context.Context) (int, error) {
 	f.defaults()
-	return f.forward(ctx, f.all())
+	parts, err := f.pending(ctx, f.all())
+	if err != nil {
+		return 0, err
+	}
+	return f.forward(ctx, parts)
+}
+
+// pending keeps the parts that have unnumbered or numbered but unpublished rows (P6.32): one read-only statement over
+// the two partial indexes, so a poll of an idle member opens no numbering transaction and takes no lease. Other
+// replicas' rows and rows to retry are unpublished rows, so the poll still finds them.
+func (f *Forwarder) pending(ctx context.Context, parts []streamPart) ([]streamPart, error) {
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	var streams []string
+	seen := map[string]bool{}
+	for _, sp := range parts {
+		if !seen[sp.stream] {
+			seen[sp.stream] = true
+			streams = append(streams, sp.stream)
+		}
+	}
+	has := map[streamPart]bool{}
+	err := f.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT stream, partition FROM be_outbox WHERE seq IS NULL AND stream = ANY($1)
+			UNION SELECT stream, partition FROM be_outbox WHERE seq IS NOT NULL AND published_at IS NULL AND stream = ANY($1)`,
+			streams)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var sp streamPart
+			if err := rows.Scan(&sp.stream, &sp.n); err != nil {
+				return err
+			}
+			has[sp] = true
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out []streamPart
+	for _, sp := range parts {
+		if has[sp] {
+			out = append(out, sp)
+		}
+	}
+	return out, nil
 }
 
 func (f *Forwarder) all() []streamPart {
