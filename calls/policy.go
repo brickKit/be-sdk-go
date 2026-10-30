@@ -18,7 +18,8 @@ const (
 	BackoffCap           = 1000 * time.Millisecond
 	OutboundLimit        = 64
 	BreakerWindow        = 20
-	BreakerOpenFor       = 30 * time.Second
+	BreakerOpenFirst     = 5 * time.Second  // P4.13: the first open period; a failed trial doubles it
+	BreakerOpenMax       = 30 * time.Second // up to this; closing resets it to BreakerOpenFirst
 	BreakerTrialsToClose = 3
 )
 

@@ -97,7 +97,7 @@ func TestBreakerOpensAndFailsFastWithoutSending(t *testing.T) {
 	assert.True(t, errs.Is(err, "be", errs.ReasonCircuitOpen))
 	assert.Equal(t, sent, n.Load(), "nothing sent while open")
 
-	now = now.Add(BreakerOpenFor)
+	now = now.Add(BreakerOpenFirst)
 	ok := func(context.Context) Result { return Result{Code: "OK"} }
 	for i := 0; i < BreakerTrialsToClose; i++ {
 		require.NoError(t, d.Do(withDeadline(t, 5*time.Second), true, ok))

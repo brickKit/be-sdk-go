@@ -25,7 +25,8 @@ type Breaker struct {
 	state    string
 	window   []bool // true: dependency failure
 	openedAt time.Time
-	trial    uint64 // the permit holding the half-open trial slot, 0 when free
+	openFor  time.Duration // the current open period (P4.13)
+	trial    uint64        // the permit holding the half-open trial slot, 0 when free
 	trialOK  int
 	next     uint64
 }
@@ -34,7 +35,7 @@ type Breaker struct {
 type Permit struct{ id uint64 }
 
 // NewBreaker returns a closed breaker.
-func NewBreaker() *Breaker { return &Breaker{state: Closed} }
+func NewBreaker() *Breaker { return &Breaker{state: Closed, openFor: BreakerOpenFirst} }
 
 // State returns the current state.
 func (b *Breaker) State() string { b.mu.Lock(); defer b.mu.Unlock(); return b.state }
@@ -46,7 +47,7 @@ func (b *Breaker) Start(now time.Time) (Permit, bool) {
 	b.next++
 	p := Permit{id: b.next}
 	if b.state == Open {
-		if now.Sub(b.openedAt) < BreakerOpenFor {
+		if now.Sub(b.openedAt) < b.openFor {
 			return Permit{}, false
 		}
 		b.state, b.trial, b.trialOK = HalfOpen, 0, 0
@@ -72,10 +73,10 @@ func (b *Breaker) End(p Permit, now time.Time, outcome string) {
 		b.trial = 0
 		switch outcome {
 		case BreakerFailure:
-			b.state, b.openedAt, b.trialOK = Open, now, 0
+			b.state, b.openedAt, b.trialOK, b.openFor = Open, now, 0, min(2*b.openFor, BreakerOpenMax)
 		case BreakerSuccess:
 			if b.trialOK++; b.trialOK >= BreakerTrialsToClose {
-				b.state, b.window = Closed, nil
+				b.state, b.window, b.openFor = Closed, nil, BreakerOpenFirst
 			}
 		}
 	case Closed:
