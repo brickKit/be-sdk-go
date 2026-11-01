@@ -40,6 +40,7 @@ type KeySet struct {
 	kids        map[string]bool
 	fetchedAt   time.Time
 	lastUnknown time.Time
+	inflight    chan struct{} // closed when the refresh an unknown kid started has ended; nil when none runs
 }
 
 // NewKeySet creates the key set and fetches the keys once; a failing first fetch is reported but not fatal (the
@@ -105,19 +106,28 @@ func (k *KeySet) refresh(ctx context.Context) error {
 	return nil
 }
 
-// keyfunc resolves a token's key: an unknown kid refreshes the set at most once per 30 s; keys older than an hour
-// are not used.
+// keyfunc resolves a token's key: an unknown kid refreshes the set at most once per 30 s, and every request that
+// meets an unknown kid while that refresh runs waits for it (P8.2); keys older than an hour are not used.
 func (k *KeySet) keyfunc(t *jwt.Token) (any, error) {
 	kid, _ := t.Header["kid"].(string)
 	k.mu.Lock()
 	known := k.kids[kid]
-	retry := !known && k.now().Sub(k.lastUnknown) >= UnknownKIDRefresh
-	if retry {
+	wait := k.inflight
+	if !known && wait == nil && k.now().Sub(k.lastUnknown) >= UnknownKIDRefresh {
 		k.lastUnknown = k.now()
+		wait = make(chan struct{})
+		k.inflight = wait
+		go func() { // the key set's refresh, not the request's: bounded by the client's timeout
+			_ = k.refresh(context.Background())
+			k.mu.Lock()
+			k.inflight = nil
+			k.mu.Unlock()
+			close(wait)
+		}()
 	}
 	k.mu.Unlock()
-	if retry {
-		_ = k.refresh(context.Background())
+	if !known && wait != nil {
+		<-wait
 	}
 	k.mu.Lock()
 	kf, fresh, known := k.kf, k.now().Sub(k.fetchedAt) <= KeyMaxAge, k.kids[kid]
