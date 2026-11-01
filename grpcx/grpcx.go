@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -125,6 +126,8 @@ type Deps struct {
 	Tracer   trace.Tracer
 	// TLS is the member's service identity; the system surface never runs without it (P8.5).
 	TLS *identity.ServiceTLS
+	// ConnectionAge is how long the server keeps a connection before ending it gracefully (P4.30); zero: 30 s.
+	ConnectionAge time.Duration
 }
 
 // Operations lists the operations the registered methods declare (checked against the component's declarations).
@@ -146,6 +149,12 @@ func Caller(ctx context.Context) (string, bool) {
 
 var requestIDRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
+// DefaultConnectionAge and ConnectionAgeGrace are P4.30's starting values.
+const (
+	DefaultConnectionAge = 30 * time.Second
+	ConnectionAgeGrace   = 10 * time.Second
+)
+
 // NewServer builds the member's system-surface server.
 func NewServer(d Deps, s *Services) (*grpc.Server, error) {
 	if err := s.Validate(); err != nil {
@@ -159,7 +168,14 @@ func NewServer(d Deps, s *Services) (*grpc.Server, error) {
 	if err := d.Registry.Register(duration); err != nil {
 		return nil, fmt.Errorf("register grpc metrics: %w", err)
 	}
+	age := d.ConnectionAge
+	if age <= 0 {
+		age = DefaultConnectionAge
+	}
+	// every connection ends after its age (gRPC adds ±10% jitter), its calls in flight given ConnectionAgeGrace: the
+	// callers connect again, resolving the name again, and over time reach every replica (P4.30)
 	srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(d.TLS.ServerConfig())),
+		grpc.KeepaliveParams(keepalive.ServerParameters{MaxConnectionAge: age, MaxConnectionAgeGrace: ConnectionAgeGrace}),
 		grpc.ChainUnaryInterceptor(interceptor(d, s, duration)), grpc.UnknownServiceHandler(unknownMethod))
 	for _, svc := range s.list {
 		srv.RegisterService(svc.desc, svc.impl)
