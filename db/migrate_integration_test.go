@@ -79,6 +79,44 @@ func TestMigrateTwiceAndStateInTheComponentSchema(t *testing.T) {
 	}))
 }
 
+// An older version of the component runs beside a newer one on the same schema (a rolling upgrade, a rollback): its
+// migration meets a database the newer version already migrated, for the component's files and the SDK's own, and
+// must take it as done (P5.32): every up of a deployment runs each version's migration again.
+func TestAnOlderVersionMeetsADatabaseANewerOneMigrated(t *testing.T) {
+	cfg, c := gammaFixture(t)
+	ctx := context.Background()
+	require.NoError(t, Migrate(ctx, cfg, SDKMigrations(), component(gammaV2)))
+	older := map[string]string{"0001_orders.up.sql": gammaV2["0001_orders.up.sql"]}
+	require.NoError(t, Migrate(ctx, cfg, withoutNewest(t, SDKMigrations()), component(older)),
+		"the older version's files are all applied; the database is ahead of them")
+	v, dirty := version(t, c, "schema_migrations")
+	assert.Equal(t, int64(2), v, "nothing went back")
+	assert.False(t, dirty)
+	v, _ = version(t, c, "be_sdk_migrations")
+	assert.Equal(t, latestSDKVersion(t), v)
+}
+
+// withoutNewest is a set as an older SDK shipped it: without its newest file.
+func withoutNewest(t *testing.T, set MigrationSet) MigrationSet {
+	t.Helper()
+	entries, err := fs.ReadDir(set.Files, ".")
+	require.NoError(t, err)
+	out, newest := fstest.MapFS{}, ""
+	for _, e := range entries {
+		if e.Name() > newest {
+			newest = e.Name()
+		}
+	}
+	for _, e := range entries {
+		if e.Name() != newest {
+			data, err := fs.ReadFile(set.Files, e.Name())
+			require.NoError(t, err)
+			out[e.Name()] = &fstest.MapFile{Data: data}
+		}
+	}
+	return MigrationSet{Name: set.Name, Table: set.Table, Files: out}
+}
+
 func TestAFailedFileLeavesNoTraceAndTheEntryStaysRerunnable(t *testing.T) {
 	cfg, c := gammaFixture(t)
 	ctx := context.Background()

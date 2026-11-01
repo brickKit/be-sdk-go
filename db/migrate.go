@@ -153,6 +153,16 @@ func applyOnce(ctx context.Context, c MigrateConfig, set MigrationSet) (blockers
 		return nil, fmt.Errorf("%s: %w", set.Name, err)
 	}
 	m.LockTimeout = c.LockWait + time.Second // the database's lock_timeout answers first
+	// A newer version of the component (or of the SDK) migrated this schema past the newest file this one ships: a
+	// rolling upgrade or a rollback runs an older version beside it, and every deployment run migrates each version
+	// again. That is done, not an unknown state (P5.32); golang-migrate would refuse a version it has no file for.
+	if v, dirty, verr := m.Version(); verr == nil && !dirty {
+		if newest, ok := newestFile(src); ok && v > newest {
+			c.Log.Info("the database is migrated past this version's files; nothing to do", "set", set.Name,
+				"schema_version", v, "newest_file", newest)
+			return nil, nil
+		}
+	}
 	err = m.Up()
 	if err == nil || errors.Is(err, migrate.ErrNoChange) {
 		v, _, _ := m.Version()
@@ -346,4 +356,19 @@ func blockersOf(ctx context.Context, conn *pgx.Conn, pid int) []blocker {
 		return b, err
 	})
 	return bs
+}
+
+// newestFile is the highest version among a set's files; false when the set has none.
+func newestFile(src source.Driver) (uint, bool) {
+	v, err := src.First()
+	if err != nil {
+		return 0, false
+	}
+	for {
+		next, err := src.Next(v)
+		if err != nil {
+			return v, true
+		}
+		v = next
+	}
 }

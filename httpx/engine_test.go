@@ -163,9 +163,12 @@ func TestErrorsPanicsBodiesAndUnknownRoutes(t *testing.T) {
 	assert.Equal(t, 400, rec.Code)
 	assert.Equal(t, errs.ReasonRequestInvalid, problem(t, rec).Reason)
 
+	// P3.10: a route this version does not have is an operation it lacks, not a record out of sight (404)
 	rec = h.do("GET", "/api/nothing", nil, nil)
-	assert.Equal(t, 404, rec.Code)
-	assert.Equal(t, errs.ReasonNotFound, problem(t, rec).Reason)
+	assert.Equal(t, 501, rec.Code)
+	p = problem(t, rec)
+	assert.Equal(t, errs.ReasonCapabilityUnsupported, p.Reason)
+	assert.Equal(t, "GET /api/nothing", p.Metadata["route"])
 }
 
 func TestPlatformEndpoints(t *testing.T) {

@@ -99,8 +99,10 @@ func NewEngine(d Deps, routes *Routes) (*gin.Engine, error) {
 		r, template := r, Template(r.Path) // the template once per route, not per request
 		e.Handle(r.Method, r.Path, func(g *gin.Context) { serve(g, d, r, template, duration) })
 	}
-	e.NoRoute(func(g *gin.Context) {
-		errs.New(errs.ReasonNotFound, "no such route").WriteHTTP(g.Writer, traceIDOf(g.Request.Context()))
+	e.NoRoute(func(g *gin.Context) { // P3.10: an operation this version does not have, not a record out of sight
+		route := g.Request.Method + " " + g.Request.URL.Path
+		errs.New(errs.ReasonCapabilityUnsupported, "this version has no "+route).With("route", route).
+			WriteHTTP(g.Writer, traceIDOf(g.Request.Context()))
 	})
 	return e, nil
 }

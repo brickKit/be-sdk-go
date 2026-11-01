@@ -160,7 +160,7 @@ func NewServer(d Deps, s *Services) (*grpc.Server, error) {
 		return nil, fmt.Errorf("register grpc metrics: %w", err)
 	}
 	srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(d.TLS.ServerConfig())),
-		grpc.ChainUnaryInterceptor(interceptor(d, s, duration)))
+		grpc.ChainUnaryInterceptor(interceptor(d, s, duration)), grpc.UnknownServiceHandler(unknownMethod))
 	for _, svc := range s.list {
 		srv.RegisterService(svc.desc, svc.impl)
 	}
@@ -233,4 +233,12 @@ func first(md metadata.MD, key string) string {
 		return v[0]
 	}
 	return ""
+}
+
+// unknownMethod answers a method or a service this member has not registered (P3.10): the caller uses an operation
+// this version does not have yet, which is not the same as a record it cannot see.
+func unknownMethod(_ any, stream grpc.ServerStream) error {
+	method, _ := grpc.MethodFromServerStream(stream)
+	return errs.New(errs.ReasonCapabilityUnsupported, "this version has no "+method).With("method", method).
+		GRPCStatus().Err()
 }

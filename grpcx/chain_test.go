@@ -162,6 +162,27 @@ func TestGRPCComponentErrorsPassThroughUnchanged(t *testing.T) {
 	assert.Equal(t, []errs.Violation{{Field: "/qty", Reason: "TOO_LARGE"}}, e.Violations)
 }
 
+// TestAMethodTheMemberLacksIsCapabilityUnsupported (P3.10): a method or a service the member has not registered is
+// answered by the member itself, with an ErrorInfo naming the method (the caller's own mapping, P4.29, adds the
+// dependency), not with gRPC's bare Unimplemented.
+func TestAMethodTheMemberLacksIsCapabilityUnsupported(t *testing.T) {
+	addr := serveGRPC(t, "demo/c", func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+		return wrapperspb.String("ok"), nil
+	})
+	conn, err := member(t, "demo/a").GRPC("demo/c", addr)
+	require.NoError(t, err)
+	for _, method := range []string{"/demo.Echo/Whisper", "/demo.Other/Say"} {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		err = conn.Invoke(ctx, method, wrapperspb.String("x"), new(wrapperspb.StringValue), calls.Idempotent())
+		cancel()
+		e := errs.From(err)
+		assert.Equal(t, errs.ReasonCapabilityUnsupported, e.Reason, method)
+		assert.Equal(t, errs.Unimplemented, e.Code)
+		assert.Equal(t, method, e.Metadata["method"])
+		assert.NotContains(t, e.Metadata, "dependency", "the member answered it, the caller did not have to")
+	}
+}
+
 func TestUndeclaredMethodsAreRefused(t *testing.T) {
 	var s grpcx.Services
 	s.Register(&echoDesc, sayFunc(nil), map[string]grpcx.Method{"Shout": {Operation: "x"}})

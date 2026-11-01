@@ -12,6 +12,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/reqctx"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -132,6 +133,12 @@ func (m *Member) unary(dep *Dependency) grpc.UnaryClientInterceptor {
 			}
 			if remote, code, ok := errs.FromGRPC(err); ok {
 				return Result{Err: remote, Code: code, Remote: remote}
+			}
+			if status.Code(err) == codes.Unimplemented {
+				// a version before P3.10 has no such method and says so in gRPC's own words (P4.29)
+				e := errs.New(errs.ReasonCapabilityUnsupported, dep.ID+" has no "+method).
+					With("dependency", dep.ID).With("method", method)
+				return Result{Err: e, Code: errs.Unimplemented}
 			}
 			switch {
 			case errors.Is(actx.Err(), context.DeadlineExceeded):

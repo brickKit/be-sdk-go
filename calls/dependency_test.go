@@ -196,3 +196,29 @@ func TestBackgroundCallsAreNeitherCountedNorHeldByTheBreaker(t *testing.T) {
 	err = call(withDeadline(t, 5*time.Second), "/m", nil, nil, nil, up, Idempotent())
 	assert.True(t, errs.Is(err, "be", errs.ReasonCircuitOpen), "ordinary calls are still held: %v", err)
 }
+
+// TestABareUnimplementedIsCapabilityUnsupported: a dependency's version before P3.10 answers a method it does not have
+// with gRPC's own Unimplemented and no ErrorInfo; the caller takes it as CAPABILITY_UNSUPPORTED naming the dependency
+// and the method (P4.29), sends it once and does not count it against the breaker.
+func TestABareUnimplementedIsCapabilityUnsupported(t *testing.T) {
+	m, err := NewMember(nil)
+	require.NoError(t, err)
+	d := m.Dependency("test/older", "grpc")
+	call := m.unary(d)
+	var sent atomic.Int32
+	missing := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error {
+		sent.Add(1)
+		return status.Error(codes.Unimplemented, "unknown method Note for service test.probe.v1.Probe")
+	}
+	for i := 0; i < 2*BreakerWindow; i++ {
+		err = call(withDeadline(t, 5*time.Second), "/test.probe.v1.Probe/Note", nil, nil, nil, missing, Idempotent())
+	}
+	require.True(t, errs.Is(err, "be", errs.ReasonCapabilityUnsupported), "%v", err)
+	var e *errs.Error
+	require.ErrorAs(t, err, &e)
+	assert.Equal(t, 501, e.HTTP)
+	assert.Equal(t, "test/older", e.Metadata["dependency"])
+	assert.Equal(t, "/test.probe.v1.Probe/Note", e.Metadata["method"])
+	assert.Equal(t, int32(2*BreakerWindow), sent.Load(), "never retried")
+	assert.Equal(t, Closed, d.Breaker().State(), "not a failure of the dependency")
+}
