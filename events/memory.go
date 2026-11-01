@@ -36,6 +36,7 @@ type memDurable struct {
 
 type memItem struct {
 	msg       Message
+	pos       int // position in the log: an ordered durable takes its items in this order
 	attempt   int
 	deadline  time.Time // ack deadline while in flight
 	notBefore time.Time
@@ -122,7 +123,7 @@ func (m *Memory) matches(spec SubscriptionSpec, subject string) bool {
 func (m *Memory) fill(d *memDurable) {
 	for ; d.cursor < len(m.log); d.cursor++ {
 		if msg := m.log[d.cursor]; m.matches(d.spec, msg.Subject) {
-			d.ready = append(d.ready, &memItem{msg: msg})
+			d.ready = append(d.ready, &memItem{msg: msg, pos: d.cursor})
 		}
 	}
 	select {
@@ -169,6 +170,26 @@ func (m *Memory) next(d *memDurable, now time.Time) *memItem {
 				d.ready = append(d.ready, it)
 			}
 		}
+	}
+	if d.spec.Ordered { // one in flight for the whole durable, the earliest first, even while it waits to be redelivered
+		if len(d.inflight) > 0 || len(d.ready) == 0 {
+			return nil
+		}
+		first := 0
+		for i, it := range d.ready {
+			if it.pos < d.ready[first].pos {
+				first = i
+			}
+		}
+		it := d.ready[first]
+		if it.notBefore.After(now) {
+			return nil
+		}
+		d.ready = append(d.ready[:first], d.ready[first+1:]...)
+		it.attempt++
+		it.deadline = now.Add(d.spec.AckWait)
+		d.inflight[it] = true
+		return it
 	}
 	for i, it := range d.ready {
 		if !it.notBefore.After(now) {

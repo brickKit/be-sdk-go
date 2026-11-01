@@ -110,7 +110,7 @@ func (c *Consumer) Spec() SubscriptionSpec {
 		}
 	}
 	return SubscriptionSpec{Durable: DurableName(c.Member, c.Sub.Name), Streams: c.Sub.Streams, Filters: filters,
-		MaxDeliver: c.Sub.MaxDeliver, Concurrency: Concurrency(c.Sub, c.Configured)}.Defaults()
+		MaxDeliver: c.Sub.MaxDeliver, Concurrency: Concurrency(c.Sub, c.Configured), Ordered: c.Sub.Ordered}.Defaults()
 }
 
 // Handle is the transport handler: claim check, hop limit, inbox and business write in one transaction; a failure on

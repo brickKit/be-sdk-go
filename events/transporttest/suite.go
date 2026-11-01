@@ -142,6 +142,47 @@ var Cases = []Case{
 			fail(t, "%d deliveries for 40 messages: each is handled by one instance once", n)
 		}
 	}},
+	{"an ordered durable has one message in flight across its instances, in position order", func(t T, f Factory) {
+		// P6.31: two instances of an ordered subscription; the first message is refused once, so the ones after it
+		// must wait for its redelivery
+		tr, stream, ctx := setup(t, f)
+		var mu sync.Mutex
+		var order []string
+		var inFlight, most int32
+		var refused atomic.Bool
+		h := func(_ context.Context, d *events.Delivery) events.Outcome {
+			n := atomic.AddInt32(&inFlight, 1)
+			defer atomic.AddInt32(&inFlight, -1)
+			for m := atomic.LoadInt32(&most); n > m && !atomic.CompareAndSwapInt32(&most, m, n); m = atomic.LoadInt32(&most) {
+			}
+			time.Sleep(30 * time.Millisecond)
+			if string(d.Data) == "0" && refused.CompareAndSwap(false, true) {
+				return events.Nak
+			}
+			mu.Lock()
+			order = append(order, string(d.Data))
+			mu.Unlock()
+			return events.Ack
+		}
+		s := spec(stream, "ordered")
+		s.Ordered = true
+		subscribe(t, tr, ctx, s, h)
+		subscribe(t, tr, ctx, s, h)
+		want := make([]string, 20)
+		for i := range want {
+			want[i] = strconv.Itoa(i)
+			must(t, tr.Publish(ctx, msg(stream, i%4, "demo.thing_happened.v1", want[i])))
+		}
+		eventually(t, 20*time.Second, func() bool { mu.Lock(); defer mu.Unlock(); return len(order) == 20 }, "all 20 handled")
+		mu.Lock()
+		defer mu.Unlock()
+		if fmt.Sprint(order) != fmt.Sprint(want) {
+			fail(t, "handled in the order %v, published in the order %v", order, want)
+		}
+		if m := atomic.LoadInt32(&most); m != 1 {
+			fail(t, "%d messages in flight at once across the instances, want 1", m)
+		}
+	}},
 	{"an acknowledged message is never delivered again", func(t T, f Factory) {
 		tr, stream, ctx := setup(t, f)
 		rec := newRecorder()

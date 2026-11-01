@@ -42,6 +42,10 @@ type SubscriptionSpec struct {
 	Backoff    []time.Duration // between deliveries; the last value repeats
 	// Concurrency is how many messages one instance handles at once (default 1).
 	Concurrency int
+	// Ordered: the subscription depends on arrival order, so the whole durable, across all its instances, has one
+	// message in flight at a time, in position order; a message waiting for its redelivery holds the ones after it
+	// (P6.31).
+	Ordered bool
 }
 
 func (s SubscriptionSpec) withDefaults() SubscriptionSpec {

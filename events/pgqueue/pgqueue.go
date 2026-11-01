@@ -216,7 +216,7 @@ func (t *Transport) Subscribe(ctx context.Context, spec events.SubscriptionSpec,
 		filters, spec.MaxDeliver, int32(spec.AckWait.Milliseconds()), backoff); err != nil {
 		return nil, err
 	}
-	stored, err := t.load(ctx, spec.Durable, spec.Concurrency)
+	stored, err := t.load(ctx, spec.Durable, spec.Concurrency, spec.Ordered)
 	if err != nil {
 		return nil, err
 	}
@@ -230,8 +230,10 @@ func (t *Transport) Subscribe(ctx context.Context, spec events.SubscriptionSpec,
 	return sub, nil
 }
 
-func (t *Transport) load(ctx context.Context, durable string, concurrency int) (events.SubscriptionSpec, error) {
-	s := events.SubscriptionSpec{Durable: durable, Concurrency: concurrency}
+// load reads the settings the durable was created with; concurrency and ordering come from the instance, as from
+// its component (P6.31).
+func (t *Transport) load(ctx context.Context, durable string, concurrency int, ordered bool) (events.SubscriptionSpec, error) {
+	s := events.SubscriptionSpec{Durable: durable, Concurrency: concurrency, Ordered: ordered}
 	var ackMs int32
 	var backoff []int32
 	err := t.pool.QueryRow(ctx, "SELECT streams, filters, max_deliver, ack_wait_ms, backoff_ms FROM "+
@@ -377,11 +379,65 @@ func (t *Transport) giveUp(ctx context.Context, s events.SubscriptionSpec) error
 	return err
 }
 
+// claimOrdered takes the earliest delivery of an ordered subscription, and only while none of it is in flight
+// (P6.31): the subscription's row serializes the claims of its instances; an earliest delivery that waits for its
+// backoff, or is in flight under a live lease, holds the ones after it. An exhausted one waits for giveUp, as in claim.
+func (t *Transport) claimOrdered(ctx context.Context, s events.SubscriptionSpec) (*events.Delivery, string, error) {
+	tx, err := t.pool.Begin(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	if _, err := tx.Exec(ctx, "SELECT 1 FROM "+t.t("be_bus_subscription")+" WHERE durable = $1 FOR UPDATE", s.Durable); err != nil {
+		return nil, "", err
+	}
+	token := ids.New().String()
+	var seq int64
+	var attempts int
+	var subject *string
+	var headers, data []byte
+	dlv := t.t("be_bus_delivery")
+	err = tx.QueryRow(ctx, `WITH first AS (SELECT seq, in_flight, lease_until, not_before, attempts FROM `+dlv+`
+				WHERE durable = $1 ORDER BY seq LIMIT 1),
+			due AS (SELECT seq FROM first WHERE (NOT in_flight AND not_before <= clock_timestamp())
+				OR (in_flight AND lease_until < clock_timestamp() AND attempts < $4)),
+		claimed AS (UPDATE `+dlv+` d SET in_flight = true, attempts = d.attempts + 1, lease_token = $2,
+			lease_until = clock_timestamp() + make_interval(secs => $3)
+			WHERE d.durable = $1 AND d.seq = (SELECT seq FROM due) RETURNING d.seq, d.attempts)
+		SELECT c.seq, c.attempts, m.subject, m.headers, m.data FROM claimed c
+			LEFT JOIN `+t.t("be_bus_message")+` m ON m.seq = c.seq`,
+		s.Durable, token, s.AckWait.Seconds(), s.MaxDeliver).Scan(&seq, &attempts, &subject, &headers, &data)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	if subject == nil { // its message is gone: nothing to deliver
+		if _, err := tx.Exec(ctx, "DELETE FROM "+dlv+" WHERE durable = $1 AND lease_token = $2 AND in_flight",
+			s.Durable, token); err != nil {
+			return nil, "", err
+		}
+		return nil, "", tx.Commit(ctx)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, "", err
+	}
+	m := events.Message{Subject: *subject, Data: data, Headers: map[string]string{}}
+	if err := json.Unmarshal(headers, &m.Headers); err != nil {
+		return nil, "", err
+	}
+	return &events.Delivery{Message: m, Attempt: attempts}, token, nil
+}
+
 // claim takes one due delivery: ready and past its backoff, or in flight past its lease with deliveries left (an
 // exhausted one waits for giveUp). Its cost does not grow with the backlog: a delivery whose message the retention
 // purge removed (P6.27; the purge removes the deliveries with it, this covers a delivery queued meanwhile) is dropped
 // when it is claimed, instead of every claim checking the whole backlog for such rows first.
 func (t *Transport) claim(ctx context.Context, s events.SubscriptionSpec) (*events.Delivery, string, error) {
+	if s.Ordered {
+		return t.claimOrdered(ctx, s)
+	}
 	token := ids.New().String()
 	var seq int64
 	var attempts int

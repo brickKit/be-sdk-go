@@ -177,6 +177,9 @@ func (t *Transport) consumer(ctx context.Context, stream string, spec events.Sub
 	}
 	cfg := js.ConsumerConfig{Durable: spec.Durable, AckPolicy: js.AckExplicitPolicy, AckWait: spec.AckWait,
 		MaxDeliver: spec.MaxDeliver, DeliverPolicy: js.DeliverAllPolicy, MaxAckPending: 1000}
+	if spec.Ordered { // the server holds the rest until the one in flight settles, across every instance (P6.31)
+		cfg.MaxAckPending = 1
+	}
 	switch len(filters) {
 	case 0:
 		if len(spec.Filters) > 0 {
