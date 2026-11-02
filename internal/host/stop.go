@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/db"
+	"github.com/brickKit/be-sdk-go/v3/events/bus"
 	"google.golang.org/grpc"
 )
 
@@ -123,14 +124,14 @@ func (s GRPCServer) Shutdown(ctx context.Context) error {
 // Close stops at once.
 func (s GRPCServer) Close() error { s.Stop(); return nil }
 
-// ReadyExit maps a failed database readiness wait to the exit code of protocol chapter 01.
+// ReadyExit maps a failed database or bus readiness wait (P5.10, P6.34) to the exit code of protocol chapter 01.
 func ReadyExit(err error) int {
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return ExitOK // stopped while waiting for the database
-	case errors.Is(err, db.ErrCredentials):
+		return ExitOK // stopped while waiting for the database or the bus
+	case errors.Is(err, db.ErrCredentials), errors.Is(err, bus.ErrRefused):
 		return ExitConfiguration
-	case errors.Is(err, db.ErrStartCheck):
+	case errors.Is(err, db.ErrStartCheck), errors.Is(err, bus.ErrStartCheck):
 		return ExitStartupCheck
 	}
 	return ExitFailure

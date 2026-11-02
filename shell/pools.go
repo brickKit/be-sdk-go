@@ -49,7 +49,7 @@ func openPools(ctx context.Context, self Identity, sv *config.Values, plans []pl
 func openBus(ctx context.Context, self Identity, _ *config.Values, plans []planned, log *slog.Logger) (events.Transport, error) {
 	for _, p := range plans {
 		if len(p.def.Streams) > 0 || p.def.Subscribes {
-			return bus.Open(ctx, p.values.Secret("BUS_URL").Value(), self.ID, log)
+			return bus.Ready(ctx, p.values.Secret("BUS_URL").Value(), self.ID, log) // waits for a late bus (P6.34)
 		}
 	}
 	return nil, nil

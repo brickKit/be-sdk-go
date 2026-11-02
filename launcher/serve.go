@@ -49,9 +49,10 @@ func serve(ctx context.Context, def component.Definition, o Options) int {
 	if len(def.Streams) > 0 || def.Subscribes {
 		// one bus connection per process (protocol 17)
 		var err error
-		if transport, err = bus.Open(ctx, values.Secret("BUS_URL").Value(), def.ID, log); err != nil {
+		// the bus may start after the component: wait for it, as for the database (P6.34)
+		if transport, err = bus.Ready(ctx, values.Secret("BUS_URL").Value(), def.ID, log); err != nil {
 			log.Error("the bus is not usable", "error", err.Error())
-			return ExitStartupCheck
+			return host.ReadyExit(err)
 		}
 		defer transport.Close()
 	}

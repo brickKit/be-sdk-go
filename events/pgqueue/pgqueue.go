@@ -146,6 +146,9 @@ func Connect(ctx context.Context, busURL, name string, maxConns int32) (*Transpo
 	return t, nil
 }
 
+// Ping reaches the bus database once: Connect is lazy, so a start that must know the bus answers (P6.34) asks.
+func (t *Transport) Ping(ctx context.Context) error { return t.pool.Ping(ctx) }
+
 // t qualifies a table name with the bus schema.
 func (t *Transport) t(name string) string { return pgx.Identifier{t.schema, name}.Sanitize() }
 

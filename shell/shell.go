@@ -157,7 +157,7 @@ func run(ctx context.Context, self Identity, sv *config.Values, plans []planned,
 	transport, err := openBus(ctx, self, sv, plans, log)
 	if err != nil {
 		log.Error("the bus is not usable", "error", err.Error())
-		return host.ExitStartupCheck
+		return host.ReadyExit(err)
 	}
 	if transport != nil {
 		defer transport.Close()
