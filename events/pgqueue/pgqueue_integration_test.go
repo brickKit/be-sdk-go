@@ -249,7 +249,10 @@ func TestABacklogDoesNotSlowEachClaim(t *testing.T) { // P6.23
 	tr, schema := ownBus(t)
 	small := medianClaim(t, tr, backlog(t, schema, 20))
 	large := medianClaim(t, tr, backlog(t, schema, 20000))
-	assert.Less(t, large, 3*small+2*time.Millisecond, "claims with 20 000 waiting (%v) against 20 waiting (%v)", large, small)
+	// a claim that walks the backlog (the expired path along the primary key before protocol alpha.42's in-flight
+	// index) costs 1.5-2.7 ms more with 20 000 waiting; one that takes the first row costs the same within 0.4 ms
+	// (2026-11-02, 20 runs each, balanced power mode). The old bound, three times plus 2 ms, let all 20 walking runs pass
+	assert.Less(t, large, small+time.Millisecond, "claims with 20 000 waiting (%v) against 20 waiting (%v)", large, small)
 }
 
 func TestAClaimWhoseMessageWasPurgedIsDropped(t *testing.T) { // P6.27
