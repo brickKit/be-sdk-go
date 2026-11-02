@@ -122,3 +122,26 @@ SELECT be_declare_monthly_partitions('ledger', 1);`)}},
 	assert.Equal(t, ExitOK, <-done)
 	assert.Contains(t, out.String(), `"event":"partitions_created"`)
 }
+
+func TestTheComponentKeepsItsTablesStatisticsFresh(t *testing.T) { // P5.33
+	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
+	pgtest.Member(t, "statkeep", "")
+	vars := pgtest.MemberEnv(host, port, "statkeep")
+	def := component.Definition{ID: "demo/statkeep", Version: "3.0.0",
+		Authz:      sectest.Defs("demo/statkeep", "demo.reports", "demo.reports.read", "demo.reports.create"),
+		Migrations: fstest.MapFS{"0001_reports.up.sql": {Data: []byte("CREATE TABLE reports (id text PRIMARY KEY);")}},
+		New:        func(rt *runtime.Runtime) (component.Module, error) { return &reports{rt: rt}, nil }}
+	_, stop := runComponent(t, def, vars)
+	admin := pgtest.Admin(t, pgtest.Database)
+	pgtest.Exec(t, admin, "ALTER TABLE statkeep.be_audit_log SET (autovacuum_enabled = false)") // only the SDK analyzes
+	pgtest.Exec(t, admin, `INSERT INTO statkeep.be_audit_log (id, occurred_at, category, operation, outcome, digest)
+		SELECT gen_random_uuid(), now(), 'business_change', 'op', 'succeeded', 'd' FROM generate_series(1, 2000)`)
+	pgtest.Exec(t, admin, "SELECT pg_stat_force_next_flush()")
+	require.Eventually(t, func() bool {
+		var analyzed bool
+		_ = admin.QueryRow(context.Background(), `SELECT last_analyze IS NOT NULL FROM pg_stat_all_tables
+			WHERE relid = 'statkeep.be_audit_log'::regclass`).Scan(&analyzed)
+		return analyzed
+	}, 3*db.StaleCheckEvery, 100*time.Millisecond, "the running component analyzes a table whose statistics lag")
+	stop()
+}

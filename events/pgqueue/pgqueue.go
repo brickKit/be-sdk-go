@@ -43,9 +43,10 @@ type Transport struct {
 	schema  string
 	poll    time.Duration
 	onError atomic.Pointer[func(error)]
-	stop    context.CancelFunc
-	closing context.Context // ends when the transport closes
-	purged  chan struct{}
+	stop     context.CancelFunc
+	closing  context.Context // ends when the transport closes
+	purged   chan struct{}
+	analyzed chan struct{}
 
 	wakeMu     sync.Mutex // the subscriptions' wakers (P6.30, wake.go)
 	wakers     []*waker
@@ -83,6 +84,43 @@ func (t *Transport) purgeLoop(ctx context.Context) {
 			wait.Reset(PurgeEvery)
 		}
 	}
+}
+
+// analyzeLoop keeps the queue's statistics fresh (P5.33): the statements keep cached generic plans, and one settled
+// while the delivery table was small is redone only once the table is analyzed again.
+func (t *Transport) analyzeLoop(ctx context.Context) {
+	defer close(t.analyzed)
+	tick := time.NewTicker(db.StaleCheckEvery)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			_, err := t.AnalyzeStale(ctx)
+			if ctx.Err() == nil {
+				t.report(err)
+			}
+		}
+	}
+}
+
+// AnalyzeStale analyzes the queue's tables whose statistics lag behind their changes (P5.33) and returns them.
+func (t *Transport) AnalyzeStale(ctx context.Context) ([]string, error) {
+	rows, err := t.pool.Query(ctx, "SELECT "+t.t("be_analyze_stale")+"()")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var done []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		done = append(done, name)
+	}
+	return done, rows.Err()
 }
 
 func (t *Transport) report(err error) {
@@ -128,13 +166,6 @@ func Connect(ctx context.Context, busURL, name string, maxConns int32) (*Transpo
 		return nil, err
 	}
 	cfg.RuntimeParams["application_name"] = name + " bus"
-	// Plan every statement for its own parameters (P6.28). With the statement cache, PostgreSQL switches a prepared
-	// statement to a generic plan after five executions; while the delivery table's statistics still lag behind a
-	// backlog that just arrived, that plan fetched and sorted the whole backlog for every claim (4.3 ms a claim with
-	// 20 000 waiting against 0.8 ms with 20). Planned each time, a claim is 0.9 ms with 20 or 20 000 waiting; publish
-	// throughput showed no difference beyond its run-to-run spread (performance power mode, 2026-11-02). It is a
-	// setting of this pool's connections, not state a statement leaves on them (P5.30).
-	cfg.RuntimeParams["plan_cache_mode"] = "force_custom_plan"
 	pc, err := pgxpool.ParseConfig("")
 	if err != nil {
 		return nil, err
@@ -146,9 +177,11 @@ func Connect(ctx context.Context, busURL, name string, maxConns int32) (*Transpo
 		return nil, fmt.Errorf("bus %s: %w", redact(busURL), err)
 	}
 	t := &Transport{pool: pool, cfg: cfg, schema: schema, poll: DefaultPoll, purged: make(chan struct{}),
-		listened: make(chan struct{}), notes: make(chan string, notifyQueue), notified: make(chan struct{})}
+		analyzed: make(chan struct{}), listened: make(chan struct{}), notes: make(chan string, notifyQueue),
+		notified: make(chan struct{})}
 	t.closing, t.stop = context.WithCancel(context.Background())
 	go t.purgeLoop(t.closing)
+	go t.analyzeLoop(t.closing)
 	go t.notifyLoop()
 	return t, nil
 }
@@ -564,6 +597,7 @@ func (t *Transport) Purge(ctx context.Context, retention time.Duration) (int64, 
 func (t *Transport) Close() error {
 	t.stop()
 	<-t.purged
+	<-t.analyzed
 	<-t.notified
 	if t.listening.Load() {
 		<-t.listened

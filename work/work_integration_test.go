@@ -354,8 +354,12 @@ func TestACommitWakesAWorkerWithoutWaitingForThePoll(t *testing.T) { // P7.21
 	}
 }
 
-func TestABacklogDoesNotSlowEachClaim(t *testing.T) { // P7.22
+func TestABacklogDoesNotSlowEachClaim(t *testing.T) { // P7.22, P5.33, CK-DB-10
+	// the claim's cached plan settles while the table is small; 20 000 items then arrive. Autovacuum is off on this
+	// table, so only the SDK's statistics upkeep analyzes it: until then the plan joined the claimed item back by
+	// scanning the whole table (about 3 ms a claim, 2026-11-02); the old test analyzed the table itself and passed
 	d, admin := dbtest.Schema(t, "work9", nil)
+	pgtest.Exec(t, admin, "ALTER TABLE be_work_item SET (autovacuum_enabled = false)")
 	r := replica(d, 30*time.Second, Job{Name: "bulk", Kind: Queue, Effect: Local,
 		Handle: func(context.Context, *Run) error { return nil }},
 		Job{Name: "other", Kind: Queue, Effect: Local, Handle: func(context.Context, *Run) error { return nil }})
@@ -376,14 +380,17 @@ func TestABacklogDoesNotSlowEachClaim(t *testing.T) { // P7.22
 			run_at) SELECT gen_random_uuid(), CASE WHEN g % 2 = 0 THEN 'bulk' ELSE 'other' END, 'queue', 'pending', 3,
 			'local', gen_random_uuid()::text, '{}'::jsonb, now() - g * interval '1 ms' FROM generate_series(1, `+
 			strconv.Itoa(n)+`) g`)
-		pgtest.Exec(t, admin, "ANALYZE be_work_item")
+		pgtest.Exec(t, admin, "SELECT pg_stat_force_next_flush()")
 	}
 	insert(40)
 	small := median()
 	insert(20000)
+	analyzed, err := db.AnalyzeStale(context.Background(), d)
+	require.NoError(t, err)
+	require.Contains(t, analyzed, "be_work_item")
 	large := median()
 	t.Logf("claim median: %v with 40 items due, %v with 20 000", small, large)
-	assert.Less(t, large, max(4*small, 3*time.Millisecond), "a claim must not grow with the backlog")
+	assert.Less(t, large, small+time.Millisecond, "a claim must not grow with the backlog")
 }
 
 // The identities and operation IDs of P7.2: a queue item is a UUIDv7 with the operation ID <id>:<job>, written when it is

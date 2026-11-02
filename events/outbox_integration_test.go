@@ -6,7 +6,9 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"slices"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -465,4 +467,47 @@ func TestTheForwardingLeaseOnlyReducesContention(t *testing.T) { // P6.11
 	assert.Equal(t, 5, n, "f1, within its lease by its own clock, still forwards: the lease bears no correctness")
 	assert.Equal(t, f2.owner, owner(), "and does not take the lease again before half of it has passed")
 	assert.Zero(t, unpublished(), "every row published")
+}
+
+// outboxRows writes rows of demo.stock partition 0 straight into be_outbox, numbered seq from..to in epoch (1, 1),
+// published or not.
+func outboxRows(t *testing.T, admin *pgx.Conn, from, to int, published bool) {
+	at := "NULL"
+	if published {
+		at = "now()"
+	}
+	pgtest.Exec(t, admin, `INSERT INTO be_outbox (event_id, stream, partition, type, occurred_at, record_id, version,
+		projection, hops, payload, digest, seq, epoch_generation, epoch_timeline, published_at)
+		SELECT gen_random_uuid(), 'demo.stock', 0, 'demo.stock.moved.v1', now(), g::text, 1, 'full', 0, '\x7b7d', 'd',
+		g, 1, 1, `+at+` FROM generate_series(`+strconv.Itoa(from)+`, `+strconv.Itoa(to)+`) g`)
+}
+
+func TestTheForwarderReadsNoPublishedRowOnItsWay(t *testing.T) { // P6.35
+	// the published rows stay for the redelivery retention (P6.12) ahead of the unpublished ones; the read used to
+	// walk past all of them (or fetch and sort every unpublished row) for every batch: 3.4 ms a batch with 20 000
+	// ahead against 0.6 ms (2026-11-02). Autovacuum is off: the read must not need fresh statistics
+	d, admin := source(t, "ev_unpub")
+	pgtest.Exec(t, admin, "ALTER TABLE be_outbox SET (autovacuum_enabled = false)")
+	median := func() time.Duration {
+		var took []time.Duration
+		for range 15 {
+			started := time.Now()
+			require.NoError(t, d.BackgroundTx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+				rows, err := unpublishedIn(ctx, tx, "demo.stock", 0, DefaultBatch)
+				require.Len(t, rows, DefaultBatch)
+				require.EqualValues(t, 100001, rows[0].Seq, "position order")
+				return err
+			}))
+			took = append(took, time.Since(started))
+		}
+		slices.Sort(took)
+		return took[len(took)/2]
+	}
+	outboxRows(t, admin, 99981, 100000, true) // 20 published
+	outboxRows(t, admin, 100001, 100600, false)
+	small := median() // the cached plan settles here
+	outboxRows(t, admin, 1, 20000, true)
+	large := median()
+	t.Logf("a batch of %d: %v with 20 published rows ahead, %v with 20 020", DefaultBatch, small, large)
+	assert.Less(t, large, small+time.Millisecond, "the read must not grow with the published rows kept")
 }

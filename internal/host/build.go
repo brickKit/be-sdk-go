@@ -79,6 +79,7 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 	}
 	var auditor *audit.Auditor
 	if sh.DB != nil {
+		m.db = sh.DB
 		m.runner = work.NewRunner(sh.DB, def.ID, m.Logger)
 		auditor = audit.New(sh.DB)
 		if err := m.auditTransfer(auditor, values); err != nil {

@@ -104,6 +104,9 @@ type Member struct {
 	transport events.Transport
 	runner    *work.Runner
 	hasJobs   bool
+	// db keeps the statistics of the SDK's tables fresh between Start and Stop (P5.33); nil without a database.
+	db         *db.DB
+	statistics chan struct{}
 	holder    *authz.Holder
 	// definitions submits the declared definitions at start; readiness does not wait for them (P8.24), and until
 	// defsAccepted the view holder does not run, so protected requests answer AUTHORIZATION_VIEW_EXPIRED.
@@ -161,6 +164,10 @@ func (m *Member) Start(bg context.Context) error {
 		if err := m.runner.Start(bg); err != nil {
 			return err
 		}
+	}
+	if m.db != nil {
+		m.statistics = make(chan struct{})
+		go func() { defer close(m.statistics); db.KeepStatistics(bg, m.db, m.Logger) }()
 	}
 	if m.tls != nil {
 		go m.tls.Watch(bg, secretRereadEvery, func(err error) {
@@ -243,6 +250,9 @@ func (m *Member) Stop(ctx context.Context) error {
 	}
 	if m.hasJobs {
 		m.runner.Stop() // handlers were cancelled with the background context; their leases are released
+	}
+	if m.statistics != nil {
+		<-m.statistics // ends with the background context
 	}
 	if s, ok := m.Module.(component.Stopper); ok {
 		return s.Stop(ctx)

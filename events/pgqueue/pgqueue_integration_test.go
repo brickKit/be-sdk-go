@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/events/transporttest"
 	"github.com/brickKit/be-sdk-go/v3/ids"
@@ -190,6 +191,7 @@ func backlog(t *testing.T, schema string, n int) events.SubscriptionSpec {
 			SELECT 'be.x.0.t.v1', '{}'::jsonb, '\x7b7d'::bytea FROM generate_series(1, $2) RETURNING seq)
 		INSERT INTO `+schema+`.be_bus_delivery (durable, seq) SELECT $1, seq FROM m`, s.Durable, n)
 	require.NoError(t, err)
+	pgtest.Exec(t, admin, "SELECT pg_stat_force_next_flush()") // the statistics upkeep sees the rows at once
 	t.Cleanup(func() { forget(t, schema, s.Durable, "be.x.0.t.v1") })
 	return s
 }
@@ -244,19 +246,39 @@ func medianClaim(t *testing.T, tr *Transport, s events.SubscriptionSpec) time.Du
 	return took[len(took)/2]
 }
 
-func TestABacklogDoesNotSlowEachClaim(t *testing.T) { // P6.23, P6.28
+func TestABacklogDoesNotSlowEachClaim(t *testing.T) { // P6.23, P6.28, P5.33, CK-DB-10
 	// every claim used to scan the subscription's whole backlog first: the more behind, the slower each message,
-	// so a subscriber that once fell behind could not catch up
-	// on its own bus, whose tables have never been analyzed: the statistics lag behind a backlog that just arrived,
-	// and a cached generic plan then fetched and sorted the whole backlog for every claim. On the shared bus the
-	// statistics depend on what earlier runs left, so this passed or failed by chance
+	// so a subscriber that once fell behind could not catch up. On its own bus with autovacuum off, so only the
+	// statistics upkeep analyzes it: the claim's cached plan settles while the backlog is small, 20 000 deliveries
+	// arrive, and until the next analyze that plan fetched and sorted the whole backlog for every claim
 	tr, schema := ownBus(t)
+	admin := pgtest.Admin(t, pgtest.Database)
+	pgtest.Exec(t, admin, "ALTER TABLE "+schema+".be_bus_delivery SET (autovacuum_enabled = false)")
+	pgtest.Exec(t, admin, "ALTER TABLE "+schema+".be_bus_message SET (autovacuum_enabled = false)")
 	small := medianClaim(t, tr, backlog(t, schema, 20))
-	large := medianClaim(t, tr, backlog(t, schema, 20000))
-	// a claim that walks the backlog (the expired path along the primary key before protocol alpha.42's in-flight
-	// index) costs 1.5-2.7 ms more with 20 000 waiting; one that takes the first row costs the same within 0.4 ms
-	// (2026-11-02, 20 runs each, balanced power mode). The old bound, three times plus 2 ms, let all 20 walking runs pass
+	s := backlog(t, schema, 20000)
+	analyzed, err := tr.AnalyzeStale(context.Background())
+	require.NoError(t, err)
+	require.Contains(t, analyzed, "be_bus_delivery")
+	large := medianClaim(t, tr, s)
+	// a claim that walks the backlog costs 1.5-2.7 ms more with 20 000 waiting (20 runs), one whose cached plan was
+	// settled on the small backlog 3.2-4.2 ms more (without the upkeep, 5 runs); one that takes the first row costs
+	// the same within 0.4 ms (2026-11-02, balanced power mode). The old bound, three times plus 2 ms, let all 20
+	// walking runs pass
 	assert.Less(t, large, small+time.Millisecond, "claims with 20 000 waiting (%v) against 20 waiting (%v)", large, small)
+}
+
+func TestAnOpenTransportKeepsTheQueuesStatisticsFresh(t *testing.T) { // P5.33
+	_, schema := ownBus(t)
+	admin := pgtest.Admin(t, pgtest.Database)
+	pgtest.Exec(t, admin, "ALTER TABLE "+schema+".be_bus_delivery SET (autovacuum_enabled = false)") // only the SDK analyzes
+	backlog(t, schema, 2000)
+	require.Eventually(t, func() bool {
+		var analyzed bool
+		_ = admin.QueryRow(context.Background(), `SELECT last_analyze IS NOT NULL FROM pg_stat_all_tables
+			WHERE relid = $1::regclass`, schema+".be_bus_delivery").Scan(&analyzed)
+		return analyzed
+	}, 3*db.StaleCheckEvery, 100*time.Millisecond, "the open transport analyzes a delivery table whose statistics lag")
 }
 
 func TestAClaimWhoseMessageWasPurgedIsDropped(t *testing.T) { // P6.27
