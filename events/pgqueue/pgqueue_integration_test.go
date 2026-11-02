@@ -42,7 +42,7 @@ func busURLOf(t transporttest.T, schema string) string {
 
 // ownBus is a bus of the test's own: a fresh schema, migrated, dropped afterwards. Nothing another test or an earlier
 // run left is in it, and its tables have never been analyzed, as on a bus that just met its first backlog; the shared
-// be_bus_test keeps what every run leaves (an earlier run's messages past the retention, statistics of past backlogs).
+// be_bus_test holds what this run's other cases left and the statistics of past backlogs.
 func ownBus(t *testing.T) (*Transport, string) {
 	schema := "be_bus_t" + ids.New().String()[24:]
 	pgtest.EnsureDatabase(t, pgtest.Database)
@@ -65,6 +65,10 @@ func factory(t transporttest.T) (events.Transport, string) {
 		pgtest.EnsureDatabase(tb, pgtest.Database)
 		pgtest.Exec(tb, pgtest.Admin(tb, pgtest.Database), "CREATE SCHEMA IF NOT EXISTS be_bus_test")
 		merr = Migrate(context.Background(), bus, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if merr == nil { // empty it of earlier runs: each case adds a stream and subscriptions nothing removes
+			pgtest.Exec(tb, pgtest.Admin(tb, pgtest.Database), "TRUNCATE be_bus_test.be_bus_message, be_bus_test.be_bus_stream, "+
+				"be_bus_test.be_bus_subscription, be_bus_test.be_bus_delivery")
+		}
 	})
 	if merr != nil {
 		t.Errorf("%v", merr)
@@ -139,8 +143,8 @@ func TestAnInFlightRowWithASmallerSequenceIsNotSkipped(t *testing.T) { // P6.23,
 }
 
 func TestPurgeDropsMessagesPastTheRetention(t *testing.T) { // P6.27, CK-BUS-09
-	// on its own bus: Purge removes what is past the retention on the whole bus, and the shared one holds an earlier
-	// run's messages once they are a week old
+	// on its own bus: Purge removes what is past the retention on the whole bus, and would count what other cases
+	// left on the shared one
 	tr, schema := ownBus(t)
 	stream := "sdktest.purge"
 	ctx := context.Background()

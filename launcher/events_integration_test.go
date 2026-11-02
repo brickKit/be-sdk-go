@@ -114,11 +114,15 @@ func TestEventsFlowBetweenComponentsOnBothTransports(t *testing.T) {
 	require.NoError(t, err)
 	u.Scheme, u.Path = "pgqueue", "/"+pgtest.Database
 	q := u.Query()
-	q.Set("schema", "be_bus_e2e")
+	// a bus of the run's own, dropped afterwards: the stream's name is fixed, and on a shared bus every run left its
+	// stream, subscription and messages behind
+	schema := "be_bus_e2e_" + ids.New().String()[24:]
+	q.Set("schema", schema)
 	u.RawQuery = q.Encode()
 	pgqueueURL := u.String()
 	pgtest.EnsureDatabase(t, pgtest.Database)
-	pgtest.Exec(t, pgtest.Admin(t, pgtest.Database), "CREATE SCHEMA IF NOT EXISTS be_bus_e2e")
+	pgtest.Exec(t, pgtest.Admin(t, pgtest.Database), "CREATE SCHEMA "+schema)
+	t.Cleanup(func() { pgtest.Exec(t, pgtest.Admin(t, pgtest.Database), "DROP SCHEMA "+schema+" CASCADE") })
 	require.NoError(t, pgqueue.Migrate(context.Background(), pgqueueURL, slog.New(slog.NewTextHandler(io.Discard, nil))))
 
 	for name, busURL := range map[string]string{"jetstream": natsURL, "pgqueue": pgqueueURL} {
