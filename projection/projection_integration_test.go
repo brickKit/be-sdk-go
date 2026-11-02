@@ -207,13 +207,16 @@ func TestWrittenDuringAlignment(t *testing.T) { // P9.12
 	require.Equal(t, row{projection.Complete, 1, `{"n": "z1"}`}, get(t, d, p, "z"), "rows written during alignment are left to the stream")
 }
 
-func TestApplyAndRepair(t *testing.T) { // P9.10 (state, version and content; not the instance and epoch columns), CK-PJ-01
-	d, _ := dbtest.Schema(t, "proj_repair", nil)
+func TestApplyAndRepair(t *testing.T) { // P9.10, CK-PJ-01
+	d, admin := dbtest.Schema(t, "proj_repair", nil)
 	p := projection.Projection{Name: "partners"}
 	in := func(id, kind string, v int64, data string) projection.Input {
 		return projection.Input{RecordID: id, Kind: kind, Version: v, Impl: "impl-2", Epoch: "1.1", Data: json.RawMessage(data)}
 	}
 	require.False(t, apply(t, d, p, in("a", projection.Full, 1, `{"x":1,"y":1}`)))
+	var impl, epoch string
+	require.NoError(t, admin.QueryRow(context.Background(), "SELECT impl, epoch FROM be_projection WHERE projection = 'partners' AND record_id = 'a'").Scan(&impl, &epoch))
+	require.Equal(t, [2]string{"impl-2", "1.1"}, [2]string{impl, epoch}, "the row keeps the implementation instance and epoch it came from")
 	require.True(t, apply(t, d, p, in("a", projection.Partial, 2, `{"y":2}`)), "a partial update waits for a fetch")
 	require.Equal(t, row{projection.Incomplete, 2, `{"x": 1, "y": 2}`}, get(t, d, p, "a"), "partial fields merge")
 	require.True(t, apply(t, d, p, in("b", projection.Partial, 6, `{"y":6}`)))

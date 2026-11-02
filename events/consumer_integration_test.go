@@ -146,3 +146,37 @@ func TestLargePayloadsTravelByClaimCheck(t *testing.T) { // P6.14, CK-EV-06
 		Data: []byte(`{"claim":{"uri":"` + uri + `","size":8,"sha256":"` + strings.Repeat("0", 64) + `"}}`)}, store)
 	assert.ErrorContains(t, err, "does not match its size and digest")
 }
+
+// Contracts only add (P6.33): a payload with fields the consumer was written before is handled as usual, the unknown
+// fields ignored; a subscription by aggregate (Types "<domain>.<aggregate>.>") becomes the transport filter
+// be.<stream>.*.<domain>.<aggregate>.> and hands the handler an action added later; neither fails nor dead-letters.
+func TestUnknownFieldsAndLaterActionsAreHandled(t *testing.T) { // P6.33 (the consumer; the read model's row is the suite's CK-EV-10)
+	d, _ := source(t, "evcons_p633")
+	var mu sync.Mutex
+	var got []string
+	c := &Consumer{Member: "demo/evcons_p633", DB: d, Log: quietLog(), Sub: Sub{Name: "stock", Streams: []string{"demo.stock"},
+		Types: []string{"demo.stock.>"},
+		Handle: func(ctx context.Context, tx db.Tx, e Received) error {
+			var v struct {
+				ID string `json:"id"`
+			}
+			if err := e.Decode(&v); err != nil {
+				return err
+			}
+			mu.Lock()
+			got = append(got, e.Type+" "+v.ID)
+			mu.Unlock()
+			_, err := tx.Exec(ctx, "INSERT INTO items VALUES ($1)", ids.New())
+			return err
+		}}}
+	assert.Equal(t, []string{"be.demo.stock.*.demo.stock.>"}, c.Spec().Filters, "the aggregate's subjects, any action and version")
+	assert.Equal(t, Ack, c.Handle(context.Background(), delivery(1, nil, `{"id":"r1","added_later":{"x":1}}`)), "unknown fields are ignored")
+	later := delivery(1, map[string]string{HeaderType: "demo.stock.counted.v2"}, `{"id":"r1","count":3}`)
+	later.Subject = "be.demo.stock.0.demo.stock.counted.v2"
+	assert.Equal(t, Ack, c.Handle(context.Background(), later), "an action added later")
+	mu.Lock()
+	assert.Equal(t, []string{"demo.stock.moved.v1 r1", "demo.stock.counted.v2 r1"}, got)
+	mu.Unlock()
+	assert.Equal(t, 2, count(t, d, "SELECT count(*) FROM items"))
+	assert.Zero(t, count(t, d, "SELECT count(*) FROM be_dead_letter"), "no dead letter")
+}

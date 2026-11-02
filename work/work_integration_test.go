@@ -18,6 +18,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/internal/dbtest"
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -213,7 +214,7 @@ func TestNonIdempotentCallsAreNeverSentTwice(t *testing.T) { // P7.12, CK-WK-07
 	assert.Equal(t, "outcome_unknown", reason)
 }
 
-func TestRetriesThenDeadWithItsDeadLetter(t *testing.T) { // P7.13, CK-WK-08
+func TestRetriesThenDeadWithItsDeadLetter(t *testing.T) { // P7.13, CK-WK-08, P7.3 (the rollback at the end), CK-WK-01
 	d, admin := dbtest.Schema(t, "work5", nil)
 	var calls atomic.Int32
 	job := Job{Name: "flaky", Kind: Queue, Effect: Local, MaxAttempts: 2,
@@ -383,4 +384,87 @@ func TestABacklogDoesNotSlowEachClaim(t *testing.T) { // P7.22
 	large := median()
 	t.Logf("claim median: %v with 40 items due, %v with 20 000", small, large)
 	assert.Less(t, large, max(4*small, 3*time.Millisecond), "a claim must not grow with the backlog")
+}
+
+// The identities and operation IDs of P7.2: a queue item is a UUIDv7 with the operation ID <id>:<job>, written when it is
+// enqueued; a cron item is <job>@<slot> with an operation ID that no other item reuses; a retry keeps the operation ID.
+func TestTheIdentitiesAndOperationIDs(t *testing.T) { // P7.2, CK-WK-01
+	d, admin := dbtest.Schema(t, "work_ids", nil)
+	var mu sync.Mutex
+	var seen []string
+	queue := Job{Name: "q", Kind: Queue, Effect: Local, MaxAttempts: 3, Handle: func(ctx context.Context, r *Run) error {
+		mu.Lock()
+		seen = append(seen, r.OperationID)
+		first := len(seen) == 1
+		mu.Unlock()
+		if first {
+			return errors.New("the first attempt fails")
+		}
+		return r.Complete(ctx, nil)
+	}}
+	cron := Job{Name: "daily", Kind: Cron, Effect: Local, Cron: "0 2 * * *", TimeZone: "Europe/Berlin", Backfill: All,
+		Handle: func(context.Context, *Run) error { return nil }}
+	r := replica(d, 5*time.Second, queue)
+
+	id := enqueue(t, d, r, "q")
+	u, err := uuid.Parse(id)
+	require.NoError(t, err)
+	assert.Equal(t, uuid.Version(7), u.Version(), "a queue item is a UUIDv7")
+	var op string
+	require.NoError(t, admin.QueryRow(context.Background(), "SELECT operation_id FROM be_work_item WHERE id = $1", id).Scan(&op))
+	assert.Equal(t, id+":q", op, "written when enqueued")
+	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, r.Start(ctx))
+	require.Eventually(t, func() bool { st, _, _, _ := state(t, admin, id); return st == "done" }, 10*time.Second, 20*time.Millisecond)
+	cancel()
+	r.Stop()
+	mu.Lock()
+	require.Len(t, seen, 2, "one failed attempt, one retry")
+	assert.Equal(t, []string{op, op}, seen, "the retry keeps the operation ID")
+	mu.Unlock()
+
+	// cron on a runner that is never started: a started one materializes the slots due by the database's clock too
+	dc, adminc := dbtest.Schema(t, "work_ids_cron", nil)
+	rc := replica(dc, 5*time.Second, cron)
+	pgtest.Exec(t, adminc, "INSERT INTO be_cron_watermark (job, watermark_at) VALUES ('daily', '2026-10-14T23:59:00Z')")
+	require.NoError(t, rc.Materialize(context.Background(), "daily", time.Date(2026, 10, 17, 0, 0, 30, 0, time.UTC)))
+	rows, err := adminc.Query(context.Background(), "SELECT id, slot, operation_id FROM be_work_item WHERE kind = 'cron' ORDER BY slot")
+	require.NoError(t, err)
+	ops := map[string]bool{op: true}
+	n := 0
+	for rows.Next() {
+		var cid, slot, cop string
+		require.NoError(t, rows.Scan(&cid, &slot, &cop))
+		assert.Equal(t, "daily@"+slot, cid, "a cron item is <job>@<slot>")
+		assert.False(t, ops[cop], "operation ID %s reused", cop)
+		ops[cop] = true
+		n++
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, 3, n, "the slots of 15, 16 and 17 October")
+}
+
+// idempotent_external (P7.11): every attempt carries the same operation ID, a call within the run its sub-key, and a
+// holder that takes over sees what the stalled one recorded about the call, so it asks the other side by that key
+// before sending again.
+func TestAnIdempotentExternalTakeoverKeepsTheKeysAndTheRecordedCall(t *testing.T) { // P7.11, CK-WK-06
+	d, _ := dbtest.Schema(t, "work_ext", nil)
+	job := Job{Name: "pay", Kind: Queue, Effect: IdempotentExternal, Handle: func(context.Context, *Run) error { return nil }}
+	a, b := replica(d, time.Second, job), replica(d, time.Second, job)
+	enqueue(t, d, a, "pay")
+	ra, err := a.claim(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, ra)
+	key := ra.SubKey("charge")
+	assert.Equal(t, ra.OperationID+":charge", key)
+	require.NoError(t, ra.RecordCall(context.Background(), key, "unknown"), "recorded before the call is made")
+	time.Sleep(1100 * time.Millisecond) // A stalls past its lease, its call's outcome unknown
+	rb, err := b.claim(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, rb, "taken over")
+	assert.Equal(t, ra.OperationID, rb.OperationID, "the same operation ID on every attempt")
+	assert.Equal(t, key, rb.SubKey("charge"), "the same sub-key")
+	assert.Equal(t, "unknown", rb.CallResults[key], "the new holder knows the call may have been made, so it queries first")
+	require.NoError(t, rb.RecordCall(context.Background(), key, "effective"))
+	require.NoError(t, rb.Complete(context.Background(), nil))
 }

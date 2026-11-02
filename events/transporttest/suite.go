@@ -405,6 +405,31 @@ var Cases = []Case{
 			fail(t, "%d deliveries", len(rec.got))
 		}
 	}},
+	{"a read model subscribes by aggregate (P6.33)", func(t T, f Factory) {
+		// be.<stream>.*.<domain>.<aggregate>.>: the aggregate's actions and major versions added later arrive too, another
+		// aggregate's events of the same stream do not
+		tr, stream, ctx := setup(t, f)
+		rec := newRecorder()
+		s := spec(stream, "by_aggregate")
+		s.Filters = []string{"be." + stream + ".*.demo.stock.>"}
+		subscribe(t, tr, ctx, s, func(_ context.Context, d *events.Delivery) events.Outcome { rec.add(d); return events.Ack })
+		must(t, tr.Publish(ctx, msg(stream, 0, "demo.price.set.v1", "other aggregate")))
+		must(t, tr.Publish(ctx, msg(stream, 1, "demo.stock.moved.v1", "known")))
+		must(t, tr.Publish(ctx, msg(stream, 2, "demo.stock.counted.v1", "a later action")))
+		must(t, tr.Publish(ctx, msg(stream, 3, "demo.stock.moved.v2", "a later major version")))
+		eventually(t, 10*time.Second, func() bool { return rec.count() == 3 }, "the aggregate's three")
+		time.Sleep(500 * time.Millisecond)
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		for _, d := range rec.got {
+			if string(d.Data) == "other aggregate" {
+				fail(t, "another aggregate's event was delivered")
+			}
+		}
+		if len(rec.got) != 3 {
+			fail(t, "%d deliveries, want 3", len(rec.got))
+		}
+	}},
 	{"a subscriber may start before any producer", func(t T, f Factory) {
 		tr, stream := f(t) // no EnsureStream: the subscription comes first (P6.17)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

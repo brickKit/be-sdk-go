@@ -128,6 +128,8 @@
     "database": {
       "status": "verified",
       "evidence": [
+        "db.TestPoolerPreparedChoosesTheExecMode",
+        "db.TestADirtyStateFoundAtTheStartStopsTheRun",
         "launcher.TestTheComponentWaitsForALateDatabase",
         "db.TestRoleAndSchemaArePerTransactionAndNeverLeak",
         "db.TestTimeoutsNestingAndRetries",
@@ -184,6 +186,7 @@
     "outbox": {
       "status": "verified",
       "evidence": [
+        "events.TestTheForwardingLeaseOnlyReducesContention",
         "events.TestEmitOnlyWithTheBusinessCommit",
         "events.TestTheCommitWakesTheForwarder",
         "events.TestAWakeForwardsItsPartitionAndNeverPostponesThePoll",
@@ -246,6 +249,7 @@
     "consumers": {
       "status": "verified",
       "evidence": [
+        "events.TestUnknownFieldsAndLaterActionsAreHandled",
         "events.TestARedeliveryTakesEffectOnce",
         "events.TestTheLastFailureBecomesOneDeadLetter"
       ],
@@ -254,6 +258,8 @@
     "work": {
       "status": "verified",
       "evidence": [
+        "work.TestTheIdentitiesAndOperationIDs",
+        "work.TestAnIdempotentExternalTakeoverKeepsTheKeysAndTheRecordedCall",
         "work.TestStopReleasesTheLeaseForAnotherReplica",
         "work.TestATakenOverHolderCanCommitNothing",
         "work.TestNonIdempotentCallsAreNeverSentTwice",

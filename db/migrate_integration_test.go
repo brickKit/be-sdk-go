@@ -281,3 +281,27 @@ func latestSDKVersion(t *testing.T) int64 {
 	require.Positive(t, top)
 	return top
 }
+
+// A state marked dirty when the run starts (an earlier run stopped in the middle of a file) is not handled
+// automatically: the run fails, naming the version and its file, and changes nothing until a person has looked.
+func TestADirtyStateFoundAtTheStartStopsTheRun(t *testing.T) { // P5.15 (the dirty state found at the start)
+	cfg, c := gammaFixture(t)
+	ctx := context.Background()
+	require.NoError(t, Migrate(ctx, cfg, SDKMigrations(), component(gammaV2)))
+	_, err := c.Exec(ctx, "UPDATE gamma.schema_migrations SET dirty = true")
+	require.NoError(t, err)
+	next := map[string]string{"0003_notes.up.sql": "CREATE TABLE notes (id int);"}
+	for k, v := range gammaV2 {
+		next[k] = v
+	}
+	err = Migrate(ctx, cfg, SDKMigrations(), component(next))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "version 2 is marked dirty")
+	assert.Contains(t, err.Error(), "0002_lines.up.sql", "the file to check is named")
+	var exists bool
+	require.NoError(t, c.QueryRow(ctx, "SELECT to_regclass('gamma.notes') IS NOT NULL").Scan(&exists))
+	assert.False(t, exists, "nothing after the dirty version ran")
+	v, dirty := version(t, c, "schema_migrations")
+	assert.Equal(t, int64(2), v)
+	assert.True(t, dirty, "the mark stays for the person to correct")
+}

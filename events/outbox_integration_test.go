@@ -404,3 +404,65 @@ func TestAPollTouchesOnlyThePartitionsWithRowsToForward(t *testing.T) { // P6.32
 	assert.Equal(t, counted("SELECT partition FROM be_outbox"), counted("SELECT partition FROM be_outbox_partition"))
 	assert.Zero(t, counted("SELECT count(*) FROM be_outbox WHERE published_at IS NULL"))
 }
+
+// The forwarding lease (P6.11) only reduces contention: while one forwarder holds a partition's lease another skips it;
+// once the lease has run out in the database another takes it, and the old holder, still within the first half of its
+// lease by its own clock, neither takes it again nor stops: it forwards too, queued behind the numbering lock, and a
+// duplicate is the consumer's to drop. Every row is published.
+func TestTheForwardingLeaseOnlyReducesContention(t *testing.T) { // P6.11
+	d, admin := source(t, "evsrc_lease")
+	one := Stream{Name: "demo.one", Partitions: 1}
+	p, err := NewProducer("demo/evsrc_lease", []Stream{one}, nil)
+	require.NoError(t, err)
+	tr := NewMemory(0)
+	emitOne := func(n int) {
+		for i := 0; i < n; i++ {
+			require.NoError(t, d.Tx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+				id := ids.New().String()
+				_, err := p.Emit(ctx, tx, "demo.one", Event{Type: "demo.one.moved.v1", RecordID: id, Version: 1,
+					Projection: Full, Data: map[string]string{"id": id}})
+				return err
+			}))
+		}
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	impl := "6f1c2d3e-4a5b-4c6d-8e7f-901234567890"
+	f1 := &Forwarder{DB: d, Producer: p, Transport: tr, Source: "demo/evsrc_lease", Impl: impl, Log: log, Lease: 10 * time.Second}
+	f2 := &Forwarder{DB: d, Producer: p, Transport: tr, Source: "demo/evsrc_lease", Impl: impl, Log: log, Lease: 10 * time.Second}
+	f1.defaults()
+	f2.defaults()
+	owner := func() string {
+		var o string
+		require.NoError(t, admin.QueryRow(context.Background(), "SELECT lease_owner FROM be_outbox_partition WHERE stream = 'demo.one'").Scan(&o))
+		return o
+	}
+	unpublished := func() int {
+		var n int
+		require.NoError(t, admin.QueryRow(context.Background(), "SELECT count(*) FROM be_outbox WHERE published_at IS NULL").Scan(&n))
+		return n
+	}
+
+	emitOne(5)
+	n, err := f1.Once(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 5, n)
+	assert.Equal(t, f1.owner, owner(), "f1 holds the lease")
+	emitOne(5)
+	n, err = f2.Once(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, n, "f2 skips a partition whose lease another holds")
+	assert.Equal(t, 5, unpublished())
+
+	pgtest.Exec(t, admin, "UPDATE be_outbox_partition SET lease_until = clock_timestamp() - interval '1 second'")
+	n, err = f2.Once(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 5, n, "f2 takes the lease that ran out")
+	assert.Equal(t, f2.owner, owner())
+
+	emitOne(5)
+	n, err = f1.Once(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 5, n, "f1, within its lease by its own clock, still forwards: the lease bears no correctness")
+	assert.Equal(t, f2.owner, owner(), "and does not take the lease again before half of it has passed")
+	assert.Zero(t, unpublished(), "every row published")
+}
