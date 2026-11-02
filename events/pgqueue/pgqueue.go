@@ -128,6 +128,13 @@ func Connect(ctx context.Context, busURL, name string, maxConns int32) (*Transpo
 		return nil, err
 	}
 	cfg.RuntimeParams["application_name"] = name + " bus"
+	// Plan every statement for its own parameters (P6.28). With the statement cache, PostgreSQL switches a prepared
+	// statement to a generic plan after five executions; while the delivery table's statistics still lag behind a
+	// backlog that just arrived, that plan fetched and sorted the whole backlog for every claim (4.3 ms a claim with
+	// 20 000 waiting against 0.8 ms with 20). Planned each time, a claim is 0.9 ms with 20 or 20 000 waiting; publish
+	// throughput showed no difference beyond its run-to-run spread (performance power mode, 2026-11-02). It is a
+	// setting of this pool's connections, not state a statement leaves on them (P5.30).
+	cfg.RuntimeParams["plan_cache_mode"] = "force_custom_plan"
 	pc, err := pgxpool.ParseConfig("")
 	if err != nil {
 		return nil, err

@@ -25,7 +25,9 @@ import (
 var migrateOnce sync.Once
 
 // busURL is the test bus: schema be_bus_test in the test database, as the superuser of BE_SDK_TEST_PG_ADMIN.
-func busURL(t transporttest.T) string {
+func busURL(t transporttest.T) string { return busURLOf(t, "be_bus_test") }
+
+func busURLOf(t transporttest.T, schema string) string {
 	u, err := url.Parse(os.Getenv("BE_SDK_TEST_PG_ADMIN"))
 	if err != nil || u.Host == "" {
 		t.Errorf("BE_SDK_TEST_PG_ADMIN is not set: the queue tests need PostgreSQL")
@@ -33,9 +35,26 @@ func busURL(t transporttest.T) string {
 	}
 	u.Scheme, u.Path = "pgqueue", "/"+pgtest.Database
 	q := u.Query()
-	q.Set("schema", "be_bus_test")
+	q.Set("schema", schema)
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// ownBus is a bus of the test's own: a fresh schema, migrated, dropped afterwards. Nothing another test or an earlier
+// run left is in it, and its tables have never been analyzed, as on a bus that just met its first backlog; the shared
+// be_bus_test keeps what every run leaves (an earlier run's messages past the retention, statistics of past backlogs).
+func ownBus(t *testing.T) (*Transport, string) {
+	schema := "be_bus_t" + ids.New().String()[24:]
+	pgtest.EnsureDatabase(t, pgtest.Database)
+	admin := pgtest.Admin(t, pgtest.Database)
+	pgtest.Exec(t, admin, "CREATE SCHEMA "+schema)
+	t.Cleanup(func() { pgtest.Exec(t, pgtest.Admin(t, pgtest.Database), "DROP SCHEMA "+schema+" CASCADE") })
+	bus := busURLOf(t, schema)
+	require.NoError(t, Migrate(context.Background(), bus, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	tr, err := Connect(context.Background(), bus, "be-sdk-go-test", 8)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tr.Close() })
+	return tr, schema
 }
 
 func factory(t transporttest.T) (events.Transport, string) {
@@ -120,11 +139,14 @@ func TestAnInFlightRowWithASmallerSequenceIsNotSkipped(t *testing.T) { // P6.23,
 }
 
 func TestPurgeDropsMessagesPastTheRetention(t *testing.T) { // P6.27, CK-BUS-09
-	tr, stream := factory(t)
+	// on its own bus: Purge removes what is past the retention on the whole bus, and the shared one holds an earlier
+	// run's messages once they are a week old
+	tr, schema := ownBus(t)
+	stream := "sdktest.purge"
 	ctx := context.Background()
 	require.NoError(t, tr.EnsureStream(ctx, events.Stream{Name: stream, Partitions: 1}))
 	// a subscription that has read nothing yet: before P6.27 it held every message back
-	sub, err := tr.Subscribe(ctx, events.SubscriptionSpec{Durable: "purge_" + stream[9:], Streams: []string{stream}},
+	sub, err := tr.Subscribe(ctx, events.SubscriptionSpec{Durable: "purge", Streams: []string{stream}},
 		func(context.Context, *events.Delivery) events.Outcome { return events.Nak })
 	require.NoError(t, err)
 	require.NoError(t, sub.Stop())
@@ -135,14 +157,14 @@ func TestPurgeDropsMessagesPastTheRetention(t *testing.T) { // P6.27, CK-BUS-09
 	}
 	admin := pgtest.Admin(t, pgtest.Database)
 	var oldest, newest string
-	require.NoError(t, admin.QueryRow(ctx, `SELECT min(msg_id), max(msg_id) FROM be_bus_test.be_bus_message
+	require.NoError(t, admin.QueryRow(ctx, `SELECT min(msg_id), max(msg_id) FROM `+schema+`.be_bus_message
 		WHERE subject = $1`, subject).Scan(&oldest, &newest))
-	pgtest.Exec(t, admin, "UPDATE be_bus_test.be_bus_message SET published_at = now() - interval '8 days' WHERE msg_id = '"+oldest+"'")
-	n, err := tr.(*Transport).Purge(ctx, events.TransportRetention)
+	pgtest.Exec(t, admin, "UPDATE "+schema+".be_bus_message SET published_at = now() - interval '8 days' WHERE msg_id = '"+oldest+"'")
+	n, err := tr.Purge(ctx, events.TransportRetention)
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, n, "the subscription never read it, yet past the retention it goes")
 	var left []string
-	rows, err := admin.Query(ctx, "SELECT msg_id FROM be_bus_test.be_bus_message WHERE subject = $1", subject)
+	rows, err := admin.Query(ctx, "SELECT msg_id FROM "+schema+".be_bus_message WHERE subject = $1", subject)
 	require.NoError(t, err)
 	for rows.Next() {
 		var id string
@@ -154,25 +176,26 @@ func TestPurgeDropsMessagesPastTheRetention(t *testing.T) { // P6.27, CK-BUS-09
 
 // backlog gives a new subscription n due deliveries of real messages, written directly (publishing 20 000 one by
 // one would take most of the test).
-func backlog(t *testing.T, n int) events.SubscriptionSpec {
+func backlog(t *testing.T, schema string, n int) events.SubscriptionSpec {
 	ctx := context.Background()
 	s := events.SubscriptionSpec{Durable: "backlog_" + ids.New().String()[24:], MaxDeliver: 3, AckWait: 30 * time.Second}.Defaults()
 	admin := pgtest.Admin(t, pgtest.Database)
-	pgtest.Exec(t, admin, `INSERT INTO be_bus_test.be_bus_subscription (durable, streams, filters, max_deliver, ack_wait_ms,
+	pgtest.Exec(t, admin, `INSERT INTO `+schema+`.be_bus_subscription (durable, streams, filters, max_deliver, ack_wait_ms,
 		backoff_ms) VALUES ('`+s.Durable+`', '{x}', '{}', 3, 30000, '{1000}')`)
-	_, err := admin.Exec(ctx, `WITH m AS (INSERT INTO be_bus_test.be_bus_message (subject, headers, data)
+	_, err := admin.Exec(ctx, `WITH m AS (INSERT INTO `+schema+`.be_bus_message (subject, headers, data)
 			SELECT 'be.x.0.t.v1', '{}'::jsonb, '\x7b7d'::bytea FROM generate_series(1, $2) RETURNING seq)
-		INSERT INTO be_bus_test.be_bus_delivery (durable, seq) SELECT $1, seq FROM m`, s.Durable, n)
+		INSERT INTO `+schema+`.be_bus_delivery (durable, seq) SELECT $1, seq FROM m`, s.Durable, n)
 	require.NoError(t, err)
-	t.Cleanup(func() { forget(t, s.Durable, "be.x.0.t.v1") })
+	t.Cleanup(func() { forget(t, schema, s.Durable, "be.x.0.t.v1") })
 	return s
 }
 
-// forget removes what a test wrote straight into the shared test bus: every later subscription would read past it.
-func forget(t *testing.T, durable, subject string) {
+// forget removes what a test wrote straight into a test bus: on the shared one every later subscription would read
+// past it.
+func forget(t *testing.T, schema, durable, subject string) {
 	admin := pgtest.Admin(t, pgtest.Database)
-	pgtest.Exec(t, admin, "DELETE FROM be_bus_test.be_bus_subscription WHERE durable = '"+durable+"'")
-	pgtest.Exec(t, admin, "DELETE FROM be_bus_test.be_bus_message WHERE subject = '"+subject+"'")
+	pgtest.Exec(t, admin, "DELETE FROM "+schema+".be_bus_subscription WHERE durable = '"+durable+"'")
+	pgtest.Exec(t, admin, "DELETE FROM "+schema+".be_bus_message WHERE subject = '"+subject+"'")
 }
 
 func TestASubscriptionCrossesOtherStreamsWithoutWaiting(t *testing.T) { // P6.23
@@ -186,7 +209,7 @@ func TestASubscriptionCrossesOtherStreamsWithoutWaiting(t *testing.T) { // P6.23
 		SELECT $1, '{}'::jsonb, '\x7b7d'::bytea FROM generate_series(1, 20000)`, other)
 	require.NoError(t, err)
 	durable := "cross_" + stream[9:]
-	t.Cleanup(func() { forget(t, durable, other) })
+	t.Cleanup(func() { forget(t, "be_bus_test", durable, other) })
 	require.NoError(t, tr.EnsureStream(ctx, events.Stream{Name: stream, Partitions: 1}))
 	got := make(chan struct{}, 1)
 	started := time.Now()
@@ -220,15 +243,18 @@ func medianClaim(t *testing.T, tr *Transport, s events.SubscriptionSpec) time.Du
 func TestABacklogDoesNotSlowEachClaim(t *testing.T) { // P6.23
 	// every claim used to scan the subscription's whole backlog first: the more behind, the slower each message,
 	// so a subscriber that once fell behind could not catch up
-	tr, _ := factory(t)
-	small := medianClaim(t, tr.(*Transport), backlog(t, 20))
-	large := medianClaim(t, tr.(*Transport), backlog(t, 20000))
+	// on its own bus, whose tables have never been analyzed: the statistics lag behind a backlog that just arrived,
+	// and a cached generic plan then fetched and sorted the whole backlog for every claim. On the shared bus the
+	// statistics depend on what earlier runs left, so this passed or failed by chance
+	tr, schema := ownBus(t)
+	small := medianClaim(t, tr, backlog(t, schema, 20))
+	large := medianClaim(t, tr, backlog(t, schema, 20000))
 	assert.Less(t, large, 3*small+2*time.Millisecond, "claims with 20 000 waiting (%v) against 20 waiting (%v)", large, small)
 }
 
 func TestAClaimWhoseMessageWasPurgedIsDropped(t *testing.T) { // P6.27
 	tr, _ := factory(t)
-	s := backlog(t, 2)
+	s := backlog(t, "be_bus_test", 2)
 	admin := pgtest.Admin(t, pgtest.Database)
 	var first int64
 	require.NoError(t, admin.QueryRow(context.Background(), `SELECT min(seq) FROM be_bus_test.be_bus_delivery
@@ -262,7 +288,7 @@ func wakesAnIdleReader(t *testing.T, readers int) {
 	ctx := context.Background()
 	require.NoError(t, tr.EnsureStream(ctx, events.Stream{Name: stream, Partitions: 1}))
 	durable := "wake_" + stream[9:]
-	t.Cleanup(func() { forget(t, durable, "be."+stream+".0.x.v1") })
+	t.Cleanup(func() { forget(t, "be_bus_test", durable, "be."+stream+".0.x.v1") })
 	got := make(chan time.Time, 4)
 	sub, err := tr.Subscribe(ctx, events.SubscriptionSpec{Durable: durable, Streams: []string{stream}, Concurrency: readers},
 		func(context.Context, *events.Delivery) events.Outcome { got <- time.Now(); return events.Ack })
