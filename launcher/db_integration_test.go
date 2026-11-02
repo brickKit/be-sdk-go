@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"strconv"
 	"testing"
@@ -131,4 +132,34 @@ func post(t *testing.T, url string) int {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	return resp.StatusCode
+}
+
+// CK-DB-04 (P5.10): the database starts after the component (the machine boots both); the component waits for it,
+// staying "starting", and turns ready once it answers.
+func TestTheComponentWaitsForALateDatabase(t *testing.T) {
+	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
+	pgtest.Member(t, "notes", "")
+	vars := pgtest.MemberEnv(host, port, "notes")
+	var out syncBuffer
+	require.Equal(t, ExitOK, Run(context.Background(), notesDefinition(), Options{Args: []string{"migrate"}, Env: env(vars),
+		Stdout: &out, Stderr: &out}), out.String())
+
+	// migrated straight away; only the start meets the late database (the migrate entry does not wait, P5.10 is serve's)
+	httpPort := freePort(t)
+	late := secured(t, notesDefinition(), vars)
+	maps.Copy(late, map[string]string{"COMPONENT_ID": "demo/notes", "COMPONENT_VERSION": "3.0.0", "PORT": strconv.Itoa(httpPort),
+		"STOP_DRAIN_DELAY": "50ms", "PG_HOST": "127.0.0.1",
+		"PG_PORT": strconv.Itoa(lateProxy(t, net.JoinHostPort(host, strconv.Itoa(port)), 1500*time.Millisecond))})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	var logs syncBuffer
+	start := time.Now()
+	go func() { done <- Run(ctx, notesDefinition(), Options{Env: env(late), Stdout: &logs, Stderr: &logs}) }()
+	base := "http://127.0.0.1:" + strconv.Itoa(httpPort)
+	require.Eventually(t, func() bool { c, _ := get(t, base+"/readyz"); return c == 200 }, 15*time.Second, 20*time.Millisecond, logs.String())
+	assert.GreaterOrEqual(t, time.Since(start), 1500*time.Millisecond, "ready only once the database answers")
+	assert.Contains(t, logs.String(), "waiting for the database")
+	assert.Equal(t, 201, post(t, base+"/api/notes"), "and it serves through the database")
+	cancel()
+	assert.Equal(t, ExitOK, <-done, logs.String())
 }
