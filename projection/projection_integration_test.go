@@ -120,7 +120,7 @@ func status(t *testing.T, d *db.DB, name string) string {
 	return s
 }
 
-func TestAlignMatchesSource(t *testing.T) {
+func TestAlignMatchesSource(t *testing.T) { // P9.12, CK-PJ-02
 	d, _ := dbtest.Schema(t, "proj_align", nil)
 	p := projection.Projection{Name: "partners"}
 	old := func(id string, kind string, v int64, data string) {
@@ -167,7 +167,7 @@ func TestAlignMatchesSource(t *testing.T) {
 	require.Equal(t, row{projection.Complete, 3, `{"n": "a3"}`}, get(t, d, p, "a"))
 }
 
-func TestOlderAlignmentDiscarded(t *testing.T) {
+func TestOlderAlignmentDiscarded(t *testing.T) { // P9.12
 	d, _ := dbtest.Schema(t, "proj_replace", nil)
 	p := projection.Projection{Name: "partners"}
 	// c is projected locally from the previous instance, so the newer alignment reads it by ID
@@ -191,7 +191,7 @@ func TestOlderAlignmentDiscarded(t *testing.T) {
 	require.Equal(t, "aligned", status(t, d, "partners"))
 }
 
-func TestWrittenDuringAlignment(t *testing.T) {
+func TestWrittenDuringAlignment(t *testing.T) { // P9.12
 	d, _ := dbtest.Schema(t, "proj_during", nil)
 	p := projection.Projection{Name: "partners"}
 	src := newSource()
@@ -207,7 +207,7 @@ func TestWrittenDuringAlignment(t *testing.T) {
 	require.Equal(t, row{projection.Complete, 1, `{"n": "z1"}`}, get(t, d, p, "z"), "rows written during alignment are left to the stream")
 }
 
-func TestApplyAndRepair(t *testing.T) {
+func TestApplyAndRepair(t *testing.T) { // P9.10 (state, version and content; not the instance and epoch columns), CK-PJ-01
 	d, _ := dbtest.Schema(t, "proj_repair", nil)
 	p := projection.Projection{Name: "partners"}
 	in := func(id, kind string, v int64, data string) projection.Input {

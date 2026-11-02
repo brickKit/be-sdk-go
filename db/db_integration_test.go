@@ -125,7 +125,7 @@ func TestRoleAndSchemaArePerTransactionAndNeverLeak(t *testing.T) {
 	assert.ErrorContains(t, err, "permission denied")
 }
 
-func TestSameSQLOfTwoMembersNeverSharesACachedStatement(t *testing.T) {
+func TestSameSQLOfTwoMembersNeverSharesACachedStatement(t *testing.T) { // P5.4
 	host, port := fixture(t)
 	pool := sharedPool(t, host, port, 1)
 	a, b := NewDB("demo/alpha", pool, settings(host, port, "alpha", 4)), NewDB("demo/beta", pool, settings(host, port, "beta", 4))
@@ -168,7 +168,7 @@ func TestSameSQLOfTwoMembersNeverSharesACachedStatement(t *testing.T) {
 	assert.Contains(t, err.Error(), "cached plan must not change result type")
 }
 
-func TestTimeoutsNestingAndRetries(t *testing.T) {
+func TestTimeoutsNestingAndRetries(t *testing.T) { // P5.6, CK-DB-03, P5.9
 	host, port := fixture(t)
 	pool := sharedPool(t, host, port, 4)
 	a := NewDB("demo/alpha", pool, settings(host, port, "alpha", 4))
@@ -232,7 +232,7 @@ func TestTimeoutsNestingAndRetries(t *testing.T) {
 	assert.Greater(t, attempts.Load(), int32(2), "a serialization failure was retried")
 }
 
-func TestForegroundBudgetAndDurableCheck(t *testing.T) {
+func TestForegroundBudgetAndDurableCheck(t *testing.T) { // P5.2, CK-DB-02, P1.10
 	host, port := fixture(t)
 	pool := sharedPool(t, host, port, 4)
 	a := NewDB("demo/alpha", pool, settings(host, port, "alpha", 1))
@@ -266,7 +266,7 @@ func TestForegroundBudgetAndDurableCheck(t *testing.T) {
 	assert.Contains(t, err.Error(), `synchronous_commit is "off"`)
 }
 
-func TestManyMembersConcurrentlyOnOnePool(t *testing.T) {
+func TestManyMembersConcurrentlyOnOnePool(t *testing.T) { // P5.1, CK-DB-01
 	host, port := fixture(t)
 	pool := sharedPool(t, host, port, 3)
 	members := map[string]*DB{"sdk_alpha_rw": NewDB("demo/alpha", pool, settings(host, port, "alpha", 8)),

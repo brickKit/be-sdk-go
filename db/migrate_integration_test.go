@@ -52,7 +52,7 @@ func version(t *testing.T, c *pgx.Conn, table string) (v int64, dirty bool) {
 	return
 }
 
-func TestMigrateTwiceAndStateInTheComponentSchema(t *testing.T) {
+func TestMigrateTwiceAndStateInTheComponentSchema(t *testing.T) { // P5.12, CK-DB-05, P6.3 (the SDK's migrations, not each outbox table)
 	cfg, c := gammaFixture(t)
 	ctx := context.Background()
 	require.NoError(t, Migrate(ctx, cfg, SDKMigrations(), component(gammaV2)))
@@ -117,7 +117,7 @@ func withoutNewest(t *testing.T, set MigrationSet) MigrationSet {
 	return MigrationSet{Name: set.Name, Table: set.Table, Files: out}
 }
 
-func TestAFailedFileLeavesNoTraceAndTheEntryStaysRerunnable(t *testing.T) {
+func TestAFailedFileLeavesNoTraceAndTheEntryStaysRerunnable(t *testing.T) { // P5.15 (a failed file; the dirty state found at the start is not checked here)
 	cfg, c := gammaFixture(t)
 	ctx := context.Background()
 	require.NoError(t, Migrate(ctx, cfg, SDKMigrations(), component(gammaV2)))
@@ -141,7 +141,7 @@ func TestAFailedFileLeavesNoTraceAndTheEntryStaysRerunnable(t *testing.T) {
 	assert.Equal(t, int64(3), v)
 }
 
-func TestLockWaitReportsTheBlocker(t *testing.T) {
+func TestLockWaitReportsTheBlocker(t *testing.T) { // P5.14, CK-DB-06
 	cfg, c := gammaFixture(t)
 	ctx := context.Background()
 	require.NoError(t, Migrate(ctx, cfg, SDKMigrations(), component(gammaV2)))
@@ -176,7 +176,7 @@ func TestLockWaitReportsTheBlocker(t *testing.T) {
 	assert.Equal(t, int64(3), v)
 }
 
-func TestTwoInstancesMigrateAtOnce(t *testing.T) {
+func TestTwoInstancesMigrateAtOnce(t *testing.T) { // P5.16
 	cfg, c := gammaFixture(t)
 	ctx := context.Background()
 	slow := map[string]string{"0003_slow.up.sql": "SELECT pg_sleep(0.5); CREATE TABLE slow (id int);"}
@@ -208,7 +208,7 @@ func TestRefusedMigrationsChangeNothing(t *testing.T) {
 	assert.Zero(t, n)
 }
 
-func TestDocumentNumbers(t *testing.T) {
+func TestDocumentNumbers(t *testing.T) { // P5.18, P5.19, P5.20, CK-DB-07
 	cfg, _ := gammaFixture(t)
 	ctx := context.Background()
 	require.NoError(t, Migrate(ctx, cfg, SDKMigrations(), component(gammaV2)))

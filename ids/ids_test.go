@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNewIsVersion7AndOrdered(t *testing.T) {
+func TestNewIsVersion7AndOrdered(t *testing.T) { // P5.17
 	prev := New()
 	assert.Equal(t, 7, int(prev.Version()))
 	for i := 0; i < 1000; i++ {

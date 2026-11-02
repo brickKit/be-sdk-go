@@ -54,7 +54,7 @@ func enqueue(t *testing.T, d *db.DB, r *Runner, job string) string {
 	return id
 }
 
-func TestTwoReplicasRunACronSlotOnce(t *testing.T) { // P7.9, RT08
+func TestTwoReplicasRunACronSlotOnce(t *testing.T) { // P7.9, RT08, P7.1
 	d, admin := dbtest.Schema(t, "work1", nil)
 	// runs per slot: once started, the replicas also materialize the slots due by the database's clock (any day's
 	// 02:00 Berlin after the one this test plants), so the property is "every slot runs once", not "one run"
@@ -139,7 +139,7 @@ func TestStopReleasesTheLeaseForAnotherReplica(t *testing.T) { // P7.8, RT07
 	assert.Equal(t, "b", completedBy.Load())
 }
 
-func TestATakenOverHolderCanCommitNothing(t *testing.T) { // P7.6, CK-WK-02, CK-WK-03
+func TestATakenOverHolderCanCommitNothing(t *testing.T) { // P7.6, CK-WK-02, CK-WK-03, P7.10, P7.2 (the operation ID kept on takeover; the identities' formats are not checked here)
 	d, admin := dbtest.Schema(t, "work3", nil)
 	job := Job{Name: "q", Kind: Queue, Effect: Local, Handle: func(context.Context, *Run) error { return nil }}
 	a, b := replica(d, time.Second, job), replica(d, time.Second, job)

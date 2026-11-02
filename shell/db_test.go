@@ -58,14 +58,14 @@ func dbConfig(schema string, extra ...string) map[string]string {
 	return m
 }
 
-func TestRefusesDatabaseMembersWithoutTheShellLoginRole(t *testing.T) {
+func TestRefusesDatabaseMembersWithoutTheShellLoginRole(t *testing.T) { // P5.1
 	js := served(t, Served{ComponentID: "demo/sha", Version: "0.1.0", HTTPPort: 18081, Config: dbConfig("sha")})
 	out := refuse(t, shellEnv(18080, js), buildInfo(map[string]string{"demo/sha": "v0.1.0"}), dbDef("demo/sha", "SELECT 1;"))
 	assert.Contains(t, out, `be/go-core:PG_SHELL_USER`)
 	assert.Contains(t, out, "a hosted member owns a database")
 }
 
-func TestRefusesMembersOfOneTargetThatDisagreeOnPreparedStatements(t *testing.T) {
+func TestRefusesMembersOfOneTargetThatDisagreeOnPreparedStatements(t *testing.T) { // P5.3 (the shell's refusal; the CacheDescribe mode itself is not checked here)
 	js := served(t, Served{ComponentID: "demo/sha", Version: "0.1.0", HTTPPort: 18081, Config: dbConfig("sha")},
 		Served{ComponentID: "demo/shb", Version: "0.1.0", HTTPPort: 18082, Config: dbConfig("shb", "PG_POOLER_PREPARED", "false")},
 		// another target may differ

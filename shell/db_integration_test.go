@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMembersShareOnePoolAndNeverEachOthersSchema(t *testing.T) {
+func TestMembersShareOnePoolAndNeverEachOthersSchema(t *testing.T) { // P5.1, CK-DB-01
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	admin := pgtest.Admin(t, pgtest.Database)
 	pgtest.Role(t, admin, "sdk_shell_t", "shell-t-pw")

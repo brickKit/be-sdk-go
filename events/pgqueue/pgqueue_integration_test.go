@@ -240,7 +240,7 @@ func medianClaim(t *testing.T, tr *Transport, s events.SubscriptionSpec) time.Du
 	return took[len(took)/2]
 }
 
-func TestABacklogDoesNotSlowEachClaim(t *testing.T) { // P6.23
+func TestABacklogDoesNotSlowEachClaim(t *testing.T) { // P6.23, P6.28
 	// every claim used to scan the subscription's whole backlog first: the more behind, the slower each message,
 	// so a subscriber that once fell behind could not catch up
 	// on its own bus, whose tables have never been analyzed: the statistics lag behind a backlog that just arrived,
