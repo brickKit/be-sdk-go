@@ -18,7 +18,7 @@ import (
 // first fetch failed); the first burst of requests meets no keys at all. One refresh is made and every request of the
 // burst waits for it, instead of the ones after the first answering DEPENDENCY_UNAVAILABLE at once (P8.2; step 13
 // smoke, K13-E1: two of eight confirmations on a quiet sales replica failed so).
-func TestConcurrentRequestsWaitForTheRefreshInFlight(t *testing.T) {
+func TestConcurrentRequestsWaitForTheRefreshInFlight(t *testing.T) { // CK-ID-01
 	f, cases := loadJWT(t)
 	var valid string
 	for _, raw := range cases {
