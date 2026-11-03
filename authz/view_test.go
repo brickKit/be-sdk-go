@@ -21,6 +21,7 @@ type fakeSource struct {
 	delay    time.Duration
 	clock    *time.Duration
 	badNonce bool
+	readOnly bool
 }
 
 func (f *fakeSource) Verify(_ context.Context, req VerifyRequest) (VerifyAnswer, error) {
@@ -31,7 +32,7 @@ func (f *fakeSource) Verify(_ context.Context, req VerifyRequest) (VerifyAnswer,
 	}
 	a := VerifyAnswer{Nonce: n, RecoveryGeneration: Revision{Domain: "authz.recovery", Value: f.gen}}
 	s := f.shard
-	a.Shards = []ShardAnswer{{Shard: "orders", Status: f.status, View: &s}}
+	a.Shards = []ShardAnswer{{Shard: "orders", Status: f.status, View: &s, ReadOnly: f.readOnly}}
 	return a, nil
 }
 
@@ -79,6 +80,55 @@ func TestValidityCountsFromTheRequest(t *testing.T) { // P8.10, CK-AZ-03
 	require.NoError(t, err)
 	*now = sent + 30*time.Second
 	_, err = h.Lookup("demo.order", alice, "low")
+	expired(t, err)
+}
+
+func TestReadOnlyRenewalLeavesTheHighRiskValidity(t *testing.T) { // P8.11, security 03 (renewal and closing)
+	src := &fakeSource{gen: "1", status: "changed", shard: shard()}
+	h, now := holderWith(src)
+	require.NoError(t, h.Verify(context.Background()))
+	full := *now
+	_, err := h.Lookup("demo.order", alice, "high")
+	require.NoError(t, err, "the precondition: a full renewal is valid for high-risk operations")
+
+	src.status, src.readOnly = "unchanged", true
+	*now = full + 3*time.Second
+	require.NoError(t, h.Verify(context.Background()))
+	g, err := h.Lookup("demo.order", alice, "high")
+	require.NoError(t, err)
+	assert.Equal(t, full+time.Duration(float64(WHigh)*(1-Drift)), g.Cutoff, "the high-risk cutoff stays at the full renewal")
+	g, err = h.Lookup("demo.order", alice, "low")
+	require.NoError(t, err)
+	assert.Equal(t, *now+time.Duration(float64(WRead)*(1-Drift)), g.Cutoff, "ordinary reads are renewed")
+
+	src.status = "changed" // a new view, still read-only: it keeps the old high-risk validity
+	src.shard.Digest = "sha256:2"
+	*now = full + 4*time.Second
+	require.NoError(t, h.Verify(context.Background()))
+	g, err = h.Lookup("demo.order", alice, "high")
+	require.NoError(t, err)
+	assert.Equal(t, full+time.Duration(float64(WHigh)*(1-Drift)), g.Cutoff)
+
+	*now = full + WHigh
+	_, err = h.Lookup("demo.order", alice, "high")
+	expired(t, err)
+	_, err = h.Lookup("demo.order", alice, "low")
+	require.NoError(t, err, "ordinary reads go on")
+
+	src.readOnly = false // the source caught up: a full renewal opens high-risk operations again
+	require.NoError(t, h.Verify(context.Background()))
+	_, err = h.Lookup("demo.order", alice, "high")
+	require.NoError(t, err)
+}
+
+func TestAReadOnlyFirstViewIsNotValidForHighRisk(t *testing.T) { // P8.11
+	src := &fakeSource{gen: "1", status: "changed", shard: shard(), readOnly: true}
+	h, now := holderWith(src)
+	*now = time.Second // just after the machine started: a zero high-risk renewal time would still look valid
+	require.NoError(t, h.Verify(context.Background()))
+	_, err := h.Lookup("demo.order", alice, "low")
+	require.NoError(t, err)
+	_, err = h.Lookup("demo.order", alice, "high")
 	expired(t, err)
 }
 

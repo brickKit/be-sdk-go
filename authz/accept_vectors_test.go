@@ -32,6 +32,7 @@ func TestViewAcceptVectors(t *testing.T) {
 				Instance string
 				Shards   []struct {
 					Shard, Status string
+					ReadOnly      bool `json:"read_only"`
 					View          *struct {
 						SecurityRevisions []Revision `json:"security_revisions"`
 					}
@@ -53,12 +54,12 @@ func TestViewAcceptVectors(t *testing.T) {
 		}
 		for name, s := range c.Held.Shards {
 			h.shards[name] = &held{shard: Shard{Shard: name, SecurityRevisions: s.Revisions, Digest: "old"}, sentAt: before,
-				stopped: s.Stopped, suspended: s.Suspended}
+				highAt: before, hasHigh: true, stopped: s.Stopped, suspended: s.Suspended}
 		}
 		ans := VerifyAnswer{Instance: c.Answer.Instance,
 			RecoveryGeneration: Revision{Domain: "authz.recovery", Value: strconv.FormatInt(c.Answer.Recovery, 10)}}
 		for _, a := range c.Answer.Shards {
-			sa := ShardAnswer{Shard: a.Shard, Status: a.Status}
+			sa := ShardAnswer{Shard: a.Shard, Status: a.Status, ReadOnly: a.ReadOnly}
 			if a.View != nil {
 				sa.View = &Shard{Shard: a.Shard, SecurityRevisions: a.View.SecurityRevisions, Digest: "new"}
 			}
@@ -70,17 +71,29 @@ func TestViewAcceptVectors(t *testing.T) {
 			got[name] = "dropped"
 		}
 		for name, s := range h.shards {
+			fresh, carried := s.hasHigh && s.highAt == sent, s.hasHigh && s.highAt == before
 			switch {
 			case s.stopped:
 				got[name] = "stopped"
 			case s.suspended:
 				got[name] = "suspended"
-			case s.sentAt == sent && s.shard.Digest == "new":
-				got[name] = "replaced"
-			case s.sentAt == sent:
-				got[name] = "renewed"
-			default:
+			case s.sentAt != sent:
 				got[name] = "kept"
+				if !carried {
+					got[name] = "kept with its high-risk validity changed"
+				}
+			case s.shard.Digest == "new" && fresh:
+				got[name] = "replaced"
+			case s.shard.Digest == "new" && carried:
+				got[name] = "replaced_read"
+			case s.shard.Digest == "new" && !s.hasHigh:
+				got[name] = "adopted_read"
+			case fresh:
+				got[name] = "renewed"
+			case carried:
+				got[name] = "renewed_read"
+			default:
+				got[name] = "renewed with no high-risk validity"
 			}
 		}
 		assert.Equal(t, c.Expect.Answer == "accepted", accepted, c.ID)

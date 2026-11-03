@@ -32,7 +32,7 @@ func (g GRPCSource) Verify(ctx context.Context, req VerifyRequest) (VerifyAnswer
 	a := VerifyAnswer{Nonce: out.GetNonce(), ComputedAt: out.GetComputedAt(), Instance: out.GetInstance(),
 		RecoveryGeneration: Revision{Domain: rg.GetDomain(), Value: rg.GetValue(), Epoch: rg.GetEpoch(), Instance: rg.GetInstance()}}
 	for _, s := range out.GetShards() {
-		sa := ShardAnswer{Shard: s.GetShard()}
+		sa := ShardAnswer{Shard: s.GetShard(), ReadOnly: s.GetReadOnly()}
 		switch s.GetStatus() {
 		case authzv3.ShardStatus_SHARD_STATUS_UNCHANGED:
 			sa.Status = "unchanged"

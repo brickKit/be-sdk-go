@@ -70,6 +70,8 @@ type ShardAnswer struct {
 	Shard  string `json:"shard"`
 	Status string `json:"status"` // unchanged, changed, closed
 	View   *Shard `json:"view,omitempty"`
+	// ReadOnly: renewed for ordinary reads only; the high-risk validity does not move (P8.11).
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // VerifyAnswer is be.security.view_verify_answer; views arrive checked (schema, canonical bytes, digest).
@@ -89,6 +91,10 @@ type Source interface {
 type held struct {
 	shard  Shard
 	sentAt time.Duration // suspend-aware reading when the request that renewed it was sent
+	// highAt is sentAt of the last renewal that was not read-only; hasHigh is false until there was one, and the
+	// shard is then not valid for high-risk operations.
+	highAt  time.Duration
+	hasHigh bool
 	// stopped: its revisions went back under the same recovery generation; unusable until a higher one.
 	stopped bool
 	// suspended: a whole answer was a rollback; unusable until an accepted answer renews or replaces it.
@@ -233,6 +239,9 @@ func (h *Holder) apply(ans VerifyAnswer, gen int64, sent time.Duration) bool {
 		case "unchanged":
 			if ok && !s.stopped {
 				s.sentAt, s.suspended = sent, false
+				if !a.ReadOnly {
+					s.highAt, s.hasHigh = sent, true
+				}
 			}
 		case "changed":
 			switch {
@@ -241,8 +250,12 @@ func (h *Holder) apply(ans VerifyAnswer, gen int64, sent time.Duration) bool {
 				s.stopped = true
 				h.Log.Error("an authorization view shard went back under the same recovery generation; it is stopped until the recovery generation advances",
 					"shard", a.Shard)
-			default:
+			case a.ReadOnly && ok: // the high-risk validity carries over from the shard it replaces
+				h.shards[a.Shard] = &held{shard: *a.View, sentAt: sent, highAt: s.highAt, hasHigh: s.hasHigh}
+			case a.ReadOnly:
 				h.shards[a.Shard] = &held{shard: *a.View, sentAt: sent}
+			default:
+				h.shards[a.Shard] = &held{shard: *a.View, sentAt: sent, highAt: sent, hasHigh: true}
 			}
 		case "closed": // not renewed: it runs out on its own
 		}
@@ -294,10 +307,12 @@ type Grant struct {
 	SecurityVersion int64
 }
 
-// Lookup finds the subject's segments for a resource type in a valid shard; risk high uses W_high.
+// Lookup finds the subject's segments for a resource type in a valid shard; risk high uses W_high, counted from the
+// last renewal that was not read-only (P8.11).
 func (h *Holder) Lookup(resourceType, principal string, risk string) (Grant, error) {
+	high := risk == "high"
 	w := WRead
-	if risk == "high" {
+	if high {
 		w = WHigh
 	}
 	valid := time.Duration(float64(w) * (1 - Drift))
@@ -305,7 +320,12 @@ func (h *Holder) Lookup(resourceType, principal string, risk string) (Grant, err
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for _, s := range h.shards {
-		if s.stopped || s.suspended || !slices.Contains(s.shard.Applicability, resourceType) || now >= s.sentAt+valid {
+		from := s.sentAt
+		if high {
+			from = s.highAt
+		}
+		if s.stopped || s.suspended || !slices.Contains(s.shard.Applicability, resourceType) || (high && !s.hasHigh) ||
+			now >= from+valid {
 			continue
 		}
 		entry := s.shard.Subjects[principal]
@@ -317,7 +337,7 @@ func (h *Holder) Lookup(resourceType, principal string, risk string) (Grant, err
 				}
 			}
 		}
-		return Grant{Segments: segs, Cutoff: s.sentAt + valid, SecurityVersion: entry.SecurityVersion}, nil
+		return Grant{Segments: segs, Cutoff: from + valid, SecurityVersion: entry.SecurityVersion}, nil
 	}
 	return Grant{}, errs.New(errs.ReasonAuthorizationViewExpired, "no valid authorization view").With("resource_type", resourceType)
 }
