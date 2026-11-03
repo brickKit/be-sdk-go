@@ -169,13 +169,20 @@ func (ww *wmWorld) step(n int) {
 	}
 }
 
+// judge is Judge; every call also asks JudgeMany, with another record beside it, and requires the same verdict.
 func (ww *wmWorld) judge(id string) string {
 	var got string
+	var many Judgement
 	require.NoError(ww.t, ww.con.BackgroundTx(context.Background(), func(ctx context.Context, tx db.Tx) error {
 		var err error
-		got, err = ww.w.Judge(ctx, tx, id, []string{"person:" + id})
+		if got, err = ww.w.Judge(ctx, tx, id, []string{"person:" + id}); err != nil {
+			return err
+		}
+		many, err = ww.w.JudgeMany(ctx, tx, map[string][]string{id: {"person:" + id}, "p-beside": {"person:p-beside"}},
+			ww.w.Freshness)
 		return err
 	}))
+	require.Equal(ww.t, got, many.Records[id].Verdict, "JudgeMany agrees with Judge on %s", id)
 	return got
 }
 
@@ -514,4 +521,49 @@ func TestTheAlignmentUsesOnlyTheAdoptedSourcesReads(t *testing.T) { // CK-PJ-05,
 	require.ErrorIs(t, err, ErrOtherSource, "the snapshot declares another deployment")
 	assert.Equal(t, Aligning, ww.state(), "not aligned from another deployment's records")
 	assert.Equal(t, "", ww.name("p1"))
+}
+
+func TestJudgeManyAtTwoFreshnesses(t *testing.T) { // P9.24; security 03: high-risk and ordinary reads close apart
+	ww := newWMWorld(t, "wm_many")
+	ww.set("p1", "Ann")
+	ww.set("p2", "Bob")
+	ww.step(3) // adopt, align, the first pull after it
+	require.Equal(t, Usable, ww.judge("p1"), "the precondition: a fresh watermark")
+	many := func(within time.Duration) (j Judgement) {
+		require.NoError(t, ww.con.BackgroundTx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+			var err error
+			j, err = ww.w.JudgeMany(ctx, tx, map[string][]string{"p1": {"person:p1"}, "p2": {"person:p2"},
+				"nobody": {"person:nobody"}}, within)
+			return err
+		}))
+		return j
+	}
+	j := many(time.Minute)
+	assert.Equal(t, Usable, j.Source)
+	assert.True(t, j.HasWatermark)
+	assert.Less(t, j.Age, ww.w.Freshness)
+	assert.Equal(t, Usable, j.Records["p1"].Verdict)
+	assert.JSONEq(t, `{"id":"p1","name":"Ann"}`, string(j.Records["p1"].Data))
+	assert.EqualValues(t, 1, j.Records["p2"].Version)
+	assert.Equal(t, Judged{Verdict: ProvablyAbsent}, j.Records["nobody"])
+
+	time.Sleep(300 * time.Millisecond)
+	j = many(100 * time.Millisecond) // the same watermark, held to a tighter freshness
+	assert.Equal(t, Unprovable, j.Source)
+	assert.Equal(t, Judged{Verdict: Unprovable, Version: 1}, j.Records["p1"], "no content of a record that is not usable")
+	assert.Equal(t, Unprovable, j.Records["nobody"].Verdict)
+	assert.Greater(t, j.Age, 300*time.Millisecond, "the age is there to compare with another freshness")
+
+	ww.step(1)
+	time.Sleep(ww.w.Freshness/2 + 200*time.Millisecond)
+	ww.step(1) // a fresh watermark again
+	require.Equal(t, Usable, many(time.Minute).Source, "the precondition: fresh again")
+	pgtest.Exec(t, ww.conAdmin, "UPDATE be_projection SET epoch = '0.9' WHERE projection = 'people' AND record_id = 'p2'")
+	assert.Equal(t, Unprovable, ww.judge("p2"), "a row of another epoch than the adopted one")
+	assert.Equal(t, Unprovable, many(time.Minute).Records["p2"].Verdict)
+	pgtest.Exec(t, ww.conAdmin, "UPDATE be_watermark_partition SET echo_mp = NULL WHERE projection = 'people' AND partition = 1")
+	assert.Equal(t, Unprovable, ww.judge("p1"), "a partition without an echo: no watermark")
+	j = many(time.Minute)
+	assert.Equal(t, Unprovable, j.Source)
+	assert.False(t, j.HasWatermark)
 }

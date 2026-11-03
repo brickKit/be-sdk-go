@@ -452,6 +452,7 @@
         "events.TestAPullPagesWithTheEchoOnTheLastPage",
         "events.TestThePullChecksTheRowAtThePosition",
         "projection.TestWatermarkJudgeVectors",
+        "projection.TestJudgeManyAtTwoFreshnesses",
         "projection.TestWatermarkEpochVectors",
         "projection.TestWatermarkPullOutcomeVectors",
         "projection.TestWatermarkValueVectors",

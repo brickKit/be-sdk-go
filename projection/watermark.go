@@ -414,6 +414,112 @@ func (w *Watermarked) Judge(ctx context.Context, tx db.Tx, recordID string, subj
 	return Judge(in), nil
 }
 
+// Judged is one record's judgement and, when it is usable, what the projection holds of it.
+type Judged struct {
+	Verdict string // Usable, ProvablyAbsent or Unprovable
+	Version int64
+	Data    json.RawMessage
+}
+
+// Judgement is JudgeMany's answer: every asked record's judgement, and the source's own state, so a caller can hold
+// it to another freshness too (security 03: high-risk and ordinary reads close at different watermark ages).
+type Judgement struct {
+	Source       string // Usable when aligned, serving and the watermark no older than asked; Unprovable otherwise
+	HasWatermark bool
+	Age          time.Duration // the watermark's age on the consumer primary's clock
+	Records      map[string]Judged
+}
+
+// JudgeMany judges many records at once by the same table as Judge (P9.24), at the freshness within: asked maps each
+// record ID to the subjects behind it. One statement reads the watermark, the quarantine of the subjects and the rows,
+// so they come from one snapshot; a decision over a whole view does not cost a statement per record.
+func (w *Watermarked) JudgeMany(ctx context.Context, tx db.Tx, asked map[string][]string, within time.Duration) (Judgement, error) {
+	ids := make([]string, 0, len(asked))
+	subjects := []string{}
+	for id, subs := range asked {
+		ids = append(ids, id)
+		subjects = append(subjects, subs...)
+	}
+	rows, err := tx.Query(ctx, `WITH src AS (SELECT status, coalesce(impl, '') AS impl, coalesce(epoch, '') AS epoch
+				FROM be_projection_source WHERE projection = $1),
+			wm AS (SELECT CASE WHEN count(*) FILTER (WHERE echo_mp IS NULL) > 0 OR count(*) = 0 THEN NULL
+				ELSE extract(epoch FROM now() - min(echo_mp))::float8 END AS age
+				FROM be_watermark_partition WHERE projection = $1),
+			q AS (SELECT coalesce(array_agg(DISTINCT subject), '{}') AS subjects FROM be_watermark_quarantine
+				WHERE projection = $1 AND subject = ANY($3))
+		SELECT src.status, src.impl, src.epoch, wm.age, q.subjects, r.record_id, r.state, r.version, r.data, r.impl, r.epoch
+		FROM src CROSS JOIN wm CROSS JOIN q
+			LEFT JOIN be_projection r ON r.projection = $1 AND r.record_id = ANY($2)`, w.Name, ids, subjects)
+	if err != nil {
+		return Judgement{}, err
+	}
+	defer rows.Close()
+	var status, impl, epoch string
+	var age *float64
+	var quarantined []string
+	found := map[string]struct {
+		state, impl, epoch string
+		version            int64
+		data               json.RawMessage
+	}{}
+	seen := false
+	for rows.Next() {
+		var id, state, rImpl, rEpoch *string
+		var version *int64
+		var data []byte
+		if err := rows.Scan(&status, &impl, &epoch, &age, &quarantined, &id, &state, &version, &data, &rImpl, &rEpoch); err != nil {
+			return Judgement{}, err
+		}
+		seen = true
+		if id != nil {
+			found[*id] = struct {
+				state, impl, epoch string
+				version            int64
+				data               json.RawMessage
+			}{deref(state), deref(rImpl), deref(rEpoch), *version, data}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return Judgement{}, err
+	}
+	if !seen {
+		return Judgement{}, fmt.Errorf("projection %s: the watermark source is not installed", w.Name)
+	}
+	q := map[string]bool{}
+	for _, s := range quarantined {
+		q[s] = true
+	}
+	base := JudgeInput{WatermarkSource: true, SourceState: status, ProjectionState: ServingState, Freshness: within.Seconds()}
+	out := Judgement{Source: Unprovable, Records: make(map[string]Judged, len(asked))}
+	if age != nil {
+		base.HasWatermark, base.WatermarkAge = true, *age
+		out.HasWatermark, out.Age = true, time.Duration(*age*float64(time.Second))
+	}
+	if Judge(base) != Unprovable { // the source rows of the table, before any record is read
+		out.Source = Usable
+	}
+	for id, subs := range asked {
+		in := base
+		for _, s := range subs {
+			in.Quarantined = in.Quarantined || q[s]
+		}
+		j := Judged{}
+		if r, ok := found[id]; ok {
+			in.Row = &JudgedRow{State: r.state, Adopted: r.impl == impl && r.epoch == epoch}
+			j.Version = r.version
+			if r.state == Complete {
+				j.Data = r.data
+			}
+		}
+		j.Verdict = Judge(in)
+		if j.Verdict != Usable {
+			j.Data = nil
+		}
+		out.Records[id] = j
+	}
+	return out, nil
+}
+
 // Confirm records an operator's confirmation that a blocked source's configuration is corrected (P9.26); the next
 // primary answer decides.
 func (w *Watermarked) Confirm(ctx context.Context) error {
