@@ -11,6 +11,7 @@ import (
 
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/internal/dbtest"
+	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
 	"github.com/brickKit/be-sdk-go/v3/projection"
 	"github.com/stretchr/testify/require"
 )
@@ -268,4 +269,22 @@ func TestInputsForANewRecordAreSerialized(t *testing.T) { // P9.11: a delete is 
 	require.NoError(t, <-done)
 	require.False(t, out.Changed)
 	require.Equal(t, row{projection.Tombstone, 2, ""}, get(t, d, p, "n"))
+}
+
+// Model 14's FAILOVER: after a failover the new epoch reuses versions with other content; while the projection
+// re-fetches, an input of the adopted (new) epoch with a lower version lands on a row of the older epoch. Versions are
+// compared only within one epoch: it overwrites.
+func TestANewEpochsInputOverwritesAnOlderEpochsRow(t *testing.T) { // P9.11, CK-PJ-03
+	d, admin := dbtest.Schema(t, "proj_epochs", nil)
+	p := projection.Projection{Name: "partners"}
+	src := newSource()
+	src.put("a", 10, `{"n":"a10"}`)
+	require.NoError(t, p.Align(context.Background(), d, src))
+	require.Equal(t, row{projection.Complete, 10, `{"n": "a10"}`}, get(t, d, p, "a"))
+	// the source failed over and lost its last commits: the adopted epoch moves on, the row is still of the old one
+	pgtest.Exec(t, admin, "UPDATE be_projection_source SET epoch = '1.2' WHERE projection = 'partners'")
+	apply(t, d, p, projection.Input{RecordID: "a", Kind: projection.Full, Version: 3, Impl: "impl-2", Epoch: "1.2",
+		Data: json.RawMessage(`{"n":"a3-new"}`)})
+	require.Equal(t, row{projection.Complete, 3, `{"n": "a3-new"}`}, get(t, d, p, "a"),
+		"a lower version of the new epoch overwrites the old epoch's row")
 }

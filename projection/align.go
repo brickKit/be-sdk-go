@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 
 	"github.com/brickKit/be-sdk-go/v3/db"
 )
@@ -135,7 +137,9 @@ func (p Projection) alignTo(ctx context.Context, d *db.DB, src Source, impl, epo
 		}
 		cursor = next
 	}
-	// local rows the snapshot did not touch
+	// local rows the snapshot did not touch; every round writes its rows with this generation, so a round that finds
+	// the same rows again made no progress and would loop forever
+	var last []string
 	for {
 		var ids []string
 		if err := d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
@@ -159,6 +163,10 @@ func (p Projection) alignTo(ctx context.Context, d *db.DB, src Source, impl, epo
 		if len(ids) == 0 {
 			break
 		}
+		if slices.Equal(ids, last) {
+			return fmt.Errorf("projection %s: the re-fetch wrote none of %d rows read by ID; it stops", p.Name, len(ids))
+		}
+		last = ids
 		results, err := src.Read(ctx, ids)
 		if err != nil {
 			return err

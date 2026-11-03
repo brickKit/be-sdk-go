@@ -278,7 +278,8 @@
         "work.TestAnIdleMemberClaimsOncePerPoll",
         "work.TestAPollSpreadsABacklogOverTheWorkers",
         "work.TestTheSchedulerMaterializesASlotWhenItComes",
-        "work.TestNextIsTheFirstSlotAfter"
+        "work.TestNextIsTheFirstSlotAfter",
+        "work.TestALostClaimCannotCommitUnderAReusedCounter"
       ],
       "pending": [
         {
@@ -404,6 +405,7 @@
     "projections": {
       "status": "verified",
       "evidence": [
+        "projection.TestANewEpochsInputOverwritesAnOlderEpochsRow",
         "projection.TestProjectionApplyVectors",
         "projection.TestAlignMatchesSource",
         "projection.TestOlderAlignmentDiscarded",

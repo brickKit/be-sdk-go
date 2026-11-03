@@ -475,3 +475,35 @@ func TestAnIdempotentExternalTakeoverKeepsTheKeysAndTheRecordedCall(t *testing.T
 	require.NoError(t, rb.RecordCall(context.Background(), key, "effective"))
 	require.NoError(t, rb.Complete(context.Background(), nil))
 }
+
+// Model 37's ONE_HOLDER: a lossy restore loses A's claim with the last commits and advances the recovery generation;
+// B claims the item and gets the same claim counter again. A, still running, must not commit: holders compare the
+// database epoch they obtained with their own claim, not the row's claim epoch with the current one.
+func TestALostClaimCannotCommitUnderAReusedCounter(t *testing.T) { // CK-WK-03, P7.6
+	d, admin := dbtest.Schema(t, "work_reuse", nil)
+	job := Job{Name: "q", Kind: Queue, Effect: Local, Handle: func(context.Context, *Run) error { return nil }}
+	a, b := replica(d, 30*time.Second, job), replica(d, 30*time.Second, job)
+	id := enqueue(t, d, a, "q")
+	ra, err := a.claim(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, ra)
+	pgtest.Exec(t, admin, `UPDATE be_work_item SET state = 'pending', epoch = 0, attempts = 0, holder = NULL,
+		lease_until = NULL, claim_db_generation = NULL, claim_db_timeline = NULL WHERE id = '`+id+`'`,
+		"UPDATE be_recovery_generation SET generation = generation + 1")
+	rb, err := b.claim(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, rb)
+	require.Equal(t, ra.epoch, rb.epoch, "precondition: the claim counter was handed out again")
+	require.NotEqual(t, ra.gen, rb.gen, "precondition: in a larger recovery generation")
+	effect := func(ctx context.Context, tx db.Tx) error {
+		_, err := tx.Exec(ctx, "INSERT INTO items VALUES ($1)", ids.New())
+		return err
+	}
+	assert.ErrorIs(t, ra.Complete(context.Background(), effect), ErrLost, "the lost claim commits nothing")
+	var n int
+	require.NoError(t, admin.QueryRow(context.Background(), "SELECT count(*) FROM items").Scan(&n))
+	assert.Zero(t, n)
+	require.NoError(t, rb.Complete(context.Background(), effect))
+	require.NoError(t, admin.QueryRow(context.Background(), "SELECT count(*) FROM items").Scan(&n))
+	assert.Equal(t, 1, n, "the holder of the new epoch does")
+}
