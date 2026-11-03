@@ -764,7 +764,8 @@ func (w *Watermarked) align(ctx context.Context, st *wmState) error {
 			}
 			return w.saveState(ctx, tx, st)
 		}}
-	err := w.Projection.alignTo(ctx, w.DB, w.Snapshot, st.adopted.Impl, st.adopted.Epoch, h)
+	err := w.Projection.alignTo(ctx, w.DB, w.Snapshot,
+		Identity{Deployment: w.Deployment, Impl: st.adopted.Impl, Epoch: st.adopted.Epoch}, h)
 	if err == nil {
 		w.Log.Info("a watermark source was re-fetched", "event", "watermark_aligned", "projection", w.Name)
 	}

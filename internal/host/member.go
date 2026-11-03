@@ -100,6 +100,7 @@ type Member struct {
 	// forwarder and consumers run between Start and Stop.
 	forwarder *events.Forwarder
 	watermark *events.WatermarkSource // answers pulls when the member has watermark streams
+	records   *events.RecordSource    // answers batch reads and snapshots when the member's streams declare them
 	consumers []*events.Consumer
 	subs      []events.Subscription
 	transport events.Transport

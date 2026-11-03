@@ -10,6 +10,9 @@ managed:
       path: be/source/v1/watermark.proto
       value: github.com/brickKit/be-sdk-go/v3/internal/sourcepb
     - file_option: go_package
+      path: be/source/v1/records.proto
+      value: github.com/brickKit/be-sdk-go/v3/internal/sourcepb
+    - file_option: go_package
       path: be/session/v1/session.proto
       value: github.com/brickKit/be-sdk-go/v3/sessionpb
 plugins:

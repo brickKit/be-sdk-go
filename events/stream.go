@@ -17,6 +17,8 @@ type Stream struct {
 	// Watermark declares the stream a watermark source (P9.13): every event lists its subjects, and the member answers
 	// pulls of it; nil: an ordinary stream.
 	Watermark *Watermark
+	// Records declares the stream's batch read and snapshot (P9.30); a watermark stream must. nil: no reads.
+	Records *Records
 }
 
 // Watermark is what a watermark source's stream declares (P9.13).
@@ -41,6 +43,19 @@ func (s Stream) Validate() error {
 	}
 	if w := s.Watermark; w != nil && (w.Operation == "" || len(w.Pullers) == 0) {
 		return fmt.Errorf("stream %s: a watermark source declares the pull's operation and who may pull it", s.Name)
+	}
+	if r := s.Records; r != nil && (r.Operation == "" || len(r.Readers) == 0 || r.Read == nil || r.Page == nil) {
+		return fmt.Errorf("stream %s: record reads declare the operation, who may read, and both read functions", s.Name)
+	}
+	if w := s.Watermark; w != nil {
+		if s.Records == nil {
+			return fmt.Errorf("stream %s: a watermark source declares its record reads (P9.30)", s.Name)
+		}
+		for _, c := range w.Pullers {
+			if !contains(s.Records.Readers, c) {
+				return fmt.Errorf("stream %s: puller %s is not among the record readers (P9.30)", s.Name, c)
+			}
+		}
 	}
 	return nil
 }

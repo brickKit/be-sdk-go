@@ -29,7 +29,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"google.golang.org/grpc"
 	"testing/fstest"
 )
 
@@ -48,11 +47,57 @@ type wmWorld struct {
 }
 
 var peopleStream = events.Stream{Name: "demo.people", Partitions: 2,
-	Watermark: &events.Watermark{Operation: "demo/wmsrc.pull", Pullers: []string{"demo/wmcon"}}}
+	Watermark: &events.Watermark{Operation: "demo/wmsrc.pull", Pullers: []string{"demo/wmcon"}},
+	Records:   &events.Records{Operation: "demo/wmsrc.read", Readers: []string{"demo/wmcon"}, Read: readPeople, Page: pagePeople}}
+
+// readPeople and pagePeople are the source's record reads (P9.30), straight from its table.
+func readPeople(ctx context.Context, tx db.Tx, ids []string) ([]events.ReadResult, error) {
+	var out []events.ReadResult
+	for _, id := range ids {
+		var v int64
+		var name string
+		var deleted bool
+		err := tx.QueryRow(ctx, "SELECT version, name, deleted FROM people WHERE id = $1", id).Scan(&v, &name, &deleted)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			out = append(out, events.ReadResult{ID: id, State: events.Purged})
+		case err != nil:
+			return nil, err
+		case deleted:
+			out = append(out, events.ReadResult{ID: id, State: events.Tombstone, Version: v})
+		default:
+			out = append(out, events.ReadResult{ID: id, State: events.Exists, Version: v,
+				Data: map[string]string{"id": id, "name": name}})
+		}
+	}
+	return out, nil
+}
+
+func pagePeople(ctx context.Context, tx db.Tx, after string, limit int) ([]events.Record, error) {
+	rows, err := tx.Query(ctx, "SELECT id, version, name FROM people WHERE NOT deleted AND id > $1 ORDER BY id COLLATE \"C\" LIMIT $2",
+		after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []events.Record
+	for rows.Next() {
+		var id, name string
+		var v int64
+		if err := rows.Scan(&id, &v, &name); err != nil {
+			return nil, err
+		}
+		out = append(out, events.Record{ID: id, Version: v, Data: map[string]string{"id": id, "name": name}})
+	}
+	return out, rows.Err()
+}
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-func newWMWorld(t testing.TB, name string) *wmWorld {
+func newWMWorld(t testing.TB, name string) *wmWorld { return newWMWorldReading(t, name, "dep-1") }
+
+// newWMWorldReading's source answers its record reads declaring readsDeployment (another one: a misconfiguration).
+func newWMWorldReading(t testing.TB, name, readsDeployment string) *wmWorld {
 	ww := &wmWorld{t: t}
 	ww.src, ww.srcAdmin = dbtest.Schema(t, name+"_src", fstest.MapFS{"0001_people.up.sql": {Data: []byte(
 		"CREATE TABLE people (id text PRIMARY KEY, version bigint NOT NULL, name text, deleted boolean NOT NULL DEFAULT false);")}})
@@ -65,9 +110,14 @@ func newWMWorld(t testing.TB, name string) *wmWorld {
 	m, ok, err := source.Method()
 	require.NoError(t, err)
 	require.True(t, ok)
+	reads := &events.RecordSource{DB: ww.src, Producer: ww.producer, Impl: "impl-1", Deployment: readsDeployment, Log: quiet()}
+	rm, ok, err := reads.Method()
+	require.NoError(t, err)
+	require.True(t, ok)
 	world := sectest.New(t)
 	var services grpcx.Services
 	services.Register(&sourcepb.WatermarkService_ServiceDesc, source, map[string]grpcx.Method{"Pull": m})
+	services.Register(&sourcepb.RecordService_ServiceDesc, reads, map[string]grpcx.Method{"Read": rm, "Snapshot": rm})
 	member := obs.Member{ID: "demo/wmsrc", Version: "3.0.0"}
 	srv, err := grpcx.NewServer(grpcx.Deps{Member: member, Logger: obs.NewLogger(member, slog.LevelError, io.Discard),
 		Registry: prometheus.NewRegistry(), Tracer: sdktrace.NewTracerProvider().Tracer("t"), TLS: world.TLS(t, "demo/wmsrc")}, &services)
@@ -84,7 +134,8 @@ func newWMWorld(t testing.TB, name string) *wmWorld {
 	require.NoError(t, err)
 	ww.failing.Store("")
 	ww.w = &Watermarked{Projection: Projection{Name: "people"}, DB: ww.con, Source: "demo/wmsrc", Stream: peopleStream,
-		Deployment: "dep-1", Freshness: 4 * time.Second, Pull: grpcPuller{conn}, Snapshot: peopleSnapshot{ww.src}, Log: quiet(),
+		Deployment: "dep-1", Freshness: 4 * time.Second, Pull: PullClient{conn},
+		Snapshot: RecordClient{Conn: conn, Stream: "demo.people"}, Log: quiet(),
 		Input: func(e events.Received) (Input, error) {
 			if e.RecordID == ww.failing.Load().(string) {
 				return Input{}, errors.New("this record's input fails (the test)")
@@ -94,69 +145,6 @@ func newWMWorld(t testing.TB, name string) *wmWorld {
 		}}
 	require.NoError(t, ww.w.Install(context.Background()))
 	return ww
-}
-
-type grpcPuller struct{ conn *grpc.ClientConn }
-
-func (g grpcPuller) Pull(ctx context.Context, req *sourcepb.PullRequest) (*sourcepb.PullResponse, error) {
-	resp := new(sourcepb.PullResponse)
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	return resp, g.conn.Invoke(ctx, "/be.source.v1.WatermarkService/Pull", req, resp, calls.Idempotent())
-}
-
-// peopleSnapshot is the source's snapshot and batch read (S3), straight from its table.
-type peopleSnapshot struct{ d *db.DB }
-
-func (s peopleSnapshot) Snapshot(ctx context.Context, cursor string) ([]Record, string, error) {
-	var out []Record
-	err := s.d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
-		rows, err := tx.Query(ctx, "SELECT id, version, name FROM people WHERE NOT deleted AND id > $1 ORDER BY id", cursor)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id, name string
-			var v int64
-			if err := rows.Scan(&id, &v, &name); err != nil {
-				return err
-			}
-			b, _ := json.Marshal(map[string]string{"id": id, "name": name})
-			out = append(out, Record{ID: id, Version: v, Data: b})
-		}
-		return rows.Err()
-	})
-	return out, "", err
-}
-
-func (s peopleSnapshot) Read(ctx context.Context, ids []string) ([]ReadResult, error) {
-	var out []ReadResult
-	err := s.d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
-		for _, id := range ids {
-			var v int64
-			var name string
-			var deleted bool
-			err := tx.QueryRow(ctx, "SELECT version, name, deleted FROM people WHERE id = $1", id).Scan(&v, &name, &deleted)
-			switch {
-			case errors.Is(err, pgx.ErrNoRows):
-				out = append(out, ReadResult{ID: id, State: Purged})
-			case err != nil:
-				return err
-			case deleted:
-				out = append(out, ReadResult{ID: id, State: Gone, Version: v})
-			default:
-				b, _ := json.Marshal(map[string]string{"id": id, "name": name})
-				out = append(out, ReadResult{ID: id, State: Exists, Version: v, Data: b})
-			}
-		}
-		return nil
-	})
-	return out, err
-}
-
-func (s peopleSnapshot) Identity(context.Context) (string, string, error) {
-	return "", "", errors.New("a watermark source declares its identity in every response")
 }
 
 // set changes one person on the source and emits the event in the same transaction.
@@ -515,4 +503,15 @@ func BenchmarkAPullOf100Rows(b *testing.B) {
 		b.StartTimer()
 		require.NoError(b, ww.pullNow())
 	}
+}
+
+func TestTheAlignmentUsesOnlyTheAdoptedSourcesReads(t *testing.T) { // CK-PJ-05, P9.33
+	ww := newWMWorldReading(t, "wm_reads", "dep-2")
+	ww.set("p1", "Ann")
+	ww.step(1) // the first pull adopts the source (deployment dep-1): aligning
+	require.Equal(t, Aligning, ww.state(), "the precondition: the pull adopted the source")
+	err := ww.w.Step(context.Background())
+	require.ErrorIs(t, err, ErrOtherSource, "the snapshot declares another deployment")
+	assert.Equal(t, Aligning, ww.state(), "not aligned from another deployment's records")
+	assert.Equal(t, "", ww.name("p1"))
 }

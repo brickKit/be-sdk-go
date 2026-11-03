@@ -31,7 +31,8 @@ import (
 )
 
 var people = Stream{Name: "demo.people", Partitions: 1,
-	Watermark: &Watermark{Operation: "demo/wmsrc.pull", Pullers: []string{"demo/consumer"}}}
+	Watermark: &Watermark{Operation: "demo/wmsrc.pull", Pullers: []string{"demo/consumer"}},
+	Records:   tableRecords("people", "demo/consumer")} // the reads are not called here
 
 // watermarkSource provisions a source schema and serves its pull on a real system surface (mTLS).
 func watermarkSource(t *testing.T, name string, s ...Stream) (*db.DB, *pgx.Conn, *Producer, *sectest.World, string) {
@@ -129,7 +130,8 @@ func pulled(pages []*sourcepb.PullResponse) (records []string, types []string, e
 func TestOnlyTheDeclaredPullersMayPull(t *testing.T) { // CK-WM-01, P9.13
 	// two watermark streams, each with its own puller: the system surface admits both callers, the stream decides
 	teams := Stream{Name: "demo.teams", Partitions: 1,
-		Watermark: &Watermark{Operation: "demo/wmsrc.pull", Pullers: []string{"demo/other"}}}
+		Watermark: &Watermark{Operation: "demo/wmsrc.pull", Pullers: []string{"demo/other"}},
+		Records:   tableRecords("teams", "demo/other")}
 	d, _, p, w, addr := watermarkSource(t, "wmsrc1", people, teams)
 	_, err := pull(t, w, addr, "demo/other", &sourcepb.PullRequest{Stream: "demo.people", Nonce: nonce()})
 	assert.Equal(t, codes.PermissionDenied, status.Code(err), "a component the stream does not list")

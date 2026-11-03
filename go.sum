@@ -50,6 +50,10 @@ github.com/brickKit/be-protocol/v3 v3.0.0-alpha.53 h1:eE7Cj+Xfc4y9p5z18ZHbprxP9O
 github.com/brickKit/be-protocol/v3 v3.0.0-alpha.53/go.mod h1:eqJQ6fzJYtWspmJADXfVuXlY4++EQbAyrZWeABZH7SA=
 github.com/brickKit/be-protocol/v3 v3.0.0-alpha.56 h1:GbL078dppbNL/4rnS/I23M7FR7uTs0EmNJ/n4/VSJd8=
 github.com/brickKit/be-protocol/v3 v3.0.0-alpha.56/go.mod h1:eqJQ6fzJYtWspmJADXfVuXlY4++EQbAyrZWeABZH7SA=
+github.com/brickKit/be-protocol/v3 v3.0.0-alpha.57 h1:kCwYz3aC6CUXCwQkSH5Ezq3g1ew3PjUASmJBA0wgo+0=
+github.com/brickKit/be-protocol/v3 v3.0.0-alpha.57/go.mod h1:eqJQ6fzJYtWspmJADXfVuXlY4++EQbAyrZWeABZH7SA=
+github.com/brickKit/be-protocol/v3 v3.0.0-alpha.58 h1:8Hp40fsK3VSExTJQ5drXIrp00gMzlPn91rP26CeBXjE=
+github.com/brickKit/be-protocol/v3 v3.0.0-alpha.58/go.mod h1:eqJQ6fzJYtWspmJADXfVuXlY4++EQbAyrZWeABZH7SA=
 github.com/brickKit/contract-infra-authz/v3 v3.0.0-alpha.1 h1:NBvD5ihbPJQn7CYgsnwf7UYty4KTtgST9toaV5J6Tlc=
 github.com/brickKit/contract-infra-authz/v3 v3.0.0-alpha.1/go.mod h1:21N0lZKoL1STxtsx5Yi9Wh8cJ32gtsQuVF52oxMWaps=
 github.com/brickKit/contract-infra-authz/v3 v3.0.0-alpha.2 h1:1UlCdr/CF9As2arZh7KD/UMn8lnYMlMp7tHycbdoGBk=

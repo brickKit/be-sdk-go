@@ -196,6 +196,8 @@ func (m *Member) producer(values *config.Values, sh Shared) (*events.Producer, e
 		Impl: values.String("IMPLEMENTATION_INSTANCE"), Log: m.Logger}
 	m.watermark = &events.WatermarkSource{DB: sh.DB, Producer: p, Source: m.Def.ID, Impl: m.forwarder.Impl,
 		Deployment: values.String("DEPLOYMENT_ID"), Log: m.Logger}
+	m.records = &events.RecordSource{DB: sh.DB, Producer: p, Impl: m.forwarder.Impl,
+		Deployment: values.String("DEPLOYMENT_ID"), Log: m.Logger}
 	return p, nil
 }
 
@@ -325,6 +327,16 @@ func (m *Member) systemSurface(member obs.Member, rt *runtime.Runtime) error {
 		}
 		if ok {
 			services.Register(&sourcepb.WatermarkService_ServiceDesc, m.watermark, map[string]grpcx.Method{"Pull": method})
+		}
+	}
+	if m.records != nil { // the batch read and snapshot of the member's streams (P9.30)
+		method, ok, err := m.records.Method()
+		if err != nil {
+			return err
+		}
+		if ok {
+			services.Register(&sourcepb.RecordService_ServiceDesc, m.records,
+				map[string]grpcx.Method{"Read": method, "Snapshot": method})
 		}
 	}
 	if services.Empty() {

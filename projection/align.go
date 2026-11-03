@@ -32,14 +32,25 @@ type ReadResult struct {
 	Data    json.RawMessage
 }
 
-// Source is the projected component, read over its contract.
+// ErrOtherSource means a page was answered by a replica, or by another deployment, instance or epoch than the one the
+// alignment or repair runs for (P9.33): the page is discarded and the run fails; the next pull handles the change.
+var ErrOtherSource = errors.New("projection: the read was not answered by the adopted source's primary")
+
+// accepts is P9.33's check of one answer against what the run uses (an empty Deployment is not compared).
+func (d Identity) accepts(want Identity) error {
+	if !d.Primary || d.Impl != want.Impl || d.Epoch != want.Epoch || (want.Deployment != "" && d.Deployment != want.Deployment) {
+		return fmt.Errorf("%w: answered by %+v, the run uses %s/%s/%s", ErrOtherSource, d, want.Deployment, want.Impl, want.Epoch)
+	}
+	return nil
+}
+
+// Source is the projected component, read over its contract (RecordClient: be.source.v1.RecordService). Every
+// answer declares who answered.
 type Source interface {
-	// Snapshot returns one page of every record, in a stable order; an empty next ends it.
-	Snapshot(ctx context.Context, cursor string) (records []Record, next string, err error)
+	// Snapshot returns one page of every existing record, in a stable order; an empty next ends it.
+	Snapshot(ctx context.Context, cursor string) (records []Record, next string, from Identity, err error)
 	// Read answers by ID: current, deleted (with the deleting version) or purged; never "not found".
-	Read(ctx context.Context, ids []string) ([]ReadResult, error)
-	// Identity is the source's implementation instance and epoch as its responses declare them.
-	Identity(ctx context.Context) (impl, epoch string, err error)
+	Read(ctx context.Context, ids []string) ([]ReadResult, Identity, error)
 }
 
 // ErrReplaced means a newer alignment started while this one ran; its results were discarded.
@@ -49,12 +60,9 @@ var ErrReplaced = errAlignmentReplaced
 // adopted instance and epoch without comparing versions; local rows the snapshot did not contain read by ID
 // (tombstone, still there, or purged as a version-0 tombstone); then aligned. Every write checks that its
 // generation is still the current one, so results of an older alignment never land.
+// The source's identity is the first page's declaration; every later page and read must declare the same.
 func (p Projection) Align(ctx context.Context, d *db.DB, src Source) error {
-	impl, epoch, err := src.Identity(ctx)
-	if err != nil {
-		return err
-	}
-	return p.alignTo(ctx, d, src, impl, epoch, alignHooks{})
+	return p.alignTo(ctx, d, src, Identity{}, alignHooks{})
 }
 
 // alignHooks are what a watermark source adds to an alignment (P9.28): started runs once the generation began and
@@ -68,7 +76,10 @@ type alignHooks struct {
 	done     func(ctx context.Context, tx db.Tx, gen int64) error
 }
 
-func (p Projection) alignTo(ctx context.Context, d *db.DB, src Source, impl, epoch string, h alignHooks) error {
+// alignTo runs for want's identity; an empty want.Impl takes the first page's declaration (it must be a primary's).
+func (p Projection) alignTo(ctx context.Context, d *db.DB, src Source, want Identity, h alignHooks) error {
+	learn := want.Impl == ""
+	impl, epoch := want.Impl, want.Epoch
 	var gen int64
 	status := h.status
 	if status == "" {
@@ -76,8 +87,9 @@ func (p Projection) alignTo(ctx context.Context, d *db.DB, src Source, impl, epo
 	}
 	if err := d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
 		return tx.QueryRow(ctx, `INSERT INTO be_projection_source (projection, impl, epoch, align_gen, status)
-			VALUES ($1, $2, $3, 1, $4)
-			ON CONFLICT (projection) DO UPDATE SET impl = excluded.impl, epoch = excluded.epoch,
+			VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), 1, $4)
+			ON CONFLICT (projection) DO UPDATE SET impl = coalesce(excluded.impl, be_projection_source.impl),
+				epoch = coalesce(excluded.epoch, be_projection_source.epoch),
 				align_gen = be_projection_source.align_gen + 1, status = excluded.status
 			RETURNING align_gen`, p.Name, impl, epoch, status).Scan(&gen)
 	}); err != nil {
@@ -118,8 +130,24 @@ func (p Projection) alignTo(ctx context.Context, d *db.DB, src Source, impl, epo
 		return err
 	}
 	for cursor := ""; ; {
-		records, next, err := src.Snapshot(ctx, cursor)
+		records, next, from, err := src.Snapshot(ctx, cursor)
 		if err != nil {
+			return err
+		}
+		if learn {
+			if !from.Primary {
+				return fmt.Errorf("%w: a replica answered", ErrOtherSource)
+			}
+			want, impl, epoch, learn = from, from.Impl, from.Epoch, false
+			if err := write(func(ctx context.Context, tx db.Tx) error {
+				_, err := tx.Exec(ctx, "UPDATE be_projection_source SET impl = $2, epoch = $3 WHERE projection = $1",
+					p.Name, impl, epoch)
+				return err
+			}); err != nil {
+				return err
+			}
+		}
+		if err := from.accepts(want); err != nil {
 			return err
 		}
 		if err := write(func(ctx context.Context, tx db.Tx) error {
@@ -167,8 +195,11 @@ func (p Projection) alignTo(ctx context.Context, d *db.DB, src Source, impl, epo
 			return fmt.Errorf("projection %s: the re-fetch wrote none of %d rows read by ID; it stops", p.Name, len(ids))
 		}
 		last = ids
-		results, err := src.Read(ctx, ids)
+		results, from, err := src.Read(ctx, ids)
 		if err != nil {
+			return err
+		}
+		if err := from.accepts(want); err != nil {
 			return err
 		}
 		answered := map[string]bool{}
@@ -214,12 +245,8 @@ func (p Projection) alignTo(ctx context.Context, d *db.DB, src Source, impl, epo
 
 // Repair fetches the incomplete rows' current state and applies it (protocol 02, "repairing incomplete rows"); it
 // returns how many rows changed. A source answering for another instance or epoch than the adopted one changes
-// nothing: align first.
+// nothing (Apply compares the declared identity): align first; a replica's answer is not used (P9.33).
 func (p Projection) Repair(ctx context.Context, d *db.DB, src Source) (int, error) {
-	impl, epoch, err := src.Identity(ctx)
-	if err != nil {
-		return 0, err
-	}
 	var ids []string
 	if err := d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT record_id FROM be_projection WHERE projection = $1 AND state = 'incomplete'
@@ -239,10 +266,14 @@ func (p Projection) Repair(ctx context.Context, d *db.DB, src Source) (int, erro
 	}); err != nil || len(ids) == 0 {
 		return 0, err
 	}
-	results, err := src.Read(ctx, ids)
+	results, from, err := src.Read(ctx, ids)
 	if err != nil {
 		return 0, err
 	}
+	if !from.Primary {
+		return 0, fmt.Errorf("%w: a replica answered", ErrOtherSource)
+	}
+	impl, epoch := from.Impl, from.Epoch
 	n := 0
 	err = d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
 		n = 0

@@ -19,10 +19,10 @@
 | `ids/` | 记录身份（UUIDv7，组件在插入前生成） | 第 05 章 |
 | `money/` | 金额与其他十进制：解析、格式化、舍入、分摊 | P5.25–P5.28 |
 | `bizdate/` | 按法人时区的业务日期 | P5.29 |
-| `events/` | 发件表、提交后编号、转发、订阅与收件表、按位置读一条流（`readafter.go`，身份成员的已结束会话用它）；`bus/` 按 `BUS_URL` 选运输，`jetstream/`、`pgqueue/` 是两个适配器，`transporttest/` 是它们共用的一致性套件 | 第 06 章 |
+| `events/` | 发件表、提交后编号、转发、订阅与收件表、按位置读一条流（`readafter.go`，身份成员的已结束会话用它）、记录的批量读取与快照（`records.go`，标准系统方法 `RecordService`，流在 `Stream.Records` 里声明读取函数）；`bus/` 按 `BUS_URL` 选运输，`jetstream/`、`pgqueue/` 是两个适配器，`transporttest/` 是它们共用的一致性套件 | 第 06 章 |
 | `work/` | 后台工作项：原子认领、租约与纪元、副作用种类 | 第 07 章 |
 | `identity/`、`guard/`、`authz/`、`audit/`、`records/`、`canon/` | 身份核验（含 `be_sv`）、用户面准入（含令牌陈旧）、授权（资源与操作定义、视图、`Check`、`List`、`Mask`）、审计、安全记录的封装与规范编码 | 第 08 章 |
-| `list/`、`search/`、`projection/` | 列表的游标与筛选、搜索列、其他组件记录的投影 | 第 09 章 |
+| `list/`、`search/`、`projection/` | 列表的游标与筛选、搜索列、其他组件记录的投影（来源的客户端 `RecordClient`、`PullClient` 在 `projection/records.go`，逐页核对来源的声明） | 第 09 章 |
 | `obs/` | 每个成员自己的日志、指标与追踪 | 第 10 章 |
 | `httpx/`、`grpcx/` | 用户面（Gin）与系统面（gRPC）的服务器与中间件链 | 第 04、08 章 |
 | `clock/` | 系统挂起时也计时的时钟 | P1.11 |

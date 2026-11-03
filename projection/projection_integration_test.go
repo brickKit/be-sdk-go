@@ -24,6 +24,11 @@ type source struct {
 	purged      map[string]bool
 	pageSize    int
 	onSnapshot  func() // runs once, after the first page was cut and before it is returned
+	replica     bool   // the answers declare a replica
+}
+
+func (s *source) declared() projection.Identity {
+	return projection.Identity{Impl: s.impl, Epoch: s.epoch, Primary: !s.replica}
 }
 
 func newSource() *source {
@@ -35,7 +40,7 @@ func (s *source) put(id string, v int64, data string) {
 	s.live[id] = projection.Record{ID: id, Version: v, Data: json.RawMessage(data)}
 }
 
-func (s *source) Snapshot(_ context.Context, cursor string) ([]projection.Record, string, error) {
+func (s *source) Snapshot(_ context.Context, cursor string) ([]projection.Record, string, projection.Identity, error) {
 	var ids []string
 	for id := range s.live {
 		if id > cursor {
@@ -51,14 +56,15 @@ func (s *source) Snapshot(_ context.Context, cursor string) ([]projection.Record
 	for _, id := range ids {
 		page = append(page, s.live[id])
 	}
+	from := s.declared() // the page is cut with its declaration
 	if hook := s.onSnapshot; hook != nil {
 		s.onSnapshot = nil
 		hook()
 	}
-	return page, next, nil
+	return page, next, from, nil
 }
 
-func (s *source) Read(_ context.Context, ids []string) ([]projection.ReadResult, error) {
+func (s *source) Read(_ context.Context, ids []string) ([]projection.ReadResult, projection.Identity, error) {
 	out := make([]projection.ReadResult, 0, len(ids))
 	for _, id := range ids {
 		switch r, ok := s.live[id]; {
@@ -70,10 +76,8 @@ func (s *source) Read(_ context.Context, ids []string) ([]projection.ReadResult,
 			out = append(out, projection.ReadResult{ID: id, State: projection.Purged})
 		}
 	}
-	return out, nil
+	return out, s.declared(), nil
 }
-
-func (s *source) Identity(context.Context) (string, string, error) { return s.impl, s.epoch, nil }
 
 type row struct {
 	State   string
@@ -287,4 +291,45 @@ func TestANewEpochsInputOverwritesAnOlderEpochsRow(t *testing.T) { // P9.11, CK-
 		Data: json.RawMessage(`{"n":"a3-new"}`)})
 	require.Equal(t, row{projection.Complete, 3, `{"n": "a3-new"}`}, get(t, d, p, "a"),
 		"a lower version of the new epoch overwrites the old epoch's row")
+}
+
+func TestOnlyTheAdoptedPrimaryIsUsed(t *testing.T) { // CK-PJ-05, P9.33
+	d, admin := dbtest.Schema(t, "proj_declared", nil)
+	p := projection.Projection{Name: "partners"}
+	count := func() (n int) {
+		require.NoError(t, admin.QueryRow(context.Background(), "SELECT count(*) FROM be_projection").Scan(&n))
+		return
+	}
+	src := newSource()
+	src.put("a", 1, `{"n":"a1"}`)
+	src.put("b", 1, `{"n":"b1"}`)
+	src.put("c", 1, `{"n":"c1"}`)
+
+	src.replica = true
+	require.ErrorIs(t, p.Align(context.Background(), d, src), projection.ErrOtherSource, "a replica's snapshot")
+	require.Zero(t, count())
+	var impl *string
+	require.NoError(t, admin.QueryRow(context.Background(), "SELECT impl FROM be_projection_source WHERE projection = 'partners'").Scan(&impl))
+	require.Nil(t, impl, "a replica's declaration is not adopted")
+
+	src.replica = false
+	src.onSnapshot = func() { src.epoch = "2.1" } // the source moved on after the first page was cut
+	require.ErrorIs(t, p.Align(context.Background(), d, src), projection.ErrOtherSource, "a later page of another epoch")
+	require.Equal(t, 2, count(), "only the first page (a, b) landed")
+	require.NotEqual(t, "aligned", status(t, d, "partners"))
+
+	src.epoch = "1.1"
+	src.impl = "impl-3"
+	src.onSnapshot = func() { src.impl = "impl-2" }
+	require.ErrorIs(t, p.Align(context.Background(), d, src), projection.ErrOtherSource, "a later page of another instance")
+
+	require.NoError(t, p.Align(context.Background(), d, src), "the precondition: the source answers alike again")
+	require.Equal(t, "aligned", status(t, d, "partners"))
+	apply(t, d, p, projection.Input{RecordID: "a", Kind: projection.Partial, Version: 2, Impl: "impl-2", Epoch: "1.1",
+		Data: json.RawMessage(`{"m":1}`)})
+	src.put("a", 2, `{"n":"a2"}`)
+	src.replica = true
+	_, err := p.Repair(context.Background(), d, src)
+	require.ErrorIs(t, err, projection.ErrOtherSource, "a replica's read")
+	require.Equal(t, projection.Incomplete, get(t, d, p, "a").State)
 }
