@@ -49,6 +49,7 @@ type Tx struct {
 	tx     pgx.Tx
 	prefix string
 	after  *[]func()
+	rolled *[]func(context.Context)
 }
 
 // AfterCommit runs fn once the transaction has committed, never when it rolls back; a retried transaction keeps only
@@ -57,6 +58,15 @@ type Tx struct {
 func (t Tx) AfterCommit(fn func()) {
 	if t.after != nil {
 		*t.after = append(*t.after, fn)
+	}
+}
+
+// AfterRollback runs fn once the transaction has rolled back and its connection is back in the pool, never when it
+// commits: a write about the failure itself (the watermark consumer's failure count) goes in a transaction of its own.
+// fn gets the caller's context, outside the transaction.
+func (t Tx) AfterRollback(fn func(ctx context.Context)) {
+	if t.rolled != nil {
+		*t.rolled = append(*t.rolled, fn)
 	}
 }
 
@@ -142,12 +152,23 @@ func (d *DB) run(ctx context.Context, budget chan struct{}, foreground bool, fn 
 	if err := acquire(ctx, budget, foreground); err != nil {
 		return err
 	}
-	defer func() { <-budget }()
+	var rolled []func(context.Context) // the last attempt's AfterRollback hooks
+	failed := true
+	defer func() {
+		<-budget
+		if failed { // after the budget and the connection are back: a hook may open a transaction of its own
+			for _, f := range rolled {
+				f(context.WithoutCancel(ctx))
+			}
+		}
+	}()
 
 	var last error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		err := d.once(ctx, fn, o)
+		rolled = nil
+		err := d.once(ctx, fn, o, &rolled)
 		if err == nil {
+			failed = false
 			return nil
 		}
 		last = err
@@ -181,7 +202,7 @@ func acquire(ctx context.Context, budget chan struct{}, foreground bool) error {
 	}
 }
 
-func (d *DB) once(ctx context.Context, fn func(context.Context, Tx) error, o txOptions) (err error) {
+func (d *DB) once(ctx context.Context, fn func(context.Context, Tx) error, o txOptions, rolled *[]func(context.Context)) (err error) {
 	iso := pgx.ReadCommitted
 	switch {
 	case o.serializable:
@@ -217,7 +238,7 @@ func (d *DB) once(ctx context.Context, fn func(context.Context, Tx) error, o txO
 		}
 	}
 	var after []func()
-	if err = fn(context.WithValue(ctx, txKey{}, true), Tx{tx: tx, prefix: d.prefix, after: &after}); err != nil {
+	if err = fn(context.WithValue(ctx, txKey{}, true), Tx{tx: tx, prefix: d.prefix, after: &after, rolled: rolled}); err != nil {
 		return err
 	}
 	if cutoff, ok := reqctx.Cutoff(ctx); ok {

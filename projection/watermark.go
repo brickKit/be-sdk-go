@@ -263,7 +263,7 @@ func (w *Watermarked) applyAt(ctx context.Context, tx db.Tx, st *wmState, e even
 			return err
 		}
 	} else if err := w.applyInput(ctx, tx, st, e); err != nil {
-		w.noteFailure(ctx, e)
+		tx.AfterRollback(func(ctx context.Context) { w.noteFailure(ctx, e) }) // counted outside the failing transaction
 		return err
 	}
 	if !contiguous {
@@ -326,14 +326,18 @@ func identityOf(e events.Received) json.RawMessage {
 	return b
 }
 
-// noteFailure counts a failed attempt at a position, outside the failing transaction.
+// noteFailure counts a failed attempt at a position; it runs after the failing transaction rolled back.
 func (w *Watermarked) noteFailure(ctx context.Context, e events.Received) {
-	_ = w.DB.BackgroundTx(context.WithoutCancel(ctx), func(ctx context.Context, tx db.Tx) error {
+	err := w.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO be_watermark_failure (projection, partition, seq, attempts) VALUES ($1, $2, $3, 1)
 			ON CONFLICT (projection, partition, seq) DO UPDATE SET attempts = be_watermark_failure.attempts + 1`,
 			w.Name, e.Partition, e.Seq)
 		return err
 	})
+	if err != nil {
+		w.Log.Error("a failed attempt could not be counted", "projection", w.Name, "partition", e.Partition, "seq", e.Seq,
+			"error", err.Error())
+	}
 }
 
 // quarantineIfDue quarantines the event's subjects when it failed often or long enough (P9.25); it reports whether it

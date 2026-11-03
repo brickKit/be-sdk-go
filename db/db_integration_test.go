@@ -339,6 +339,31 @@ func TestAfterCommitRunsOnlyOnCommit(t *testing.T) { // P6.29
 	assert.Equal(t, []string{"committed"}, ran)
 }
 
+// AfterRollback runs once the transaction rolled back and its connection is back: with a one-connection pool it can
+// open a transaction of its own (the watermark consumer counts a failure that way, P9.25).
+func TestAfterRollbackRunsOnlyAfterARollbackOutsideTheTransaction(t *testing.T) {
+	host, port := fixture(t)
+	pool := sharedPool(t, host, port, 1)
+	a := NewDB("demo/alpha", pool, settings(host, port, "alpha", 1))
+	ctx := context.Background()
+	var ran []string
+	require.NoError(t, a.Tx(ctx, func(ctx context.Context, tx Tx) error {
+		tx.AfterRollback(func(context.Context) { ran = append(ran, "committed") })
+		return nil
+	}))
+	_ = a.Tx(ctx, func(ctx context.Context, tx Tx) error {
+		tx.AfterRollback(func(ctx context.Context) {
+			assert.False(t, InTx(ctx), "outside the transaction")
+			require.NoError(t, a.Tx(ctx, func(ctx context.Context, tx Tx) error {
+				ran = append(ran, "rolled back, then a transaction of its own")
+				return nil
+			}))
+		})
+		return errors.New("roll back")
+	})
+	assert.Equal(t, []string{"rolled back, then a transaction of its own"}, ran)
+}
+
 func TestASessionSettingIsRefusedAndNothingReachesTheNextTransaction(t *testing.T) { // P5.30, P5.5
 	host, port := fixture(t)
 	pool := sharedPool(t, host, port, 1)
