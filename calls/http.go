@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,9 @@ type Request struct {
 	Method string
 	Path   string // with the query string, e.g. /api/orders?status=open
 	Body   any    // encoded as JSON; nil: no body
+	// Form is sent form-encoded in the body instead (an OAuth token endpoint, an external product that reads only
+	// forms); never both Body and Form.
+	Form url.Values
 	// Idempotent marks a method the contract declares free of side effects or idempotent; GET and HEAD always are.
 	Idempotent bool
 	// IdempotencyKey is sent with commands that have side effects (P4.2); the same key on every attempt.
@@ -59,12 +63,18 @@ func (m *Member) HTTP(id, base string) *HTTP {
 // Do sends the request and decodes a 2xx JSON answer into out (nil: ignore the body). Errors are the protocol's.
 func (h *HTTP) Do(ctx context.Context, req Request, out any) error {
 	var body []byte
-	if req.Body != nil {
+	contentType := ""
+	switch {
+	case req.Body != nil && req.Form != nil:
+		return errs.From(fmt.Errorf("calls: a request to %s with both a body and a form", h.dep.ID))
+	case req.Body != nil:
 		b, err := json.Marshal(req.Body)
 		if err != nil {
 			return errs.From(fmt.Errorf("encoding the request to %s: %w", h.dep.ID, err))
 		}
-		body = b
+		body, contentType = b, "application/json"
+	case req.Form != nil:
+		body, contentType = []byte(req.Form.Encode()), "application/x-www-form-urlencoded"
 	}
 	auth := ""
 	if req.ForwardUser {
@@ -75,7 +85,7 @@ func (h *HTTP) Do(ctx context.Context, req Request, out any) error {
 	idempotent := req.Idempotent || req.Method == http.MethodGet || req.Method == http.MethodHead
 	var answer []byte
 	err := h.dep.Do(ctx, idempotent, func(actx context.Context) Result {
-		r, b := h.attempt(actx, req, body, auth)
+		r, b := h.attempt(actx, req, body, contentType, auth)
 		if r.Err == nil {
 			answer = b
 		}
@@ -96,13 +106,13 @@ func (h *HTTP) Do(ctx context.Context, req Request, out any) error {
 	return nil
 }
 
-func (h *HTTP) attempt(ctx context.Context, req Request, body []byte, auth string) (Result, []byte) {
+func (h *HTTP) attempt(ctx context.Context, req Request, body []byte, contentType, auth string) (Result, []byte) {
 	hr, err := http.NewRequestWithContext(ctx, req.Method, h.base+req.Path, bytes.NewReader(body))
 	if err != nil {
 		return Result{Err: err, Code: errs.Internal}, nil
 	}
-	if body != nil {
-		hr.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		hr.Header.Set("Content-Type", contentType)
 	}
 	hr.Header.Set("Accept", "application/json")
 	if dl, ok := ctx.Deadline(); ok {

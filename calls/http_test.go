@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/brickKit/be-sdk-go/v3/errs"
@@ -68,4 +69,29 @@ func TestForwardingWithoutAUserCredentialIsNotSent(t *testing.T) {
 	err = m.HTTP("erp/sales", srv.URL).Do(withDeadline(t, 2e9), Request{Method: "GET", Path: "/api/x", ForwardUser: true}, nil)
 	assert.ErrorContains(t, err, "without a user credential")
 	assert.False(t, sent)
+}
+
+// A form is sent form-encoded in the body (an OAuth token endpoint, an identity product's password change): the
+// values never travel in the URL, where access logs keep them.
+func TestAFormIsSentFormEncoded(t *testing.T) {
+	var ctype, query string
+	var got url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctype, query = r.Header.Get("Content-Type"), r.URL.RawQuery
+		require.NoError(t, r.ParseForm())
+		got = r.PostForm
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	m, err := NewMember(nil)
+	require.NoError(t, err)
+	form := url.Values{"userName": {"alice"}, "newPassword": {"s3cret & more"}}
+	require.NoError(t, m.HTTP("casdoor", srv.URL).Do(withDeadline(t, 2e9),
+		Request{Method: "POST", Path: "/api/set-password", Form: form}, nil))
+	assert.Equal(t, "application/x-www-form-urlencoded", ctype)
+	assert.Empty(t, query)
+	assert.Equal(t, form, got)
+	err = m.HTTP("casdoor", srv.URL).Do(withDeadline(t, 2e9),
+		Request{Method: "POST", Path: "/x", Form: form, Body: map[string]string{}}, nil)
+	assert.ErrorContains(t, err, "both a body and a form")
 }
