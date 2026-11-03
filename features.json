@@ -188,6 +188,7 @@
     "outbox": {
       "status": "verified",
       "evidence": [
+        "events.TestALostAcknowledgementIsPublishedAgainAndTakesEffectOnce",
         "events.TestTheForwardingLeaseOnlyReducesContention",
         "events.TestEmitOnlyWithTheBusinessCommit",
         "events.TestTheCommitWakesTheForwarder",
