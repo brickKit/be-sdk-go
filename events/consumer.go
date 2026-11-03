@@ -136,15 +136,23 @@ func (c *Consumer) Handle(ctx context.Context, d *Delivery) Outcome {
 	return Term
 }
 
-func (c *Consumer) process(ctx context.Context, d *Delivery) error {
-	r, err := received(d)
+// Receive parses one message as a subscription does: the envelope, the hop limit (P6.15), the claim check
+// resolved (P6.14). The watermark consumer reads the rows a pull returns with it.
+func Receive(ctx context.Context, m Message, claims ClaimReader) (Received, error) {
+	r, err := received(&Delivery{Message: m})
 	if err != nil {
-		return err
+		return r, err
 	}
 	if r.Hops > MaxHops {
-		return fmt.Errorf("event %s: %d hops exceed the limit of %d", r.ID, r.Hops, MaxHops)
+		return r, fmt.Errorf("event %s: %d hops exceed the limit of %d", r.ID, r.Hops, MaxHops)
 	}
-	if r.Data, err = ResolveClaim(ctx, d.Message, c.Claims); err != nil {
+	r.Data, err = ResolveClaim(ctx, m, claims)
+	return r, err
+}
+
+func (c *Consumer) process(ctx context.Context, d *Delivery) error {
+	r, err := Receive(ctx, d.Message, c.Claims)
+	if err != nil {
 		return err
 	}
 	carrier := propagation.MapCarrier{}

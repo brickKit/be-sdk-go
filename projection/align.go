@@ -52,13 +52,32 @@ func (p Projection) Align(ctx context.Context, d *db.DB, src Source) error {
 	if err != nil {
 		return err
 	}
+	return p.alignTo(ctx, d, src, impl, epoch, alignHooks{})
+}
+
+// alignHooks are what a watermark source adds to an alignment (P9.28): started runs once the generation began and
+// before the snapshot (the echo-only pull that gives P0), write guarded by the generation; purgedAt is the position a
+// purged record's tombstone accepts inputs past (its partition's P0); done replaces marking the projection aligned,
+// in the completion transaction.
+type alignHooks struct {
+	status   string // the state the source shows while aligning ("": aligning; a stalled source re-fetches stalled)
+	started  func(ctx context.Context, gen int64, write func(func(context.Context, db.Tx) error) error) error
+	purgedAt func(recordID string) *int64
+	done     func(ctx context.Context, tx db.Tx, gen int64) error
+}
+
+func (p Projection) alignTo(ctx context.Context, d *db.DB, src Source, impl, epoch string, h alignHooks) error {
 	var gen int64
+	status := h.status
+	if status == "" {
+		status = Aligning
+	}
 	if err := d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
 		return tx.QueryRow(ctx, `INSERT INTO be_projection_source (projection, impl, epoch, align_gen, status)
-			VALUES ($1, $2, $3, 1, 'aligning')
+			VALUES ($1, $2, $3, 1, $4)
 			ON CONFLICT (projection) DO UPDATE SET impl = excluded.impl, epoch = excluded.epoch,
-				align_gen = be_projection_source.align_gen + 1, status = 'aligning'
-			RETURNING align_gen`, p.Name, impl, epoch).Scan(&gen)
+				align_gen = be_projection_source.align_gen + 1, status = excluded.status
+			RETURNING align_gen`, p.Name, impl, epoch, status).Scan(&gen)
 	}); err != nil {
 		return err
 	}
@@ -75,19 +94,25 @@ func (p Projection) Align(ctx context.Context, d *db.DB, src Source) error {
 			return fn(ctx, tx)
 		})
 	}
+	if h.started != nil {
+		if err := h.started(ctx, gen, write); err != nil {
+			return err
+		}
+	}
 	// put overwrites without comparing versions, except rows written during this alignment: those only by a newer one
-	put := func(ctx context.Context, tx db.Tx, id, state string, version int64, data json.RawMessage) error {
+	put := func(ctx context.Context, tx db.Tx, id, state string, version int64, data json.RawMessage, minRead *int64) error {
 		var raw any
 		if data != nil {
 			raw = string(data)
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO be_projection (projection, record_id, version, state, impl, epoch, data, aligned_gen)
-			VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+		_, err := tx.Exec(ctx, `INSERT INTO be_projection (projection, record_id, version, state, impl, epoch, data, aligned_gen,
+				min_read_seq)
+			VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
 			ON CONFLICT (projection, record_id) DO UPDATE SET version = excluded.version, state = excluded.state,
 				need_version = NULL, impl = excluded.impl, epoch = excluded.epoch, data = excluded.data,
-				aligned_gen = excluded.aligned_gen, updated_at = now()
+				aligned_gen = excluded.aligned_gen, min_read_seq = excluded.min_read_seq, updated_at = now()
 			WHERE be_projection.aligned_gen IS DISTINCT FROM $8 OR be_projection.version < excluded.version`,
-			p.Name, id, version, state, impl, epoch, raw, gen)
+			p.Name, id, version, state, impl, epoch, raw, gen, minRead)
 		return err
 	}
 	for cursor := ""; ; {
@@ -97,7 +122,7 @@ func (p Projection) Align(ctx context.Context, d *db.DB, src Source) error {
 		}
 		if err := write(func(ctx context.Context, tx db.Tx) error {
 			for _, r := range records {
-				if err := put(ctx, tx, r.ID, Complete, r.Version, r.Data); err != nil {
+				if err := put(ctx, tx, r.ID, Complete, r.Version, r.Data, nil); err != nil {
 					return err
 				}
 			}
@@ -144,11 +169,15 @@ func (p Projection) Align(ctx context.Context, d *db.DB, src Source) error {
 				answered[r.ID] = true
 				switch r.State {
 				case Exists:
-					err = put(ctx, tx, r.ID, Complete, r.Version, r.Data)
+					err = put(ctx, tx, r.ID, Complete, r.Version, r.Data, nil)
 				case Gone:
-					err = put(ctx, tx, r.ID, Tombstone, r.Version, nil)
+					err = put(ctx, tx, r.ID, Tombstone, r.Version, nil, nil)
 				case Purged:
-					err = put(ctx, tx, r.ID, Tombstone, 0, nil)
+					var minRead *int64
+					if h.purgedAt != nil {
+						minRead = h.purgedAt(r.ID)
+					}
+					err = put(ctx, tx, r.ID, Tombstone, 0, nil, minRead)
 				default:
 					err = errors.New("projection: the source answered " + r.State)
 				}
@@ -167,6 +196,9 @@ func (p Projection) Align(ctx context.Context, d *db.DB, src Source) error {
 		}
 	}
 	return write(func(ctx context.Context, tx db.Tx) error {
+		if h.done != nil {
+			return h.done(ctx, tx, gen)
+		}
 		_, err := tx.Exec(ctx, "UPDATE be_projection_source SET status = 'aligned', aligned_at = now() WHERE projection = $1", p.Name)
 		return err
 	})

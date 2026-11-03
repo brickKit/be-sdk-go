@@ -102,6 +102,7 @@ type Input struct {
 	Impl     string
 	Epoch    string
 	Data     json.RawMessage // full: the whole content; partial: the fields to merge
+	Seq      int64           // its position in its partition, when it has one (stream events, pull rows); 0: none
 }
 
 // Projection is one named projection in the consumer's schema.
@@ -140,7 +141,10 @@ func (p Projection) Apply(ctx context.Context, tx db.Tx, in Input) (Outcome, err
 	}
 	if adoptedImpl != "" {
 		if in.Impl != adoptedImpl {
-			return Outcome{Skipped: OtherInstance}, nil
+			// not registered (step 12's registration comes with member-switching): the source blocks (P9.11, P9.26)
+			_, err := tx.Exec(ctx, `UPDATE be_projection_source SET status = 'blocked' WHERE projection = $1
+				AND status <> 'blocked'`, p.Name)
+			return Outcome{Skipped: OtherInstance}, err
 		}
 		switch c, err := compareEpochs(in.Epoch, adoptedEpoch); {
 		case err != nil:
@@ -154,12 +158,16 @@ func (p Projection) Apply(ctx context.Context, tx db.Tx, in Input) (Outcome, err
 	var cur *Row
 	var r Row
 	var impl, epoch *string
-	err = tx.QueryRow(ctx, `SELECT state, version, coalesce(need_version, 0), impl, epoch FROM be_projection
-		WHERE projection = $1 AND record_id = $2 FOR UPDATE`, p.Name, in.RecordID).Scan(&r.State, &r.Version, &r.NeedVersion, &impl, &epoch)
+	var minRead *int64
+	err = tx.QueryRow(ctx, `SELECT state, version, coalesce(need_version, 0), impl, epoch, min_read_seq FROM be_projection
+		WHERE projection = $1 AND record_id = $2 FOR UPDATE`, p.Name, in.RecordID).Scan(&r.State, &r.Version, &r.NeedVersion,
+		&impl, &epoch, &minRead)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 	case err != nil:
 		return Outcome{}, err
+	case r.State == Tombstone && minRead != nil && in.Seq > 0 && in.Seq <= *minRead:
+		return Outcome{}, nil // a purged record's tombstone takes only inputs read past it (P9.11)
 	default:
 		// the input is of the adopted instance and epoch (or nothing is adopted yet): the row is old when it differs
 		r.Old = deref(impl) != in.Impl || deref(epoch) != in.Epoch
@@ -179,7 +187,8 @@ func (p Projection) write(ctx context.Context, tx db.Tx, in Input, cur *Row, nex
 	}
 	if action == MergeAndFetch {
 		_, err := tx.Exec(ctx, `UPDATE be_projection SET state = $3, version = $4, need_version = $5,
-			data = coalesce(data, '{}'::jsonb) || $6::jsonb, impl = $7, epoch = $8, updated_at = now(), aligned_gen = `+duringAlignment+`
+			data = coalesce(data, '{}'::jsonb) || $6::jsonb, impl = $7, epoch = $8, updated_at = now(), min_read_seq = NULL,
+			aligned_gen = `+duringAlignment+`
 			WHERE projection = $1 AND record_id = $2`, p.Name, in.RecordID, next.State, next.Version, need, string(in.Data), in.Impl, in.Epoch)
 		return Outcome{Fetch: true, Changed: true}, err
 	}
@@ -191,7 +200,8 @@ func (p Projection) write(ctx context.Context, tx db.Tx, in Input, cur *Row, nex
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, `+duringAlignment+`)
 		ON CONFLICT (projection, record_id) DO UPDATE SET version = excluded.version, state = excluded.state,
 			need_version = excluded.need_version, impl = excluded.impl, epoch = excluded.epoch, data = excluded.data,
-			aligned_gen = excluded.aligned_gen, updated_at = now()`, p.Name, in.RecordID, next.Version, next.State, need, in.Impl, in.Epoch, data)
+			aligned_gen = excluded.aligned_gen, min_read_seq = NULL, updated_at = now()`, p.Name, in.RecordID, next.Version,
+		next.State, need, in.Impl, in.Epoch, data)
 	return Outcome{Fetch: next.State == Incomplete, Changed: true}, err
 }
 

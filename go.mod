@@ -97,3 +97,5 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc // indirect
 )
+
+replace github.com/brickKit/be-protocol/v3 => ../be-protocol
