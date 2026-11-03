@@ -116,7 +116,10 @@ func (w *Runner) Start(ctx context.Context) error {
 	go func() { defer w.wg.Done(); w.loop(ctx, time.Second, w.schedule) }()
 	// one poll for all the workers (P7.23): idle, a member claims once a poll whatever its concurrency
 	w.wg.Add(1)
-	go func() { defer w.wg.Done(); w.loop(ctx, w.Poll, func(context.Context) bool { w.wake(true); return false }) }()
+	go func() {
+		defer w.wg.Done()
+		w.loop(ctx, w.Poll, func(context.Context) bool { w.wake(true); return false })
+	}()
 	for i := 0; i < w.Concurrency; i++ {
 		w.wg.Add(1)
 		go func() { defer w.wg.Done(); w.work(ctx) }()

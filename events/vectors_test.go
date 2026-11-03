@@ -3,6 +3,7 @@ package events
 import (
 	"encoding/json"
 	"io/fs"
+	"strconv"
 	"testing"
 	"time"
 
@@ -79,5 +80,47 @@ func TestEnvelopeVectors(t *testing.T) {
 		assert.Equal(t, c.Expect.Digest, r.Digest, c.ID)
 		assert.Equal(t, c.Expect.Headers, r.Headers(e.Source, e.Impl), c.ID)
 		assert.Equal(t, c.Expect.Subject, Subject(r.Stream, r.Partition, r.Type), c.ID)
+	}
+}
+
+func TestWatermarkPullCheckVectors(t *testing.T) { // P9.15
+	type ident struct {
+		EchoNonce string `json:"echo_nonce"`
+		Record    *struct {
+			RecordID string `json:"record_id"`
+			Version  int64
+			Digest   string
+		}
+	}
+	toRow := func(i ident) RowIdentity {
+		if i.Record != nil {
+			return RowIdentity{RecordID: i.Record.RecordID, Version: i.Record.Version, Digest: i.Record.Digest}
+		}
+		return RowIdentity{Echo: i.EchoNonce}
+	}
+	for _, raw := range cases(t, "watermark-pull-check") {
+		var c struct {
+			ID     string
+			Source struct {
+				Impl, Epoch string
+				Counter     int64
+				Rows        map[string]ident
+			}
+			Request struct {
+				Position *Position
+				Row      ident
+			}
+			Expect string
+		}
+		require.NoError(t, json.Unmarshal(raw, &c))
+		var at *RowIdentity
+		if p := c.Request.Position; p != nil {
+			if r, ok := c.Source.Rows[strconv.FormatInt(p.Seq, 10)]; ok {
+				x := toRow(r)
+				at = &x
+			}
+		}
+		got := PullCheck(c.Source.Impl, c.Source.Epoch, c.Source.Counter, c.Request.Position, toRow(c.Request.Row), at)
+		assert.Equal(t, c.Expect, got, c.ID)
 	}
 }

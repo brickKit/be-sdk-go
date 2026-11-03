@@ -21,6 +21,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/idem"
 	"github.com/brickKit/be-sdk-go/v3/identity"
+	"github.com/brickKit/be-sdk-go/v3/internal/sourcepb"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/brickKit/be-sdk-go/v3/work"
@@ -193,6 +194,8 @@ func (m *Member) producer(values *config.Values, sh Shared) (*events.Producer, e
 	}
 	m.forwarder = &events.Forwarder{DB: sh.DB, Producer: p, Transport: sh.Transport, Source: m.Def.ID,
 		Impl: values.String("IMPLEMENTATION_INSTANCE"), Log: m.Logger}
+	m.watermark = &events.WatermarkSource{DB: sh.DB, Producer: p, Source: m.Def.ID, Impl: m.forwarder.Impl,
+		Deployment: values.String("DEPLOYMENT_ID"), Log: m.Logger}
 	return p, nil
 }
 
@@ -309,13 +312,20 @@ func (m *Member) background(sh Shared) error {
 }
 
 func (m *Member) systemSurface(member obs.Member, rt *runtime.Runtime) error {
-	sm, ok := m.Module.(component.SystemModule)
-	if !ok {
-		return nil
-	}
 	var services grpcx.Services
-	if err := sm.Services(&services); err != nil {
-		return fmt.Errorf("the module's services could not be registered: %w", err)
+	if sm, ok := m.Module.(component.SystemModule); ok {
+		if err := sm.Services(&services); err != nil {
+			return fmt.Errorf("the module's services could not be registered: %w", err)
+		}
+	}
+	if m.watermark != nil { // the pull of the member's watermark streams (P9.13)
+		method, ok, err := m.watermark.Method()
+		if err != nil {
+			return err
+		}
+		if ok {
+			services.Register(&sourcepb.WatermarkService_ServiceDesc, m.watermark, map[string]grpcx.Method{"Pull": method})
+		}
 	}
 	if services.Empty() {
 		return nil

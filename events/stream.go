@@ -14,6 +14,19 @@ import (
 type Stream struct {
 	Name       string // e.g. erp.inventory.stock
 	Partitions int    // 1-256, never changed after release
+	// Watermark declares the stream a watermark source (P9.13): every event lists its subjects, and the member answers
+	// pulls of it; nil: an ordinary stream.
+	Watermark *Watermark
+}
+
+// Watermark is what a watermark source's stream declares (P9.13).
+type Watermark struct {
+	// Operation is the operation the pull method performs, declared in the component's resource definition like
+	// every system method's (the method has no other authorization than its callers).
+	Operation string
+	// Pullers are the components (service identities) that may pull the stream: the ones that subscribe to it and
+	// use watermarks, and readers of its high point (protocol 06's cost component).
+	Pullers []string
 }
 
 var streamName = regexp.MustCompile(`^[a-z0-9_]+(\.[a-z0-9_]+)*$`)
@@ -25,6 +38,9 @@ func (s Stream) Validate() error {
 	}
 	if s.Partitions < 1 || s.Partitions > 256 {
 		return fmt.Errorf("stream %s: partitions must be 1-256, not %d", s.Name, s.Partitions)
+	}
+	if w := s.Watermark; w != nil && (w.Operation == "" || len(w.Pullers) == 0) {
+		return fmt.Errorf("stream %s: a watermark source declares the pull's operation and who may pull it", s.Name)
 	}
 	return nil
 }

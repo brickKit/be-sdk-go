@@ -38,11 +38,11 @@ const (
 
 // Transport is the adapter.
 type Transport struct {
-	pool    *pgxpool.Pool
-	cfg     *pgx.ConnConfig
-	schema  string
-	poll    time.Duration
-	onError atomic.Pointer[func(error)]
+	pool     *pgxpool.Pool
+	cfg      *pgx.ConnConfig
+	schema   string
+	poll     time.Duration
+	onError  atomic.Pointer[func(error)]
 	stop     context.CancelFunc
 	closing  context.Context // ends when the transport closes
 	purged   chan struct{}

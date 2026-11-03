@@ -99,6 +99,7 @@ type Member struct {
 	Outbound *calls.Member
 	// forwarder and consumers run between Start and Stop.
 	forwarder *events.Forwarder
+	watermark *events.WatermarkSource // answers pulls when the member has watermark streams
 	consumers []*events.Consumer
 	subs      []events.Subscription
 	transport events.Transport
@@ -107,7 +108,7 @@ type Member struct {
 	// db keeps the statistics of the SDK's tables fresh between Start and Stop (P5.33); nil without a database.
 	db         *db.DB
 	statistics chan struct{}
-	holder    *authz.Holder
+	holder     *authz.Holder
 	// definitions submits the declared definitions at start; readiness does not wait for them (P8.24), and until
 	// defsAccepted the view holder does not run, so protected requests answer AUTHORIZATION_VIEW_EXPIRED.
 	definitions  authzv3.DefinitionServiceClient

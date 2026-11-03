@@ -11,6 +11,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/work"
+	"github.com/jackc/pgx/v5"
 )
 
 // Forwarder defaults.
@@ -318,21 +319,7 @@ func (f *Forwarder) prepare(ctx context.Context, rows []Row) ([]chan preparedMes
 }
 
 func (f *Forwarder) message(ctx context.Context, r Row) (Message, bool, error) {
-	payload, claim := r.Payload, false
-	if len(payload) > MaxPayload {
-		if f.Producer.claims == nil {
-			return Message{}, false, fmt.Errorf("event %s: %d bytes and no object storage for a claim check", r.EventID, len(payload))
-		}
-		uri, err := f.Producer.claims.Put(ctx, r.EventID, payload)
-		if err != nil {
-			return Message{}, false, fmt.Errorf("event %s: claim check: %w", r.EventID, err)
-		}
-		ref := ClaimRef{URI: uri, Size: len(payload), SHA256: sha256Hex(payload)}
-		payload, _ = json.Marshal(map[string]ClaimRef{"claim": ref})
-		claim = true
-	}
-	r.Claim = claim
-	return Message{Subject: Subject(r.Stream, r.Partition, r.Type), Headers: r.Headers(f.Source, f.Impl), Data: payload}, claim, nil
+	return f.Producer.message(ctx, r, f.Source, f.Impl)
 }
 
 // unpublishedIn reads a partition's numbered, unpublished rows in position order, at most batch of them.
@@ -345,6 +332,11 @@ func unpublishedIn(ctx context.Context, tx db.Tx, stream string, p, batch int) (
 	if err != nil {
 		return nil, err
 	}
+	return scanRows(rows, stream, p)
+}
+
+// scanRows reads outbox rows selected with unpublishedIn's columns.
+func scanRows(rows pgx.Rows, stream string, p int) ([]Row, error) {
 	defer rows.Close()
 	var out []Row
 	for rows.Next() {

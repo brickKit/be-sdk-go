@@ -1,5 +1,16 @@
-.PHONY: test test-integration vet
-vet:
+.PHONY: test test-integration vet gen gen-check
+# buf runs in a throwaway container (nothing installed locally); the proto files come from the pinned be-protocol.
+BUF := bufbuild/buf:1.74.0@sha256:621f108266b19236906aa328e64b7c50340738472c5da4d4b25104f01aa8d204
+PROTO = $(shell go list -m -f '{{.Dir}}' github.com/brickKit/be-protocol/v3)/proto
+RUN = docker run --rm -u $(shell id -u):$(shell id -g) -e HOME=/tmp -e BUF_CACHE_DIR=/tmp/buf -v $(CURDIR):/w -v $(PROTO):/proto:ro -w /w
+gen:  ## internal/sourcepb from be-protocol's proto/ (committed)
+	rm -rf internal/sourcepb
+	$(RUN) $(BUF) generate /proto --template buf.gen.yaml
+gen-check:  ## the committed code is exactly what buf generates from the pinned proto/
+	@T=$$(mktemp -d) && cp -r internal/sourcepb $$T/ && $(MAKE) -s gen >/dev/null && \
+	  diff -r $$T/sourcepb internal/sourcepb && rm -rf $$T && echo "generated code up to date"
+vet:  ## go vet with and without the integration tag, and gofmt (unformatted files fail)
+	@test -z "$$(gofmt -l .)" || { gofmt -l .; echo "gofmt: the files above are not formatted"; exit 1; }
 	go vet ./...
 	go vet -tags integration ./...
 test: vet  ## L1: unit tests, protocol vectors, the SDK's own merge-safety check

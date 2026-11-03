@@ -91,7 +91,14 @@ func (p *Producer) Emit(ctx context.Context, tx db.Tx, stream string, ev Event) 
 		return "", internal(fmt.Errorf("events: projection %q", ev.Projection))
 	case len(ev.Subjects) > MaxSubjects:
 		return "", internal(fmt.Errorf("events: %d subjects, at most %d", len(ev.Subjects), MaxSubjects))
+	case s.Watermark != nil && len(ev.Subjects) == 0:
+		return "", internal(fmt.Errorf("events: stream %s is a watermark source: every event lists its subjects", stream))
 	}
+	return p.insert(ctx, tx, streamPart{s.Name, s.PartitionOf(ev.RecordID)}, ev)
+}
+
+// insert writes one validated event into the outbox at the given partition (an echo names its partition, P9.16).
+func (p *Producer) insert(ctx context.Context, tx db.Tx, part streamPart, ev Event) (string, error) {
 	payload, err := json.Marshal(ev.Data)
 	if err != nil {
 		return "", internal(fmt.Errorf("events: encoding the payload: %w", err))
@@ -126,7 +133,6 @@ func (p *Producer) Emit(ctx context.Context, tx db.Tx, stream string, ev Event) 
 	if ev.LegalEntity != "" {
 		legal = ev.LegalEntity
 	}
-	part := streamPart{s.Name, s.PartitionOf(ev.RecordID)}
 	_, err = tx.Exec(ctx, `INSERT INTO be_outbox (event_id, stream, partition, type, occurred_at, record_id, version,
 		projection, legal_entity, subjects, causation, hops, trace, payload, digest)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
@@ -160,6 +166,26 @@ func (p *Producer) takeWritten() []streamPart {
 	}
 	clear(p.dirty)
 	return out
+}
+
+// message renders a numbered row as it goes on the stream (P6.13); a payload over 64 KiB goes to object storage
+// first and the message carries the claim check (P6.14). The forwarder and the watermark pull both use it.
+func (p *Producer) message(ctx context.Context, r Row, source, impl string) (Message, bool, error) {
+	payload, claim := r.Payload, false
+	if len(payload) > MaxPayload {
+		if p.claims == nil {
+			return Message{}, false, fmt.Errorf("event %s: %d bytes and no object storage for a claim check", r.EventID, len(payload))
+		}
+		uri, err := p.claims.Put(ctx, r.EventID, payload)
+		if err != nil {
+			return Message{}, false, fmt.Errorf("event %s: claim check: %w", r.EventID, err)
+		}
+		ref := ClaimRef{URI: uri, Size: len(payload), SHA256: sha256Hex(payload)}
+		payload, _ = json.Marshal(map[string]ClaimRef{"claim": ref})
+		claim = true
+	}
+	r.Claim = claim
+	return Message{Subject: Subject(r.Stream, r.Partition, r.Type), Headers: r.Headers(source, impl), Data: payload}, claim, nil
 }
 
 func nullJSON(b []byte) any {
