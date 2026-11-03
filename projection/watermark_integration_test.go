@@ -36,7 +36,7 @@ import (
 // A watermark source (the people of demo/wmsrc) and a consumer keeping a projection of it, each in its own schema; the
 // pull goes over a real system surface (mTLS), the stream through the memory transport when a test turns it on.
 type wmWorld struct {
-	t        *testing.T
+	t        testing.TB
 	src      *db.DB
 	srcAdmin *pgx.Conn
 	producer *events.Producer
@@ -52,7 +52,7 @@ var peopleStream = events.Stream{Name: "demo.people", Partitions: 2,
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-func newWMWorld(t *testing.T, name string) *wmWorld {
+func newWMWorld(t testing.TB, name string) *wmWorld {
 	ww := &wmWorld{t: t}
 	ww.src, ww.srcAdmin = dbtest.Schema(t, name+"_src", fstest.MapFS{"0001_people.up.sql": {Data: []byte(
 		"CREATE TABLE people (id text PRIMARY KEY, version bigint NOT NULL, name text, deleted boolean NOT NULL DEFAULT false);")}})
@@ -450,4 +450,69 @@ func TestAnotherSystemWithoutALargerGenerationStalls(t *testing.T) { // CK-WM-08
 	assert.Equal(t, Aligning, ww.state(), "with a larger generation the new system is adopted (a major upgrade, a migration)")
 	ww.step(2)
 	assert.Equal(t, Aligned, ww.state())
+}
+
+// The hot paths (T7e): what applying an event costs with and without the contiguous position, and what a pull costs.
+func BenchmarkApplyAProjectedEvent(b *testing.B) {
+	ww := newWMWorld(b, "wmb1")
+	p := Projection{Name: "plain"}
+	b.ResetTimer()
+	for i := range b.N {
+		require.NoError(b, ww.con.BackgroundTx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+			_, err := p.Apply(ctx, tx, Input{RecordID: "r" + strconv.Itoa(i%1000), Kind: Full, Version: int64(i + 1),
+				Impl: "impl-1", Epoch: "1.1", Data: []byte(`{"id":"r","name":"n"}`)})
+			return err
+		}))
+	}
+}
+
+func BenchmarkApplyAWatermarkedEvent(b *testing.B) {
+	ww := newWMWorld(b, "wmb2")
+	ww.ready()
+	var epoch string
+	require.NoError(b, ww.conAdmin.QueryRow(context.Background(), "SELECT epoch FROM be_projection_source WHERE projection = 'people'").Scan(&epoch))
+	start := *ww.contiguous(0)
+	b.ResetTimer()
+	for i := range b.N {
+		e := events.Received{ID: "00000000-0000-7000-8000-" + fmt.Sprintf("%012d", i), Type: "demo.person.changed.v1",
+			RecordID: "r" + strconv.Itoa(i%1000), Version: int64(i + 1), Projection: events.Full, Stream: "demo.people",
+			Partition: 0, Seq: start + int64(i) + 1, Epoch: epoch, Impl: "impl-1", Data: []byte(`{"id":"r","name":"n"}`),
+			Headers: map[string]string{events.HeaderDigest: "d", events.HeaderSubjects: `["person:r"]`}}
+		require.NoError(b, ww.con.BackgroundTx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+			return ww.w.Handle(ctx, tx, e)
+		}))
+	}
+	b.StopTimer()
+	require.Equal(b, start+int64(b.N), *ww.contiguous(0), "every event applied contiguously")
+}
+
+func BenchmarkAnEchoOnlyPull(b *testing.B) {
+	ww := newWMWorld(b, "wmb3")
+	ww.ready()
+	b.ResetTimer()
+	for range b.N {
+		require.NoError(b, ww.pullNow())
+	}
+}
+
+func BenchmarkAPullOf100Rows(b *testing.B) {
+	ww := newWMWorld(b, "wmb4")
+	ww.ready()
+	b.ResetTimer()
+	for i := range b.N {
+		b.StopTimer()
+		require.NoError(b, ww.src.Tx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+			for j := range 100 {
+				id := "b" + strconv.Itoa(i) + "-" + strconv.Itoa(j)
+				if _, err := ww.producer.Emit(ctx, tx, "demo.people", events.Event{Type: "demo.person.changed.v1",
+					RecordID: id, Version: 1, Projection: events.Full, Data: map[string]string{"id": id, "name": "n"},
+					Subjects: []string{"person:" + id}}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}))
+		b.StartTimer()
+		require.NoError(b, ww.pullNow())
+	}
 }

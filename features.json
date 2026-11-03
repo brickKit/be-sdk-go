@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.49",
+  "protocol": "3.0.0-alpha.50",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -425,8 +425,26 @@
       "evidence": []
     },
     "projection-watermarks": {
-      "status": "not_implemented",
-      "evidence": []
+      "status": "verified",
+      "evidence": [
+        "events.TestWatermarkPullCheckVectors",
+        "events.TestOnlyTheDeclaredPullersMayPull",
+        "events.TestAPullEchoesAfterTheChangesBeforeIt",
+        "events.TestAPullPagesWithTheEchoOnTheLastPage",
+        "events.TestThePullChecksTheRowAtThePosition",
+        "projection.TestWatermarkJudgeVectors",
+        "projection.TestWatermarkEpochVectors",
+        "projection.TestWatermarkPullOutcomeVectors",
+        "projection.TestWatermarkValueVectors",
+        "projection.TestWatermarkSourceStateVectors",
+        "projection.TestAWatermarkProvesTheProjectionFresh",
+        "projection.TestAHoleStopsTheContiguousPosition",
+        "projection.TestALargerEpochIsAdoptedThroughAnAlignment",
+        "projection.TestARollbackStallsUntilTheGenerationAdvances",
+        "projection.TestAnotherSystemWithoutALargerGenerationStalls",
+        "projection.TestAFailingEventQuarantinesItsSubjectsOnly",
+        "projection.TestAnUnknownInstanceBlocksUntilAConfirmedCorrection"
+      ]
     },
     "projection-shadow": {
       "status": "not_implemented",
