@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -13,6 +15,18 @@ type Epoch struct{ Generation, Timeline int64 }
 
 func (e Epoch) String() string {
 	return strconv.FormatInt(e.Generation, 10) + "." + strconv.FormatInt(e.Timeline, 10)
+}
+
+// ParseEpoch reads an epoch written by String ("<generation>.<timeline>", both non-negative integers), as a reader's
+// cursor brings it back (P8.28).
+func ParseEpoch(s string) (Epoch, error) {
+	g, t, ok := strings.Cut(s, ".")
+	gen, err1 := strconv.ParseInt(g, 10, 64)
+	tl, err2 := strconv.ParseInt(t, 10, 64)
+	if !ok || err1 != nil || err2 != nil || gen < 0 || tl < 0 || strconv.FormatInt(gen, 10) != g || strconv.FormatInt(tl, 10) != t {
+		return Epoch{}, fmt.Errorf("epoch %q is not <generation>.<timeline>", s)
+	}
+	return Epoch{Generation: gen, Timeline: tl}, nil
 }
 
 // Less orders epochs.
