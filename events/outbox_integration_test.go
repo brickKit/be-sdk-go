@@ -4,6 +4,7 @@ package events
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"slices"
@@ -510,4 +511,50 @@ func TestTheForwarderReadsNoPublishedRowOnItsWay(t *testing.T) { // P6.35
 	large := median()
 	t.Logf("a batch of %d: %v with 20 published rows ahead, %v with 20 020", DefaultBatch, small, large)
 	assert.Less(t, large, small+time.Millisecond, "the read must not grow with the published rows kept")
+}
+
+// lostAcks publishes into the memory transport but reports a failure the first time each message is published: the
+// transport accepted it and the acknowledgement was lost on the way back (P6.10).
+type lostAcks struct {
+	*Memory
+	mu       sync.Mutex
+	attempts map[string]int
+}
+
+func (l *lostAcks) Publish(ctx context.Context, m Message) error {
+	err := l.Memory.Publish(ctx, m)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.attempts[m.ID()]++
+	if err == nil && l.attempts[m.ID()] == 1 {
+		return errors.New("the acknowledgement was lost")
+	}
+	return err
+}
+
+func TestALostAcknowledgementIsPublishedAgainAndTakesEffectOnce(t *testing.T) { // CK-EV-04, P6.10
+	d, admin := source(t, "evsrc_ack")
+	p, err := NewProducer("demo/evsrc_ack", []Stream{stock}, nil)
+	require.NoError(t, err)
+	tr := &lostAcks{Memory: NewMemory(0), attempts: map[string]int{}}
+	f := &Forwarder{DB: d, Producer: p, Transport: tr, Source: "demo/evsrc_ack", Impl: "6f1c2d3e-4a5b-4c6d-8e7f-901234567890",
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	emit(t, d, p, 1)
+	_, err = f.Once(context.Background())
+	require.Error(t, err, "the lost acknowledgement fails the batch")
+	var unpublished int
+	require.NoError(t, admin.QueryRow(context.Background(), "SELECT count(*) FROM be_outbox WHERE published_at IS NULL").Scan(&unpublished))
+	require.Equal(t, 1, unpublished, "precondition: accepted by the transport, not marked published")
+	require.Len(t, tr.log, 1, "precondition: the transport holds it")
+
+	_, err = f.Once(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, admin.QueryRow(context.Background(), "SELECT count(*) FROM be_outbox WHERE published_at IS NULL").Scan(&unpublished))
+	assert.Zero(t, unpublished, "published again, then marked")
+	for id, n := range tr.attempts {
+		assert.Equal(t, 2, n, "event %s published twice", id)
+	}
+	assert.Len(t, tr.log, 1, "the transport keeps one message per event ID (its deduplication)")
+
+	// a consumer that receives it twice anyway (past the transport's window) applies it once: TestARedeliveryTakesEffectOnce
 }
