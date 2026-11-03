@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.45",
+  "protocol": "3.0.0-alpha.47",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -273,7 +273,12 @@
         "work.TestACommitWakesAWorkerWithoutWaitingForThePoll",
         "work.TestPurgeKeepsWhatIsNotYetDue",
         "launcher.TestQueuedWorkRunsInTheComponent",
-        "work.TestABacklogDoesNotSlowEachClaim"
+        "work.TestABacklogDoesNotSlowEachClaim",
+        "work.TestACrashedReplicasItemIsTakenOverAfterItsLease",
+        "work.TestAnIdleMemberClaimsOncePerPoll",
+        "work.TestAPollSpreadsABacklogOverTheWorkers",
+        "work.TestTheSchedulerMaterializesASlotWhenItComes",
+        "work.TestNextIsTheFirstSlotAfter"
       ],
       "pending": [
         {

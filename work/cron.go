@@ -131,6 +131,17 @@ func (s Schedule) Slots(loc *time.Location, after, until time.Time) []Slot {
 	return out
 }
 
+// Next is the first slot whose run instant is after after; false when none comes within eight years (a date that never
+// exists, such as 31 February).
+func (s Schedule) Next(loc *time.Location, after time.Time) (Slot, bool) {
+	for from, end := after, after.AddDate(8, 0, 0); from.Before(end); from = from.Add(24 * time.Hour) {
+		if slots := s.Slots(loc, from, from.Add(24*time.Hour)); len(slots) > 0 {
+			return slots[0], true
+		}
+	}
+	return Slot{}, false
+}
+
 type wall struct {
 	y        int
 	mo       time.Month

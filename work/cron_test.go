@@ -70,3 +70,31 @@ func TestCronRejectsBadExpressions(t *testing.T) {
 		assert.Error(t, err, e)
 	}
 }
+
+func TestNextIsTheFirstSlotAfter(t *testing.T) { // P7.23
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	require.NoError(t, err)
+	for _, c := range []struct {
+		expr, after, want string
+		loc               *time.Location
+	}{
+		{"*/5 * * * *", "2026-11-03T10:02:00Z", "2026-11-03T10:05", time.UTC},
+		{"*/5 * * * *", "2026-11-03T10:05:00Z", "2026-11-03T10:10", time.UTC}, // after, not at
+		{"0 0 1 1 *", "2026-11-03T10:02:00Z", "2027-01-01T00:00", time.UTC},
+		{"0 0 29 2 *", "2026-03-01T00:00:00Z", "2028-02-29T00:00", time.UTC},
+		{"30 2 * * *", "2026-03-28T12:00:00Z", "2026-03-29T02:30", berlin}, // in the spring gap: its identity is kept
+	} {
+		s, err := ParseCron(c.expr)
+		require.NoError(t, err)
+		after, err := time.Parse(time.RFC3339, c.after)
+		require.NoError(t, err)
+		slot, ok := s.Next(c.loc, after)
+		require.True(t, ok, c.expr)
+		assert.Equal(t, c.want, slot.ID, c.expr)
+		assert.Equal(t, s.Slots(c.loc, after, slot.At), []Slot{slot}, "%s: no slot in between", c.expr)
+	}
+	never, err := ParseCron("0 0 31 2 *")
+	require.NoError(t, err)
+	_, ok := never.Next(time.UTC, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	assert.False(t, ok, "31 February never comes")
+}

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/db"
@@ -28,16 +29,21 @@ type Runner struct {
 	names   []string
 	mu      sync.Mutex
 	running map[string]*Run
-	ready   chan struct{} // one signal per item a commit enqueued, at most one per worker (P7.21)
+	ready   chan bool // a wake-up per item a commit enqueued (P7.21), and one per poll (true, P7.23); at most one per worker
 	wg      sync.WaitGroup
 	stopped chan struct{}
+	// what the member's background work costs the database while idle (P7.23): claim statements and materializing
+	// transactions run
+	claims, materialized atomic.Int64
+	nextSlot             map[string]time.Time // each cron job's next slot after its watermark (P7.23)
+	skew                 time.Duration        // the database's clock minus this host's, at the last materialization
 }
 
 // NewRunner creates a member's runner; jobs are added before Start.
 func NewRunner(d *db.DB, member string, log *slog.Logger) *Runner {
 	return &Runner{DB: d, Holder: member + "/" + ids.New().String(), Log: log, Lease: DefaultLease,
 		Poll: 500 * time.Millisecond, Concurrency: 4, jobs: map[string]*Job{}, running: map[string]*Run{},
-		ready: make(chan struct{}, 4)}
+		ready: make(chan bool, 4), nextSlot: map[string]time.Time{}}
 }
 
 // Add declares jobs (the module's Jobs).
@@ -81,11 +87,14 @@ func (w *Runner) Enqueue(ctx context.Context, tx db.Tx, job string, args any) (s
 }
 
 // signal wakes an idle worker once a commit that enqueued an item is visible (P7.21): without it every item waits half
-// a poll (measured: event arrival to the job's call p50 250 ms, p99 500 ms at a 500 ms poll). A full channel means every
-// worker is already woken; the poll covers other replicas' items, retries and takeovers.
-func (w *Runner) signal() {
+// a poll (measured: event arrival to the job's call p50 250 ms, p99 500 ms at a 500 ms poll). The poll covers other
+// replicas' items, retries and takeovers.
+func (w *Runner) signal() { w.wake(false) }
+
+// wake wakes one idle worker; a full channel means every worker is already woken.
+func (w *Runner) wake(polled bool) {
 	select {
-	case w.ready <- struct{}{}:
+	case w.ready <- polled:
 	default:
 	}
 }
@@ -94,7 +103,7 @@ func (w *Runner) signal() {
 func (w *Runner) Start(ctx context.Context) error {
 	w.stopped = make(chan struct{})
 	if cap(w.ready) != w.Concurrency {
-		w.ready = make(chan struct{}, max(w.Concurrency, 1))
+		w.ready = make(chan bool, max(w.Concurrency, 1))
 	}
 	for _, name := range w.names {
 		if j := w.jobs[name]; j.Kind == Singleton {
@@ -104,10 +113,13 @@ func (w *Runner) Start(ctx context.Context) error {
 		}
 	}
 	w.wg.Add(1)
-	go func() { defer w.wg.Done(); w.loop(ctx, time.Second, nil, w.schedule) }()
+	go func() { defer w.wg.Done(); w.loop(ctx, time.Second, w.schedule) }()
+	// one poll for all the workers (P7.23): idle, a member claims once a poll whatever its concurrency
+	w.wg.Add(1)
+	go func() { defer w.wg.Done(); w.loop(ctx, w.Poll, func(context.Context) bool { w.wake(true); return false }) }()
 	for i := 0; i < w.Concurrency; i++ {
 		w.wg.Add(1)
-		go func() { defer w.wg.Done(); w.loop(ctx, w.Poll, w.ready, w.claimAndRun) }()
+		go func() { defer w.wg.Done(); w.work(ctx) }()
 	}
 	for _, j := range w.jobs {
 		if j.Kind == Every {
@@ -115,7 +127,7 @@ func (w *Runner) Start(ctx context.Context) error {
 			w.wg.Add(1)
 			go func() {
 				defer w.wg.Done()
-				w.loop(ctx, j.Interval, nil, func(ctx context.Context) bool {
+				w.loop(ctx, j.Interval, func(ctx context.Context) bool {
 					ctx, cancel := context.WithTimeout(ctx, j.Timeout)
 					defer cancel()
 					if err := safely(func() error { return j.Handle(ctx, nil) }); err != nil && ctx.Err() == nil {
@@ -132,8 +144,8 @@ func (w *Runner) Start(ctx context.Context) error {
 // Stop waits for the loops to end (their context is already cancelled).
 func (w *Runner) Stop() { w.wg.Wait() }
 
-// loop runs fn at once, then every interval, at once again while it finds more, and whenever wake signals (nil: never).
-func (w *Runner) loop(ctx context.Context, every time.Duration, wake <-chan struct{}, fn func(context.Context) bool) {
+// loop runs fn at once, then every interval, and at once again while it finds more.
+func (w *Runner) loop(ctx context.Context, every time.Duration, fn func(context.Context) bool) {
 	t := time.NewTimer(0)
 	defer t.Stop()
 	for {
@@ -141,7 +153,6 @@ func (w *Runner) loop(ctx context.Context, every time.Duration, wake <-chan stru
 		case <-ctx.Done():
 			return
 		case <-t.C:
-		case <-wake:
 		}
 		if fn(ctx) {
 			t.Reset(0) // there may be more
@@ -160,27 +171,47 @@ func (w *Runner) ensureSingleton(ctx context.Context, j *Job) error {
 	})
 }
 
-// schedule materializes due cron slots under each job's watermark lock (P7.16).
+// schedule materializes due cron slots under each job's watermark lock (P7.16). Before a job's next slot it opens no
+// transaction (P7.23); the slot's time is on the database's clock, compared through the skew seen at the last look.
 func (w *Runner) schedule(ctx context.Context) bool {
 	for _, name := range w.names {
-		if j := w.jobs[name]; j.Kind == Cron {
-			if err := w.Materialize(ctx, j.Name, time.Time{}); err != nil && ctx.Err() == nil {
+		j := w.jobs[name]
+		if j.Kind != Cron {
+			continue
+		}
+		if at, ok := w.nextSlot[name]; ok && time.Now().Add(w.skew).Before(at) {
+			continue
+		}
+		local := time.Now()
+		next, dbNow, err := w.materialize(ctx, j, time.Time{})
+		if err != nil {
+			if ctx.Err() == nil {
 				w.Log.Warn("materializing cron slots failed", "job", j.Name, "error", err.Error())
 			}
+			continue
 		}
+		w.skew, w.nextSlot[name] = dbNow.Sub(local), next
 	}
 	return false
 }
 
 // Materialize turns the due slots of a cron job into work items; now zero means the database's clock.
 func (w *Runner) Materialize(ctx context.Context, job string, now time.Time) error {
-	j := w.jobs[job]
-	return w.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	_, _, err := w.materialize(ctx, w.jobs[job], now)
+	return err
+}
+
+// materialize returns the first slot after the new watermark (far ahead when the schedule has none) and the time it
+// materialized at.
+func (w *Runner) materialize(ctx context.Context, j *Job, now time.Time) (next time.Time, at time.Time, err error) {
+	w.materialized.Add(1)
+	err = w.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
 		if now.IsZero() {
 			if err := tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
 				return err
 			}
 		}
+		at = now
 		if _, err := tx.Exec(ctx, `INSERT INTO be_cron_watermark (job, watermark_at) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 			j.Name, now); err != nil {
 			return err
@@ -189,7 +220,11 @@ func (w *Runner) Materialize(ctx context.Context, job string, now time.Time) err
 		if err := tx.QueryRow(ctx, "SELECT watermark_at FROM be_cron_watermark WHERE job = $1 FOR UPDATE", j.Name).Scan(&wm); err != nil {
 			return err
 		}
-		pending, paused, next := Plan(j.schedule, j.loc, j.Backfill, j.MaxBacklog, wm, now)
+		pending, paused, mark := Plan(j.schedule, j.loc, j.Backfill, j.MaxBacklog, wm, now)
+		next = wm.AddDate(100, 0, 0)
+		if s, ok := j.schedule.Next(j.loc, mark); ok {
+			next = s.At
+		}
 		for _, group := range []struct {
 			slots []Slot
 			state string
@@ -207,7 +242,7 @@ func (w *Runner) Materialize(ctx context.Context, job string, now time.Time) err
 				}
 			}
 		}
-		if next.Equal(wm) {
+		if mark.Equal(wm) {
 			return nil
 		}
 		last := any(nil)
@@ -216,25 +251,36 @@ func (w *Runner) Materialize(ctx context.Context, job string, now time.Time) err
 			last = all[len(all)-1].ID
 		}
 		_, err := tx.Exec(ctx, "UPDATE be_cron_watermark SET watermark_at = $2, last_slot = coalesce($3, last_slot) WHERE job = $1",
-			j.Name, next, last)
+			j.Name, mark, last)
 		return err
 	})
+	return next, at, err
 }
 
-// claimAndRun claims one due item (P7.5) and runs it; it reports whether one was found.
-func (w *Runner) claimAndRun(ctx context.Context) bool {
-	r, err := w.claim(ctx)
-	if err != nil {
-		if ctx.Err() == nil {
-			w.Log.Warn("claiming work failed", "error", err.Error())
+// work is one worker: woken, it claims (P7.5) and runs items until it finds none. Woken by the poll, it wakes another
+// worker for each item it finds, so a backlog the poll found spreads over all of them (P7.23).
+func (w *Runner) work(ctx context.Context) {
+	for {
+		var polled bool
+		select {
+		case <-ctx.Done():
+			return
+		case polled = <-w.ready:
 		}
-		return false
+		for {
+			r, err := w.claim(ctx)
+			if err != nil && ctx.Err() == nil {
+				w.Log.Warn("claiming work failed", "error", err.Error())
+			}
+			if r == nil {
+				break
+			}
+			if polled {
+				w.wake(true)
+			}
+			w.run(ctx, r)
+		}
 	}
-	if r == nil {
-		return false
-	}
-	w.run(ctx, r)
-	return true
 }
 
 func (w *Runner) claim(ctx context.Context) (*Run, error) {
@@ -242,6 +288,7 @@ func (w *Runner) claim(ctx context.Context) (*Run, error) {
 		return nil, nil
 	}
 	var r *Run
+	w.claims.Add(1)
 	err := w.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
 		r = nil
 		var kind, effect string

@@ -37,15 +37,25 @@ func Schema(t testing.TB, name string, files fs.FS) (*db.DB, *pgx.Conn) {
 		Table: "schema_migrations", Files: files}); err != nil {
 		t.Fatal(err)
 	}
-	s := db.SettingsFrom(values)
-	s.Foreground, s.Background = 16, 16
-	pool, err := db.Open(context.Background(), db.PoolConfig{Target: s.Target, User: s.User, Password: s.Password,
-		AppName: "demo/" + name, MaxConns: 32, Prepared: true})
+	d, pool, err := Open(values, name)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
 	admin := pgtest.Admin(t, pgtest.Database)
 	pgtest.Exec(t, admin, "SET search_path = "+name)
-	return db.NewDB("demo/"+name, pool, s), admin
+	return d, admin
+}
+
+// Open is a member's handle as the runtime role from its parsed configuration; a test's child process opens the
+// parent's schema with it (config.Parse(db.MigrateKeys(), config.Map(pgtest.MemberEnv(...)))).
+func Open(values *config.Values, name string) (*db.DB, *db.Pool, error) {
+	s := db.SettingsFrom(values)
+	s.Foreground, s.Background = 16, 16
+	pool, err := db.Open(context.Background(), db.PoolConfig{Target: s.Target, User: s.User, Password: s.Password,
+		AppName: "demo/" + name, MaxConns: 32, Prepared: true})
+	if err != nil {
+		return nil, nil, err
+	}
+	return db.NewDB("demo/"+name, pool, s), pool, nil
 }
