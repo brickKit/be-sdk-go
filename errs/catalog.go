@@ -11,9 +11,11 @@ const (
 	ReasonBatchTooLarge            = "BATCH_TOO_LARGE"
 	ReasonTokenInvalid             = "TOKEN_INVALID"
 	ReasonTokenStale               = "TOKEN_STALE"
+	ReasonSessionEnded             = "SESSION_ENDED"
 	ReasonServiceCredentialInvalid = "SERVICE_CREDENTIAL_INVALID"
 	ReasonPermissionDenied         = "PERMISSION_DENIED"
 	ReasonContainmentNotProven     = "CONTAINMENT_NOT_PROVEN"
+	ReasonCSRFHeaderRequired       = "CSRF_HEADER_REQUIRED"
 	ReasonNotFound                 = "NOT_FOUND"
 	ReasonQueryNotCompletable      = "QUERY_NOT_COMPLETABLE"
 	ReasonFieldNotQueryable        = "FIELD_NOT_QUERYABLE"
@@ -73,9 +75,11 @@ func init() {
 		{ReasonBatchTooLarge, InvalidArgument, 0, RetryNo, "Too many identities in one batch"},
 		{ReasonTokenInvalid, Unauthenticated, 0, RetryNo, "The credentials are not valid"},
 		{ReasonTokenStale, Unauthenticated, 0, RetryAfterRefresh, "The credentials are out of date"},
+		{ReasonSessionEnded, Unauthenticated, 0, RetryNo, "The session has ended; log in again"},
 		{ReasonServiceCredentialInvalid, Unauthenticated, 0, RetryNo, "The calling service is not authenticated"},
 		{ReasonPermissionDenied, PermissionDenied, 0, RetryNo, "Not allowed"},
 		{ReasonContainmentNotProven, PermissionDenied, 0, RetryNo, "The change exceeds what can be proven"},
+		{ReasonCSRFHeaderRequired, PermissionDenied, 0, RetryNo, "The request needs the BE-Request header"},
 		{ReasonNotFound, NotFound, 0, RetryNo, "Not found"},
 		{ReasonQueryNotCompletable, FailedPrecondition, 422, RetryNo, "The query cannot be completed"},
 		{ReasonFieldNotQueryable, FailedPrecondition, 422, RetryNo, "A field cannot be used in this query"},

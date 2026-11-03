@@ -2,6 +2,7 @@ package grpcx_test
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"os"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -112,4 +114,113 @@ func TestClientsSendTheTargetsDerivedNameAsSNI(t *testing.T) { // P8.5: what gRP
 	w := worldOf(t)
 	cfg := w.TLS(t, "erp/sales").ClientConfig("erp/inventory")
 	assert.Equal(t, identity.DNSName(w.Deployment, "erp/inventory"), cfg.ServerName)
+}
+
+// TI01, TI07 (P8.6): the caller is the certificate's identity only. A be-caller label naming a permitted component
+// does not let another component in, and on a permitted call the method sees the certificate's identity, not the
+// label.
+func TestTheCallerIsTheCertificateNotALabel(t *testing.T) {
+	seen := make(chan string, 2)
+	var s grpcx.Services
+	s.Register(&echoDesc, echotest.Say(func(ctx context.Context, _ *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+		c, _ := grpcx.Caller(ctx)
+		seen <- c
+		return wrapperspb.String("ok"), nil
+	}), map[string]grpcx.Method{"Say": {Operation: "erp/inventory.say", Callers: []string{"erp/sales"}}})
+	srv, err := grpcx.NewServer(deps(t, "erp/inventory"), &s)
+	require.NoError(t, err)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(srv.Stop)
+	labelled := func(id, label string) error {
+		c, err := member(t, id).GRPC("erp/inventory", ln.Addr().String())
+		require.NoError(t, err)
+		ctx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "be-caller", label), 3*time.Second)
+		defer cancel()
+		return c.Invoke(ctx, echotest.Method, wrapperspb.String("x"), new(wrapperspb.StringValue), calls.Idempotent())
+	}
+	assert.True(t, errs.Is(labelled("erp/billing", "erp/sales"), "be", errs.ReasonPermissionDenied),
+		"a label naming a permitted caller does not admit another component")
+	require.NoError(t, labelled("erp/sales", "erp/billing"))
+	assert.Equal(t, "erp/sales", <-seen, "the method sees the certificate's identity")
+}
+
+// TI20: an expired service certificate is refused at the handshake; the same component with a valid one is admitted.
+func TestAnExpiredCertificateIsRefused(t *testing.T) {
+	addr := serveOnlyFor(t, "erp/inventory", "erp/sales")
+	w := worldOf(t)
+	cert, key, ca := w.ExpiredCerts(t, "erp/sales")
+	expired, err := identity.LoadServiceTLS(w.Deployment, "erp/sales", cert, key, ca, os.ReadFile)
+	require.NoError(t, err)
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(expired.ClientConfig("erp/inventory"))))
+	require.NoError(t, err)
+	defer conn.Close()
+	assert.Error(t, say(conn), "expired")
+	ok, err := member(t, "erp/sales").GRPC("erp/inventory", addr)
+	require.NoError(t, err)
+	assert.NoError(t, say(ok), "precondition: the same caller with a valid certificate is admitted")
+}
+
+// TI20 (P8.5 "files can rotate"): a server that re-reads its files presents the new certificate to the next
+// handshake, without a restart.
+func TestARotatedCertificateIsPresentedAfterReload(t *testing.T) {
+	w := worldOf(t)
+	cert, key, ca := w.Certs(t, "erp/inventory")
+	s, err := identity.LoadServiceTLS(w.Deployment, "erp/inventory", cert, key, ca, os.ReadFile)
+	require.NoError(t, err)
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", s.ServerConfig())
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.(*tls.Conn).Handshake()
+			c.Close()
+		}
+	}()
+	client := w.TLS(t, "erp/sales").ClientConfig("erp/inventory")
+	serial := func() string {
+		c, err := tls.Dial("tcp", ln.Addr().String(), client)
+		require.NoError(t, err)
+		defer c.Close()
+		return c.ConnectionState().PeerCertificates[0].SerialNumber.String()
+	}
+	first := serial()
+	newCert, newKey, _ := w.Certs(t, "erp/inventory")
+	for from, to := range map[string]string{newCert: cert, newKey: key} {
+		b, err := os.ReadFile(from)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(to, b, 0o600))
+	}
+	assert.Equal(t, first, serial(), "precondition: not re-read yet")
+	require.NoError(t, s.Reload())
+	assert.NotEqual(t, first, serial(), "the rotated certificate after the reload")
+}
+
+// TI03: a client that reaches a server with another identity aborts at the handshake; nothing reaches the method.
+func TestAWrongTargetGetsNothing(t *testing.T) {
+	called := make(chan struct{}, 1)
+	var s grpcx.Services
+	s.Register(&echoDesc, echotest.Say(func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+		called <- struct{}{}
+		return wrapperspb.String("ok"), nil
+	}), map[string]grpcx.Method{"Say": {Operation: "erp/inventory.say", Callers: []string{grpcx.AnyComponent}}})
+	srv, err := grpcx.NewServer(deps(t, "erp/inventory"), &s)
+	require.NoError(t, err)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(srv.Stop)
+	wrong, err := member(t, "erp/sales").GRPC("erp/finance", ln.Addr().String())
+	require.NoError(t, err)
+	assert.Error(t, say(wrong))
+	assert.Empty(t, called, "the method was never called")
+	right, err := member(t, "erp/sales").GRPC("erp/inventory", ln.Addr().String())
+	require.NoError(t, err)
+	require.NoError(t, say(right))
+	assert.Len(t, called, 1, "precondition: the method counts the calls it gets")
 }

@@ -37,6 +37,8 @@ type Revision struct {
 type SubjectEntry struct {
 	Segments         []Segment `json:"segments"`
 	AccountsDisabled bool      `json:"accounts_disabled"`
+	// SecurityVersion is the account's latest security version (P8.27); absent (0) when the view has none.
+	SecurityVersion int64 `json:"security_version,omitempty"`
 }
 
 // Shard is one shard of the authorization view (be.security.view).
@@ -287,6 +289,9 @@ func epochBefore(a, b string) bool {
 type Grant struct {
 	Segments []Segment
 	Cutoff   time.Duration // suspend-aware reading after which the evidence is no longer valid
+	// SecurityVersion is the subject's security version in the shard used (0 when absent): admission compares it
+	// with the token's (P8.25).
+	SecurityVersion int64
 }
 
 // Lookup finds the subject's segments for a resource type in a valid shard; risk high uses W_high.
@@ -312,7 +317,7 @@ func (h *Holder) Lookup(resourceType, principal string, risk string) (Grant, err
 				}
 			}
 		}
-		return Grant{Segments: segs, Cutoff: s.sentAt + valid}, nil
+		return Grant{Segments: segs, Cutoff: s.sentAt + valid, SecurityVersion: entry.SecurityVersion}, nil
 	}
 	return Grant{}, errs.New(errs.ReasonAuthorizationViewExpired, "no valid authorization view").With("resource_type", resourceType)
 }

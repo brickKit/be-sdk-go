@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math"
 	"regexp"
 	"slices"
 	"strings"
@@ -29,6 +30,15 @@ var principalID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89a
 type User struct {
 	Subject string    // the platform principal
 	Expiry  time.Time // the credential's own end: part of the request's cutoff
+	// SecurityVersion is the account's security version when the token was issued (be_sv, P8.27): admission compares
+	// it with the authorization view's (P8.25).
+	SecurityVersion int64
+}
+
+// accessClaims are the registered claims and be_sv, which JSON numbers decode into as float64.
+type accessClaims struct {
+	jwt.RegisteredClaims
+	SV any `json:"be_sv"`
 }
 
 // Problem names the first check a token failed (protocol vector jwt-verify); it is logged, never sent.
@@ -81,7 +91,7 @@ func (v *Verifier) Verify(token string) (User, error) {
 	case h.Kid == "":
 		return User{}, &TokenError{"kid"}
 	}
-	claims := jwt.RegisteredClaims{}
+	claims := accessClaims{}
 	p := jwt.NewParser(jwt.WithValidMethods(Algorithms), jwt.WithIssuer(v.Issuer), jwt.WithAudience(v.Audience),
 		jwt.WithLeeway(Leeway), jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithTimeFunc(now))
 	_, err = p.ParseWithClaims(token, &claims, v.Keys.keyfunc)
@@ -91,7 +101,11 @@ func (v *Verifier) Verify(token string) (User, error) {
 	if !principalID.MatchString(claims.Subject) {
 		return User{}, &TokenError{"sub"}
 	}
-	return User{Subject: claims.Subject, Expiry: claims.ExpiresAt.Time}, nil
+	sv, ok := claims.SV.(float64)
+	if !ok || sv < 1 || sv != math.Trunc(sv) || sv > 1<<53 {
+		return User{}, &TokenError{"sv"}
+	}
+	return User{Subject: claims.Subject, Expiry: claims.ExpiresAt.Time, SecurityVersion: int64(sv)}, nil
 }
 
 func classify(err error) error {

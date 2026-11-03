@@ -81,6 +81,12 @@ func (h *HTTP) Do(ctx context.Context, req Request, out any) error {
 		}
 		return r
 	})
+	if err != nil && req.ForwardUser && errs.From(err).Code == errs.Unauthenticated {
+		// P8.26: only the entry component's own TOKEN_STALE makes the edge exchange and replay; a downstream refusing
+		// the user's credential is "cannot confirm now", never passed through as a 401
+		return errs.New(errs.ReasonAuthorizationUnprovable, h.dep.ID+" did not accept the user's credential").
+			With("dependency", h.dep.ID).Wrap(err)
+	}
 	if err != nil || out == nil || len(answer) == 0 {
 		return err
 	}

@@ -58,6 +58,7 @@ type World struct {
 
 	mu       sync.Mutex
 	subjects map[string]authz.SubjectEntry
+	versions map[string]int64 // the accounts' security versions (P8.27); a principal not here is at 1
 	types    map[string]bool
 	gen      int
 	audited  map[string]json.RawMessage // record ID -> the record as received
@@ -71,7 +72,7 @@ type World struct {
 func New(t testing.TB) *World {
 	t.Helper()
 	w := &World{Deployment: "0190f3a1-0000-7000-8000-00000000d001", dir: t.TempDir(), subjects: map[string]authz.SubjectEntry{},
-		types: map[string]bool{}, gen: 1, audited: map[string]json.RawMessage{}, auditDigests: map[string]string{},
+		versions: map[string]int64{}, types: map[string]bool{}, gen: 1, audited: map[string]json.RawMessage{}, auditDigests: map[string]string{},
 		submitted: map[string]string{}}
 	_, w.signer, _ = ed25519.GenerateKey(rand.Reader)
 	jwks := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
@@ -87,12 +88,20 @@ func New(t testing.TB) *World {
 	return w
 }
 
-// Token issues a valid access token for a principal.
+// Token issues a valid access token for a principal at the account's current security version.
 func (w *World) Token(subject string) string {
+	w.mu.Lock()
+	sv := w.versions[subject]
+	w.mu.Unlock()
+	return w.TokenAt(subject, max(sv, 1))
+}
+
+// TokenAt issues a valid access token carrying the security version sv (be_sv).
+func (w *World) TokenAt(subject string, sv int64) string {
 	now := time.Now().Unix()
 	h, _ := json.Marshal(map[string]string{"alg": "EdDSA", "typ": "at+jwt", "kid": "test-1"})
 	c, _ := json.Marshal(map[string]any{"iss": w.Issuer, "aud": "be:deployment:" + w.Deployment, "sub": subject,
-		"iat": now, "exp": now + 600})
+		"iat": now, "exp": now + 600, "be_sv": sv})
 	signing := base64.RawURLEncoding.EncodeToString(h) + "." + base64.RawURLEncoding.EncodeToString(c)
 	return signing + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(w.signer, []byte(signing)))
 }
@@ -130,15 +139,20 @@ func (w *World) Certs(t testing.TB, component string) (cert, key, ca string) {
 
 // CertsIn issues a certificate naming any deployment (for refusals).
 func (w *World) CertsIn(t testing.TB, deployment, component string) (cert, key, ca string) {
-	return w.issue(t, deployment, component, []string{identity.DNSName(deployment, component)})
+	return w.issue(t, deployment, component, []string{identity.DNSName(deployment, component)}, time.Now().Add(24*time.Hour))
 }
 
 // CertsWithoutDNS issues a certificate with only the URI SAN (for refusals: P8.5 needs both).
 func (w *World) CertsWithoutDNS(t testing.TB, component string) (cert, key, ca string) {
-	return w.issue(t, w.Deployment, component, nil)
+	return w.issue(t, w.Deployment, component, nil, time.Now().Add(24*time.Hour))
 }
 
-func (w *World) issue(t testing.TB, deployment, component string, dns []string) (cert, key, ca string) {
+// ExpiredCerts issues a certificate of this deployment that expired a minute ago (TI20: refused at the handshake).
+func (w *World) ExpiredCerts(t testing.TB, component string) (cert, key, ca string) {
+	return w.issue(t, w.Deployment, component, []string{identity.DNSName(w.Deployment, component)}, time.Now().Add(-time.Minute))
+}
+
+func (w *World) issue(t testing.TB, deployment, component string, dns []string, notAfter time.Time) (cert, key, ca string) {
 	t.Helper()
 	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	u, _ := url.Parse(identity.SPIFFE(deployment, component))
@@ -148,7 +162,7 @@ func (w *World) issue(t testing.TB, deployment, component string, dns []string) 
 	w.mu.Unlock()
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(n), Subject: pkix.Name{CommonName: component}, URIs: []*url.URL{u},
 		DNSNames:  dns,
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour), KeyUsage: x509.KeyUsageDigitalSignature,
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: notAfter, KeyUsage: x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, w.caCert, &k.PublicKey, w.caKey)
 	if err != nil {
@@ -189,6 +203,18 @@ func (w *World) Grant(principal string, segs ...authz.Segment) {
 	w.subjects[principal] = e
 	for _, s := range segs {
 		w.types[s.ResourceType] = true
+	}
+	w.gen++
+}
+
+// SecurityChange is an identity-side security change of the account (a password change, a forced logout): its
+// security version goes up by one, the next view carries it, and tokens issued before are stale (P8.25, P8.27).
+func (w *World) SecurityChange(principal string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.versions[principal] = max(w.versions[principal], 1) + 1
+	if _, ok := w.subjects[principal]; !ok {
+		w.subjects[principal] = authz.SubjectEntry{}
 	}
 	w.gen++
 }
@@ -281,7 +307,11 @@ func (w *World) view() ([]byte, string, error) {
 		if err != nil {
 			return nil, "", err
 		}
-		subjects[p] = map[string]any{"segments": set, "accounts_disabled": e.AccountsDisabled}
+		entry := map[string]any{"segments": set, "accounts_disabled": e.AccountsDisabled}
+		if v, ok := w.versions[p]; ok {
+			entry["security_version"] = v
+		}
+		subjects[p] = entry
 	}
 	rev := func(domain string) map[string]any {
 		return map[string]any{"domain": domain, "value": gen, "epoch": "1.1", "instance": Instance}

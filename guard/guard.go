@@ -1,4 +1,4 @@
-// Package guard admits user-surface requests (protocol P8.1-P8.4, P8.12-P8.13): the bearer credential is
+// Package guard admits user-surface requests (protocol P8.1-P8.4, P8.12-P8.13, P8.25): the bearer credential is
 // verified, the route's operation must be declared, a valid authorization view must exist for it, and the request
 // carries the verified user, its authorization subject and its cutoff.
 package guard
@@ -62,11 +62,18 @@ func (u *User) Admit(ctx context.Context, r httpx.Route, req *http.Request) (con
 	if err != nil {
 		return ctx, err
 	}
+	if Stale(user.SecurityVersion, g.SecurityVersion) {
+		return ctx, errs.New(errs.ReasonTokenStale, "the credential predates the account's last security change")
+	}
 	ctx = reqctx.WithCutoff(ctx, boot()+user.Expiry.Sub(now()))
 	ctx = reqctx.WithCutoff(ctx, g.Cutoff)
 	ctx = identity.WithUser(ctx, user)
 	return authz.WithSubject(ctx, &authz.Subject{Principal: user.Subject, Defs: u.Defs, Holder: u.Holder, At: now()}), nil
 }
+
+// Stale reports whether a token issued at the account's security version tokenSV is out of date against the
+// version the authorization view holds for the subject (P8.25; 0 when the view has none).
+func Stale(tokenSV, viewSV int64) bool { return viewSV > tokenSV }
 
 // CheckOperations refuses routes and methods whose operations are not declared (P8.7).
 func CheckOperations(defs *authz.Definitions, ops []string) error {

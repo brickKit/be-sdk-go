@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/http/httptrace"
 	"strconv"
 	"strings"
 	"testing"
@@ -101,6 +102,16 @@ func (l *ledger) Routes(r *httpx.Routes) error {
 		}
 		return authz.Mask(row([]string{"id", "amount", "cost", "note"}, vals), d.Fields), nil
 	}
+	// who the request is: the verified subject only (TI05, TI08)
+	r.GET("/api/whoami", "demo.entry.read", func(c *httpx.Context) error {
+		u, _ := identity.UserFrom(c.Ctx())
+		return c.JSON(200, map[string]string{"subject": u.Subject})
+	})
+	r.Add(httpx.Route{Method: "GET", Path: "/api/public/whoami", Public: true, Handle: func(c *httpx.Context) error {
+		_, ok := identity.UserFrom(c.Ctx())
+		_, subject := authz.From(c.Ctx())
+		return c.JSON(200, map[string]bool{"user": ok, "subject": subject})
+	}})
 	r.GET("/api/entries/:id", "demo.entry.read", func(c *httpx.Context) error {
 		out, err := one(c, "demo.entry.read")
 		if err != nil {
@@ -143,7 +154,7 @@ func call(t *testing.T, method, url, bearer string) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
-func TestOthersSeeNothingAndFieldsFollowTheSegments(t *testing.T) { // T2.8 acceptance, CK-AZ-05, P8.15-P8.16
+func TestOthersSeeNothingAndFieldsFollowTheSegments(t *testing.T) { // T2.8 acceptance, CK-AZ-05, P8.15-P8.16, CK-ID-05
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "ledger", "")
 	def := component.Definition{ID: "demo/ledger", Version: "3.0.0", Authz: ledgerDefs,
@@ -206,6 +217,72 @@ func TestOthersSeeNothingAndFieldsFollowTheSegments(t *testing.T) { // T2.8 acce
 		}
 		return false
 	}, 15*time.Second, 100*time.Millisecond, "the approval's audit record reached the audit component over mTLS")
+
+	// TI05: what a request says about itself (be-caller, an actor, a verified flag) is not identity; a public route
+	// gets no user context even with a valid credential
+	req, _ := http.NewRequest("GET", base+"/api/whoami", nil)
+	req.Header.Set("Authorization", alice)
+	for _, h := range []string{"be-caller", "be-actor", "X-BE-Actor", "X-User-Id", "be-verified"} {
+		req.Header.Set(h, sectest.Bob)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	assert.JSONEq(t, `{"subject":"`+sectest.Alice+`"}`, string(b))
+	code, body = call(t, "GET", base+"/api/public/whoami", alice)
+	assert.Equal(t, 200, code)
+	assert.JSONEq(t, `{"user":false,"subject":false}`, body)
+
+	// TI08: one reused connection, Alice and Bob alternating: each request keeps its own identity
+	one := &http.Client{Transport: &http.Transport{MaxConnsPerHost: 1, MaxIdleConnsPerHost: 1}}
+	reused := 0
+	for i, bearer := range []string{alice, bob, alice, bob} {
+		req, _ := http.NewRequest("GET", base+"/api/whoami", nil)
+		req.Header.Set("Authorization", bearer)
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GotConn: func(ci httptrace.GotConnInfo) {
+				if ci.Reused {
+					reused++
+				}
+			}}))
+		resp, err := one.Do(req)
+		require.NoError(t, err)
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		want := sectest.Alice
+		if i%2 == 1 {
+			want = sectest.Bob
+		}
+		assert.JSONEq(t, `{"subject":"`+want+`"}`, string(b), "request %d", i)
+	}
+	assert.Equal(t, 3, reused, "precondition: the requests shared one connection")
+
+	// CK-ID-05, P8.25: after an identity-side security change the token issued before is stale at admission, before
+	// any effect; the new token (equal versions) and a subject without a version in the view go through
+	approvals := func() int {
+		var n int
+		require.NoError(t, admin.QueryRow(context.Background(),
+			"SELECT count(*) FROM ledger.be_audit_log WHERE operation = 'demo.entry.approve'").Scan(&n))
+		return n
+	}
+	w.SecurityChange(sectest.Alice)
+	require.Eventually(t, func() bool { // a read: waiting must not write
+		code, body = call(t, "GET", base+"/api/entries/0190f3a1-0000-7000-8000-00000000e001", alice)
+		return code == 401
+	}, 10*time.Second, 100*time.Millisecond, "the renewed view carries the new version: %d %s", code, body)
+	assert.Contains(t, body, `"reason":"TOKEN_STALE"`)
+	before := approvals()
+	require.Equal(t, 1, before, "precondition: only the approval above wrote its audit row")
+	code, body = call(t, "POST", base+"/api/entries/0190f3a1-0000-7000-8000-00000000e001/approve", alice)
+	assert.Equal(t, 401, code)
+	assert.Contains(t, body, `"reason":"TOKEN_STALE"`)
+	assert.Equal(t, before, approvals(), "a stale token's write did nothing")
+	code, body = call(t, "POST", base+"/api/entries/0190f3a1-0000-7000-8000-00000000e001/approve", w.Bearer(sectest.Alice))
+	assert.Equal(t, 204, code, "a token at the current version: %s", body)
+	assert.Equal(t, before+1, approvals())
+	code, _ = call(t, "GET", base+"/api/entries/0190f3a1-0000-7000-8000-00000000e003", bob)
+	assert.Equal(t, 200, code, "Bob has no version in the view: not stale")
 
 	code, body = call(t, "GET", base+"/api/entries", "")
 	assert.Equal(t, 401, code)
