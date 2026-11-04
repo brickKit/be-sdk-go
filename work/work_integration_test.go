@@ -354,6 +354,58 @@ func TestACommitWakesAWorkerWithoutWaitingForThePoll(t *testing.T) { // P7.21
 	}
 }
 
+func TestAnItemRunsNoEarlierThanItsRunAt(t *testing.T) { // P7.24, P7.5
+	d, admin := dbtest.Schema(t, "work11", nil)
+	ran := make(chan string, 4)
+	job := Job{Name: "due", Kind: Queue, Effect: Local, Handle: func(_ context.Context, r *Run) error {
+		ran <- string(r.Args)
+		return r.Complete(context.Background(), nil)
+	}}
+	r := replica(d, 30*time.Second, job)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { cancel(); r.Stop() }()
+	require.NoError(t, r.Start(ctx))
+
+	var dbNow time.Time
+	require.NoError(t, admin.QueryRow(context.Background(), "SELECT now()").Scan(&dbNow))
+	later := dbNow.Add(1500 * time.Millisecond)
+	var future, past string
+	require.NoError(t, d.Tx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+		var err error
+		if future, err = r.EnqueueAt(ctx, tx, "due", "future", later); err != nil {
+			return err
+		}
+		past, err = r.EnqueueAt(ctx, tx, "due", "past", dbNow.Add(-time.Minute))
+		return err
+	}))
+	select { // an item already due runs at once
+	case a := <-ran:
+		require.Equal(t, `"past"`, a, "the future item ran before its run_at")
+	case <-time.After(3 * time.Second):
+		t.Fatal("an item due in the past did not run")
+	}
+	st, _, _, _ := state(t, admin, past)
+	require.Equal(t, "done", st)
+
+	select { // the future one waits: 30 ms polls find nothing to claim until its run_at
+	case a := <-ran:
+		t.Fatalf("%s ran before its run_at", a)
+	case <-time.After(time.Second):
+	}
+	st, attempts, _, _ := state(t, admin, future)
+	require.Equal(t, "pending", st)
+	require.Zero(t, attempts, "no claim before its run_at")
+	select {
+	case a := <-ran:
+		require.Equal(t, `"future"`, a)
+		var at time.Time
+		require.NoError(t, admin.QueryRow(context.Background(), "SELECT now()").Scan(&at))
+		require.False(t, at.Before(later), "claimed by the database clock at or after run_at")
+	case <-time.After(3 * time.Second):
+		t.Fatal("an item past its run_at did not run")
+	}
+}
+
 func TestABacklogDoesNotSlowEachClaim(t *testing.T) { // P7.22, P5.33, CK-DB-10
 	// the claim's cached plan settles while the table is small; 20 000 items then arrive. Autovacuum is off on this
 	// table, so only the SDK's statistics upkeep analyzes it: until then the plan joined the claimed item back by

@@ -67,8 +67,14 @@ func (w *Runner) Add(jobs ...Job) error {
 // AddAll declares every job a module listed.
 func (w *Runner) AddAll(j *Jobs) error { return w.Add(j.list...) }
 
-// Enqueue puts a queue job's item into the business transaction (P7.3) and returns its ID.
+// Enqueue puts a queue job's item into the business transaction (P7.3) and returns its ID; it is due at once.
 func (w *Runner) Enqueue(ctx context.Context, tx db.Tx, job string, args any) (string, error) {
+	return w.EnqueueAt(ctx, tx, job, args, time.Time{})
+}
+
+// EnqueueAt is Enqueue for work due at an instant (P7.24): the item is not claimed before at, by the database clock;
+// a zero at is now. An item cannot be withdrawn: a handler that finds its business state changed since voids it.
+func (w *Runner) EnqueueAt(ctx context.Context, tx db.Tx, job string, args any, at time.Time) (string, error) {
 	j, ok := w.jobs[job]
 	if !ok || j.Kind != Queue {
 		return "", fmt.Errorf("work: %s is not a declared queue job", job)
@@ -77,10 +83,15 @@ func (w *Runner) Enqueue(ctx context.Context, tx db.Tx, job string, args any) (s
 	if err != nil {
 		return "", err
 	}
+	var runAt any // NULL: the database's now()
+	if !at.IsZero() {
+		runAt = at
+	}
 	id := ids.New().String()
-	_, err = tx.Exec(ctx, `INSERT INTO be_work_item (id, job, kind, state, max_attempts, effect_class, operation_id, args)
-		VALUES ($1, $2, 'queue', 'pending', $3, $4, $5, $6::jsonb)`, id, job, j.MaxAttempts, string(j.Effect), id+":"+job, string(b))
-	if err == nil {
+	_, err = tx.Exec(ctx, `INSERT INTO be_work_item (id, job, kind, state, max_attempts, effect_class, operation_id, args,
+			run_at) VALUES ($1, $2, 'queue', 'pending', $3, $4, $5, $6::jsonb, coalesce($7::timestamptz, now()))`,
+		id, job, j.MaxAttempts, string(j.Effect), id+":"+job, string(b), runAt)
+	if err == nil && !at.After(time.Now()) { // an item not yet due is found by the poll once it is
 		tx.AfterCommit(w.signal)
 	}
 	return id, err
