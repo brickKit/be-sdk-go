@@ -138,7 +138,7 @@ func TestAMissingRootIsAnError(t *testing.T) {
 	defer srv.Close()
 	_, err := NewAuthz(srv.URL, "tok", "mdm/org")
 	require.Error(t, err)
-	assert.True(t, strings.Contains(err.Error(), "AUTHZ_BOOTSTRAP_ADMIN"))
+	assert.True(t, strings.Contains(err.Error(), "AUTHZ_INSTALL_CLAIM"))
 }
 
 func TestWaitGrantedWaitsForTheBodyToBeChecked(t *testing.T) {

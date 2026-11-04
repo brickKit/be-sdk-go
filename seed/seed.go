@@ -217,7 +217,7 @@ func NewAuthz(base, token, component string) (*Authz, error) {
 		}
 	}
 	if a.root == "" {
-		return nil, fmt.Errorf("the authorization member has no root unit (is it claimed? AUTHZ_BOOTSTRAP_ADMIN)")
+		return nil, fmt.Errorf("the authorization member has no root unit (is it claimed? AUTHZ_INSTALL_CLAIM, POST /api/authz/claim)")
 	}
 	return a, nil
 }
