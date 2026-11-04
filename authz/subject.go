@@ -40,9 +40,12 @@ func (s *Subject) grant(ctx context.Context, op string) (context.Context, *Opera
 	if v, ok := s.Defs.Operation(r.ViewOperation); ok && v.RiskClass == "high" {
 		risk = "high"
 	}
-	g, err := s.Holder.Lookup(r.Type, s.Principal, risk)
+	g, err := s.Holder.LookupFor(r.Type, s.Principal, risk, o.TighteningOnly)
 	if err != nil {
 		return ctx, nil, nil, Grant{}, err
+	}
+	if g.Stale {
+		ctx = withStaleBasis(ctx, g.Since)
 	}
 	return reqctx.WithCutoff(ctx, g.Cutoff), o, r, g, nil
 }
@@ -101,4 +104,18 @@ func Mask(out map[string]any, readable []string) map[string]any {
 		}
 	}
 	return masked
+}
+
+type staleKey struct{}
+
+func withStaleBasis(ctx context.Context, since time.Time) context.Context {
+	return context.WithValue(ctx, staleKey{}, since)
+}
+
+// StaleBasis reports a decision made on a view whose source the authorization member said is stale (P8.29): a
+// tightening_only operation admitted on the shard's last view, and that view's last full renewal. The doer marks its
+// audit "basis not proven latest" and applies security 03's table (one person within T_tight, two beyond).
+func StaleBasis(ctx context.Context) (since time.Time, stale bool) {
+	since, stale = ctx.Value(staleKey{}).(time.Time)
+	return since, stale
 }

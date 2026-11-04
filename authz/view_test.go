@@ -121,6 +121,85 @@ func TestReadOnlyRenewalLeavesTheHighRiskValidity(t *testing.T) { // P8.11, secu
 	require.NoError(t, err)
 }
 
+func TestTighteningOnlyOutlivesAStaleSource(t *testing.T) { // P8.29
+	src := &fakeSource{gen: "1", status: "changed", shard: shard()}
+	h, now := holderWith(src)
+	require.NoError(t, h.Verify(context.Background()))
+	full := *now
+	_, err := h.LookupStale("demo.order", alice)
+	expired(t, err) // fully renewed and fresh: the ordinary lookup decides, not this one
+
+	// the member says the source is stale (read_only), then closed; past both validities the last view still decides
+	src.status, src.readOnly = "unchanged", true
+	*now = full + time.Second
+	require.NoError(t, h.Verify(context.Background()))
+	src.status, src.readOnly = "closed", false
+	*now = full + WRead + WHigh
+	require.NoError(t, h.Verify(context.Background()))
+	_, err = h.Lookup("demo.order", alice, "low")
+	expired(t, err)
+	g, err := h.LookupStale("demo.order", alice)
+	require.NoError(t, err, "the member said the source is stale")
+	assert.True(t, g.Stale)
+	assert.Len(t, g.Segments, 1)
+	assert.Equal(t, h.Wall().Add(full-*now), g.Since, "the last full renewal")
+	assert.Greater(t, g.Cutoff, *now, "the change may commit")
+
+	// a full renewal, then the member stops answering: that is no stale source, the view closes as before
+	src.status = "unchanged"
+	require.NoError(t, h.Verify(context.Background()))
+	_, err = h.Lookup("demo.order", alice, "high")
+	require.NoError(t, err, "fresh again: the ordinary lookup decides")
+	*now += WRead + WHigh
+	_, err = h.Lookup("demo.order", alice, "low")
+	expired(t, err)
+	_, err = h.LookupStale("demo.order", alice)
+	expired(t, err)
+}
+
+func TestCheckAdmitsTighteningOnlyOnAStaleView(t *testing.T) { // P8.29
+	src := &fakeSource{gen: "1", status: "changed", shard: shard()}
+	s := src.shard.Subjects[alice]
+	s.Segments = append(s.Segments, Segment{ResourceType: "demo.order", Operation: "demo.order.revoke", Atoms: map[string]Atom{},
+		Valid: Window{From: "2026-01-01T00:00:00Z"}}, Segment{ResourceType: "demo.order", Operation: "demo.order.approve",
+		Atoms: map[string]Atom{}, Valid: Window{From: "2026-01-01T00:00:00Z"}})
+	src.shard.Subjects = map[string]SubjectEntry{alice: s}
+	h, now := holderWith(src)
+	require.NoError(t, h.Verify(context.Background()))
+	src.status = "closed"
+	*now += WRead + WHigh
+	require.NoError(t, h.Verify(context.Background()))
+	defs := &Definitions{Component: "demo/orders", Resources: []Resource{{Type: "demo.order", ViewOperation: "demo.order.read",
+		Dimensions: map[string]Dimension{}, Fields: map[string]Field{}}},
+		Operations: []Operation{{Key: "demo.order.read", ResourceType: "demo.order", Purpose: "read", RiskClass: "low"},
+			{Key: "demo.order.revoke", ResourceType: "demo.order", Purpose: "manage", RiskClass: "high",
+				SideEffects: []string{"security_change"}, TighteningOnly: true},
+			{Key: "demo.order.approve", ResourceType: "demo.order", Purpose: "action", RiskClass: "high"}}}
+	require.NoError(t, defs.Validate())
+	sub := &Subject{Principal: alice, Defs: defs, Holder: h, At: time.Unix(1792200000, 0)}
+
+	ctx, _, err := sub.Check(context.Background(), "demo.order.revoke", Facts{})
+	require.NoError(t, err, "a tightening-only operation on the stale source's last view")
+	since, stale := StaleBasis(ctx)
+	assert.True(t, stale)
+	assert.False(t, since.IsZero())
+	_, _, err = sub.Check(context.Background(), "demo.order.approve", Facts{})
+	expired(t, err)
+	ctx, _, err = sub.Check(context.Background(), "demo.order.read", Facts{})
+	expired(t, err)
+	_, stale = StaleBasis(ctx)
+	assert.False(t, stale)
+}
+
+func TestTighteningOnlyNeedsAFullRenewalOnce(t *testing.T) { // P8.29
+	src := &fakeSource{gen: "1", status: "changed", shard: shard(), readOnly: true}
+	h, now := holderWith(src)
+	require.NoError(t, h.Verify(context.Background()))
+	*now += WRead + WHigh
+	_, err := h.LookupStale("demo.order", alice)
+	expired(t, err)
+}
+
 func TestAReadOnlyFirstViewIsNotValidForHighRisk(t *testing.T) { // P8.11
 	src := &fakeSource{gen: "1", status: "changed", shard: shard(), readOnly: true}
 	h, now := holderWith(src)

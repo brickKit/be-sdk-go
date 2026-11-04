@@ -58,7 +58,7 @@ func (u *User) Admit(ctx context.Context, r httpx.Route, req *http.Request) (con
 		return ctx, errs.From(fmt.Errorf("route operation %s is not declared", r.Operation))
 	}
 	res, _ := u.Defs.Resource(op.ResourceType)
-	g, err := u.Holder.Lookup(res.Type, user.Subject, op.RiskClass)
+	g, err := u.Holder.LookupFor(res.Type, user.Subject, op.RiskClass, op.TighteningOnly) // P8.29
 	if err != nil {
 		return ctx, err
 	}

@@ -99,6 +99,8 @@ type held struct {
 	stopped bool
 	// suspended: a whole answer was a rollback; unusable until an accepted answer renews or replaces it.
 	suspended bool
+	// sourceStale: the member's last answer for it was read_only or closed — it says the source is stale (P8.29)
+	sourceStale bool
 }
 
 // Holder keeps a member's view shards and their validity. One per member.
@@ -238,7 +240,7 @@ func (h *Holder) apply(ans VerifyAnswer, gen int64, sent time.Duration) bool {
 		switch a.Status {
 		case "unchanged":
 			if ok && !s.stopped {
-				s.sentAt, s.suspended = sent, false
+				s.sentAt, s.suspended, s.sourceStale = sent, false, a.ReadOnly
 				if !a.ReadOnly {
 					s.highAt, s.hasHigh = sent, true
 				}
@@ -251,13 +253,16 @@ func (h *Holder) apply(ans VerifyAnswer, gen int64, sent time.Duration) bool {
 				h.Log.Error("an authorization view shard went back under the same recovery generation; it is stopped until the recovery generation advances",
 					"shard", a.Shard)
 			case a.ReadOnly && ok: // the high-risk validity carries over from the shard it replaces
-				h.shards[a.Shard] = &held{shard: *a.View, sentAt: sent, highAt: s.highAt, hasHigh: s.hasHigh}
+				h.shards[a.Shard] = &held{shard: *a.View, sentAt: sent, highAt: s.highAt, hasHigh: s.hasHigh, sourceStale: true}
 			case a.ReadOnly:
-				h.shards[a.Shard] = &held{shard: *a.View, sentAt: sent}
+				h.shards[a.Shard] = &held{shard: *a.View, sentAt: sent, sourceStale: true}
 			default:
 				h.shards[a.Shard] = &held{shard: *a.View, sentAt: sent, highAt: sent, hasHigh: true}
 			}
-		case "closed": // not renewed: it runs out on its own
+		case "closed": // not renewed: it runs out on its own; the member says the source is stale (P8.29)
+			if ok {
+				s.sourceStale = true
+			}
 		}
 	}
 	return true
@@ -301,10 +306,51 @@ func epochBefore(a, b string) bool {
 // Grant is what a lookup gives a request: the subject's segments for a resource type and the cutoff.
 type Grant struct {
 	Segments []Segment
-	Cutoff   time.Duration // suspend-aware reading after which the evidence is no longer valid
+	// Stale: a tightening_only operation decided on the last view of a shard whose source the member said is stale
+	// (P8.29); Since is that shard's last full renewal. The doer marks its audit "basis not proven latest".
+	Stale  bool
+	Since  time.Time
+	Cutoff time.Duration // suspend-aware reading after which the evidence is no longer valid
 	// SecurityVersion is the subject's security version in the shard used (0 when absent): admission compares it
 	// with the token's (P8.25).
 	SecurityVersion int64
+}
+
+// LookupFor is Lookup for an operation: a tightening_only one the ordinary lookup refuses falls back on LookupStale
+// (P8.29); the guard and Check both admit through it.
+func (h *Holder) LookupFor(resourceType, principal, risk string, tighteningOnly bool) (Grant, error) {
+	g, err := h.Lookup(resourceType, principal, risk)
+	if err != nil && tighteningOnly && errs.Is(err, "be", errs.ReasonAuthorizationViewExpired) {
+		return h.LookupStale(resourceType, principal)
+	}
+	return g, err
+}
+
+// LookupStale is P8.29 for a tightening_only operation the ordinary lookup refused: the last view of a shard the
+// member last answered read_only or closed, fully renewed once, neither stopped nor suspended — past its validities.
+// A member that stopped answering is no stale source: its shards close as before.
+func (h *Holder) LookupStale(resourceType, principal string) (Grant, error) {
+	now := h.Boot()
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, s := range h.shards {
+		if !s.sourceStale || !s.hasHigh || s.stopped || s.suspended || !slices.Contains(s.shard.Applicability, resourceType) {
+			continue
+		}
+		entry := s.shard.Subjects[principal]
+		var segs []Segment
+		if !entry.AccountsDisabled {
+			for _, seg := range entry.Segments {
+				if seg.ResourceType == "" || seg.ResourceType == resourceType {
+					segs = append(segs, seg)
+				}
+			}
+		}
+		// the change may commit within an ordinary read's validity from now
+		return Grant{Segments: segs, Cutoff: now + time.Duration(float64(WRead)*(1-Drift)), SecurityVersion: entry.SecurityVersion,
+			Stale: true, Since: h.Wall().Add(s.highAt - now)}, nil
+	}
+	return Grant{}, errs.New(errs.ReasonAuthorizationViewExpired, "no valid authorization view").With("resource_type", resourceType)
 }
 
 // Lookup finds the subject's segments for a resource type in a valid shard; risk high uses W_high, counted from the
