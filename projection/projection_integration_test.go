@@ -5,6 +5,8 @@ package projection_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -170,6 +172,46 @@ func TestAlignMatchesSource(t *testing.T) { // P9.12, CK-PJ-02
 	require.Equal(t, projection.OlderEpoch, late("impl-2", "1.0", projection.Full).Skipped)
 	require.Equal(t, projection.NewerEpoch, late("impl-2", "2.1", projection.Full).Skipped)
 	require.Equal(t, row{projection.Complete, 3, `{"n": "a3"}`}, get(t, d, p, "a"))
+}
+
+func TestChangedRunsWhereARowIsWritten(t *testing.T) {
+	d, _ := dbtest.Schema(t, "proj_changed", nil)
+	var seen []string
+	p := projection.Projection{Name: "partners", Changed: func(_ context.Context, _ db.Tx, id string) error {
+		if id == "boom" {
+			return errors.New("the dependent work could not be registered")
+		}
+		seen = append(seen, id)
+		return nil
+	}}
+	in := func(id string, v int64) projection.Input {
+		return projection.Input{RecordID: id, Kind: projection.Full, Version: v, Impl: "impl-1", Epoch: "1.1", Data: json.RawMessage(`{}`)}
+	}
+	apply(t, d, p, in("a", 1))
+	apply(t, d, p, in("x", 1))
+	require.Equal(t, []string{"a", "x"}, seen, "an applied input")
+	apply(t, d, p, in("a", 1))
+	require.Equal(t, []string{"a", "x"}, seen, "an ignored input changed nothing")
+	err := d.BackgroundTx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+		_, err := p.Apply(ctx, tx, in("boom", 1))
+		return err
+	})
+	require.Error(t, err, "the hook's error fails the write")
+	require.NoError(t, d.BackgroundTx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+		_, _, _, found, err := p.Get(ctx, tx, "boom")
+		require.False(t, found, "and rolls it back")
+		return err
+	}))
+
+	// an alignment: every row it writes, from the snapshot and from the read of rows the snapshot did not have
+	seen = nil
+	src := newSource()
+	src.put("a", 2, `{}`)
+	src.put("c", 1, `{}`)
+	src.gone["x"] = 2
+	require.NoError(t, p.Align(context.Background(), d, src))
+	slices.Sort(seen)
+	require.Equal(t, []string{"a", "c", "x"}, seen)
 }
 
 func TestOlderAlignmentDiscarded(t *testing.T) { // P9.12

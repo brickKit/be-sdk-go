@@ -108,6 +108,19 @@ type Input struct {
 // Projection is one named projection in the consumer's schema.
 type Projection struct {
 	Name string
+	// Changed runs in the transaction that wrote one of the projection's records: an event, a pull, a repair, an
+	// alignment's snapshot or its read of the rows the snapshot did not have. Local writes and the outbox only, such as
+	// registering work that depends on the record (the authorization member's closure of an account); its error rolls
+	// the write back.
+	Changed func(ctx context.Context, tx db.Tx, recordID string) error
+}
+
+// changed runs the Changed hook, if any.
+func (p Projection) changed(ctx context.Context, tx db.Tx, id string) error {
+	if p.Changed == nil {
+		return nil
+	}
+	return p.Changed(ctx, tx, id)
 }
 
 // Outcome is what receiving one input did.
@@ -190,6 +203,9 @@ func (p Projection) write(ctx context.Context, tx db.Tx, in Input, cur *Row, nex
 			data = coalesce(data, '{}'::jsonb) || $6::jsonb, impl = $7, epoch = $8, updated_at = now(), min_read_seq = NULL,
 			aligned_gen = `+duringAlignment+`
 			WHERE projection = $1 AND record_id = $2`, p.Name, in.RecordID, next.State, next.Version, need, string(in.Data), in.Impl, in.Epoch)
+		if err == nil {
+			err = p.changed(ctx, tx, in.RecordID)
+		}
 		return Outcome{Fetch: true, Changed: true}, err
 	}
 	var data any
@@ -202,6 +218,9 @@ func (p Projection) write(ctx context.Context, tx db.Tx, in Input, cur *Row, nex
 			need_version = excluded.need_version, impl = excluded.impl, epoch = excluded.epoch, data = excluded.data,
 			aligned_gen = excluded.aligned_gen, min_read_seq = NULL, updated_at = now()`, p.Name, in.RecordID, next.Version,
 		next.State, need, in.Impl, in.Epoch, data)
+	if err == nil {
+		err = p.changed(ctx, tx, in.RecordID)
+	}
 	return Outcome{Fetch: next.State == Incomplete, Changed: true}, err
 }
 

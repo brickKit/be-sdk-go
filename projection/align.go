@@ -119,7 +119,7 @@ func (p Projection) alignTo(ctx context.Context, d *db.DB, src Source, want Iden
 		if data != nil {
 			raw = string(data)
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO be_projection (projection, record_id, version, state, impl, epoch, data, aligned_gen,
+		tag, err := tx.Exec(ctx, `INSERT INTO be_projection (projection, record_id, version, state, impl, epoch, data, aligned_gen,
 				min_read_seq)
 			VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
 			ON CONFLICT (projection, record_id) DO UPDATE SET version = excluded.version, state = excluded.state,
@@ -127,6 +127,9 @@ func (p Projection) alignTo(ctx context.Context, d *db.DB, src Source, want Iden
 				aligned_gen = excluded.aligned_gen, min_read_seq = excluded.min_read_seq, updated_at = now()
 			WHERE be_projection.aligned_gen IS DISTINCT FROM $8 OR be_projection.version < excluded.version`,
 			p.Name, id, version, state, impl, epoch, raw, gen, minRead)
+		if err == nil && tag.RowsAffected() > 0 {
+			err = p.changed(ctx, tx, id)
+		}
 		return err
 	}
 	for cursor := ""; ; {
