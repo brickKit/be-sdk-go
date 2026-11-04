@@ -94,7 +94,8 @@ func describe(k config.Key, own string) string {
 }
 
 // ManifestProblems compares a component.yaml with the code: metadata.id and metadata.version with the definition's
-// ID and Version (a release that bumps one and not the other would refuse to start), then the configSchema with
+// ID and Version (a release that bumps one and not the other would refuse to start), the system surface's port with
+// the extra port named grpc (others reach it as $endpoint:<id>:grpc), then the configSchema with
 // ConfigSchema: every key missing, extra or declared differently, in key order. A component's test asserts it is
 // empty and prints ConfigSchemaYAML otherwise.
 func ManifestProblems(manifest []byte, def component.Definition, own map[string]string) []string {
@@ -104,11 +105,32 @@ func ManifestProblems(manifest []byte, def component.Definition, own map[string]
 			Version string `yaml:"version"`
 		} `yaml:"metadata"`
 		ConfigSchema map[string]any `yaml:"configSchema"`
+		Deployment   struct {
+			ExtraPorts []struct {
+				Name string `yaml:"name"`
+				Port int    `yaml:"port"`
+			} `yaml:"extraPorts"`
+		} `yaml:"deployment"`
 	}
 	if err := yaml.Unmarshal(manifest, &doc); err != nil {
 		return []string{"component.yaml: " + err.Error()}
 	}
 	var out []string
+	// the system surface is reached as $endpoint:<id>:grpc: the code's port, declared under that name
+	grpcPort := 0
+	for _, p := range doc.Deployment.ExtraPorts {
+		if p.Name == "grpc" {
+			grpcPort = p.Port
+		}
+	}
+	switch {
+	case def.GRPCPort != 0 && grpcPort == 0:
+		out = append(out, fmt.Sprintf("deployment.extraPorts: no port named grpc, the code serves its system surface on %d", def.GRPCPort))
+	case def.GRPCPort != grpcPort && def.GRPCPort != 0:
+		out = append(out, fmt.Sprintf("deployment.extraPorts: grpc is %d, the code serves %d", grpcPort, def.GRPCPort))
+	case def.GRPCPort == 0 && grpcPort != 0:
+		out = append(out, "deployment.extraPorts: grpc is declared, the code serves no system surface")
+	}
 	if doc.Metadata.ID != def.ID {
 		out = append(out, fmt.Sprintf("metadata.id: %q, the code is %q", doc.Metadata.ID, def.ID))
 	}

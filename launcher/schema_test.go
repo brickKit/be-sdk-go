@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -58,6 +59,21 @@ configSchema:
 	assert.Contains(t, got, `metadata.version: "3.0.1", the code is "3.0.0"`)
 	assert.Contains(t, ManifestProblems(ok, component.Definition{ID: "demo/gamma", Version: "3.0.0", Keys: def.Keys}, nil),
 		`metadata.id: "demo/beta", the code is "demo/gamma"`)
+}
+
+func TestManifestProblemsNamesTheSystemSurfacesPort(t *testing.T) {
+	def := component.Definition{ID: "demo/beta", Version: "3.0.0", GRPCPort: 9250}
+	head := "metadata:\n  id: demo/beta\n  version: 3.0.0\n" + ConfigSchemaYAML(def, nil)
+	declared := head + "deployment:\n  port: 8250\n  extraPorts:\n    - name: grpc\n      port: 9250\n      protocol: grpc\n"
+	assert.Empty(t, ManifestProblems([]byte(declared), def, nil), "the system surface's port, named grpc")
+	// the system surface the code serves is not declared: nobody can reach it as $endpoint:<id>:grpc
+	assert.Contains(t, ManifestProblems([]byte(head+"deployment:\n  port: 8250\n"), def, nil),
+		"deployment.extraPorts: no port named grpc, the code serves its system surface on 9250")
+	other := head + "deployment:\n  extraPorts:\n    - name: grpc\n      port: 9251\n      protocol: grpc\n"
+	assert.Contains(t, ManifestProblems([]byte(other), def, nil), "deployment.extraPorts: grpc is 9251, the code serves 9250")
+	none := component.Definition{ID: "demo/beta", Version: "3.0.0"}
+	assert.Contains(t, ManifestProblems([]byte(strings.Replace(declared, ConfigSchemaYAML(def, nil), ConfigSchemaYAML(none, nil), 1)), none, nil),
+		"deployment.extraPorts: grpc is declared, the code serves no system surface")
 }
 
 func TestEventProblemsNamesEveryDifference(t *testing.T) {
