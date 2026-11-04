@@ -30,6 +30,9 @@ const (
 
 // JudgeInput is what a judgement reads (protocol 02 step 9).
 type JudgeInput struct {
+	// LastApplied asks by the last applied facts (P9.34): a stalled source is judged by its rows too, and the
+	// watermark's age does not count. Only for security 03's tightening-only operations.
+	LastApplied     bool
 	WatermarkSource bool
 	SourceState     string
 	ProjectionState string
@@ -51,9 +54,10 @@ func Judge(q JudgeInput) string {
 	switch {
 	case !q.WatermarkSource:
 		return QueryTheSource
-	case q.SourceState != Aligned, q.ProjectionState != ServingState, q.Quarantined:
+	case q.SourceState != Aligned && !(q.LastApplied && q.SourceState == Stalled), q.ProjectionState != ServingState,
+		q.Quarantined:
 		return Unprovable
-	case !q.HasWatermark || q.WatermarkAge > q.Freshness:
+	case !q.LastApplied && (!q.HasWatermark || q.WatermarkAge > q.Freshness):
 		return Unprovable
 	case q.Row == nil:
 		return ProvablyAbsent

@@ -425,6 +425,7 @@ type Judged struct {
 // it to another freshness too (security 03: high-risk and ordinary reads close at different watermark ages).
 type Judgement struct {
 	Source       string // Usable when aligned, serving and the watermark no older than asked; Unprovable otherwise
+	SourceState  string // the source's alignment state (P9.26): JudgeApplied's caller decides on it (P9.34)
 	HasWatermark bool
 	Age          time.Duration // the watermark's age on the consumer primary's clock
 	Records      map[string]Judged
@@ -434,6 +435,19 @@ type Judgement struct {
 // record ID to the subjects behind it. One statement reads the watermark, the quarantine of the subjects and the rows,
 // so they come from one snapshot; a decision over a whole view does not cost a statement per record.
 func (w *Watermarked) JudgeMany(ctx context.Context, tx db.Tx, asked map[string][]string, within time.Duration) (Judgement, error) {
+	return w.judgeMany(ctx, tx, asked, within, false)
+}
+
+// JudgeApplied judges many records by the last applied facts (P9.34), for security 03's tightening-only operations
+// when the source is past its freshness: a stalled source is judged by its rows too, the watermark's age does not
+// count. The caller decides on SourceState and Age whether a second person is needed (beyond T_tight, no
+// watermark, or stalled) and marks the result "basis not proven latest".
+func (w *Watermarked) JudgeApplied(ctx context.Context, tx db.Tx, asked map[string][]string) (Judgement, error) {
+	return w.judgeMany(ctx, tx, asked, 0, true)
+}
+
+func (w *Watermarked) judgeMany(ctx context.Context, tx db.Tx, asked map[string][]string, within time.Duration,
+	lastApplied bool) (Judgement, error) {
 	ids := make([]string, 0, len(asked))
 	subjects := []string{}
 	for id, subs := range asked {
@@ -489,8 +503,9 @@ func (w *Watermarked) JudgeMany(ctx context.Context, tx db.Tx, asked map[string]
 	for _, s := range quarantined {
 		q[s] = true
 	}
-	base := JudgeInput{WatermarkSource: true, SourceState: status, ProjectionState: ServingState, Freshness: within.Seconds()}
-	out := Judgement{Source: Unprovable, Records: make(map[string]Judged, len(asked))}
+	base := JudgeInput{LastApplied: lastApplied, WatermarkSource: true, SourceState: status, ProjectionState: ServingState,
+		Freshness: within.Seconds()}
+	out := Judgement{Source: Unprovable, SourceState: status, Records: make(map[string]Judged, len(asked))}
 	if age != nil {
 		base.HasWatermark, base.WatermarkAge = true, *age
 		out.HasWatermark, out.Age = true, time.Duration(*age*float64(time.Second))

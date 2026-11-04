@@ -24,6 +24,7 @@ func TestWatermarkJudgeVectors(t *testing.T) { // P9.24
 		var c struct {
 			ID    string
 			Query struct {
+				Basis           string
 				WatermarkSource bool   `json:"watermark_source"`
 				SourceState     string `json:"source_state"`
 				ProjectionState string `json:"projection_state"`
@@ -36,7 +37,7 @@ func TestWatermarkJudgeVectors(t *testing.T) { // P9.24
 		}
 		require.NoError(t, json.Unmarshal(raw, &c))
 		q := c.Query
-		in := JudgeInput{WatermarkSource: q.WatermarkSource, SourceState: q.SourceState, ProjectionState: q.ProjectionState,
+		in := JudgeInput{LastApplied: q.Basis == "last_applied", WatermarkSource: q.WatermarkSource, SourceState: q.SourceState, ProjectionState: q.ProjectionState,
 			Quarantined: q.Quarantined, HasWatermark: q.Watermark != nil, Freshness: q.Freshness, Row: q.Row}
 		if q.Watermark != nil {
 			in.WatermarkAge = q.Now - *q.Watermark

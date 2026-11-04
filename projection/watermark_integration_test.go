@@ -186,6 +186,16 @@ func (ww *wmWorld) judge(id string) string {
 	return got
 }
 
+// applied is JudgeApplied for one record (P9.34).
+func (ww *wmWorld) applied(id string) (j Judgement) {
+	require.NoError(ww.t, ww.con.BackgroundTx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+		var err error
+		j, err = ww.w.JudgeApplied(ctx, tx, map[string][]string{id: {"person:" + id}})
+		return err
+	}))
+	return j
+}
+
 func (ww *wmWorld) state() string {
 	var s string
 	require.NoError(ww.t, ww.conAdmin.QueryRow(context.Background(), "SELECT status FROM be_projection_source WHERE projection = 'people'").Scan(&s))
@@ -360,6 +370,9 @@ func TestARollbackStallsUntilTheGenerationAdvances(t *testing.T) { // CK-WM-08, 
 	require.NoError(t, ww.pullNow())
 	assert.Equal(t, Stalled, ww.state(), "rollback_detected")
 	assert.Equal(t, Unprovable, ww.judge("p1"))
+	j := ww.applied("p1") // P9.34: the last applied facts of a stalled source are still judged by its rows
+	assert.Equal(t, Usable, j.Records["p1"].Verdict)
+	assert.Equal(t, Stalled, j.SourceState, "the caller needs a second person on a stalled source")
 	ww.step(1) // the re-fetch runs, the source stays stalled
 	assert.Equal(t, Stalled, ww.state())
 	require.NoError(t, ww.pullNow())
@@ -368,6 +381,7 @@ func TestARollbackStallsUntilTheGenerationAdvances(t *testing.T) { // CK-WM-08, 
 	pgtest.Exec(t, ww.srcAdmin, "UPDATE be_recovery_generation SET generation = generation + 1")
 	require.NoError(t, ww.pullNow())
 	assert.Equal(t, Aligning, ww.state(), "a larger recovery generation is the exit")
+	assert.Equal(t, Unprovable, ww.applied("p1").Records["p1"].Verdict, "aligning: not even by the last applied facts")
 	ww.step(2)
 	assert.Equal(t, Aligned, ww.state())
 	assert.Equal(t, Usable, ww.judge("p1"))
@@ -389,6 +403,7 @@ func TestAFailingEventQuarantinesItsSubjectsOnly(t *testing.T) { // CK-WM-09, P9
 		WHERE projection = 'people' AND subject = 'person:bad1'`).Scan(&quarantined))
 	assert.Equal(t, 1, quarantined)
 	assert.Equal(t, Unprovable, ww.judge("bad1"), "its subject is quarantined")
+	assert.Equal(t, Unprovable, ww.applied("bad1").Records["bad1"].Verdict, "quarantined: not by the last applied facts")
 	assert.Equal(t, Usable, ww.judge("ok2"), "the others go on")
 	assert.Equal(t, "Ok2", ww.name("ok2"))
 }
@@ -553,6 +568,10 @@ func TestJudgeManyAtTwoFreshnesses(t *testing.T) { // P9.24; security 03: high-r
 	assert.Equal(t, Judged{Verdict: Unprovable, Version: 1}, j.Records["p1"], "no content of a record that is not usable")
 	assert.Equal(t, Unprovable, j.Records["nobody"].Verdict)
 	assert.Greater(t, j.Age, 300*time.Millisecond, "the age is there to compare with another freshness")
+	a := ww.applied("p1") // P9.34: the age does not count
+	assert.Equal(t, Usable, a.Records["p1"].Verdict)
+	assert.Equal(t, Aligned, a.SourceState)
+	assert.Greater(t, a.Age, 300*time.Millisecond)
 
 	ww.step(1)
 	time.Sleep(ww.w.Freshness/2 + 200*time.Millisecond)
@@ -566,4 +585,8 @@ func TestJudgeManyAtTwoFreshnesses(t *testing.T) { // P9.24; security 03: high-r
 	j = many(time.Minute)
 	assert.Equal(t, Unprovable, j.Source)
 	assert.False(t, j.HasWatermark)
+	a = ww.applied("p1")
+	assert.Equal(t, Usable, a.Records["p1"].Verdict, "no watermark: still by the rows")
+	assert.False(t, a.HasWatermark, "the caller needs a second person without a watermark")
+	assert.Equal(t, Unprovable, ww.applied("p2").Records["p2"].Verdict, "a row of another epoch")
 }
