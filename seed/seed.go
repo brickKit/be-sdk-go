@@ -272,12 +272,17 @@ func Segment(resourceType, operation string, all ...string) sdkauthz.Segment {
 }
 
 // Change sends one change request (security 09a's be.security.change_request) under the key "seed:<component>:<key>"
-// and returns the record it made (or made the first time).
+// and returns the record it made (or made the first time). A tightening goes to the member's tightening route (its
+// own operation, infra.authz.security_record.tighten), everything else to the changes.
 func (a *Authz) Change(key string, change map[string]any) (string, error) {
 	change["change_key"] = "seed:" + a.component + ":" + key
-	code, out, err := a.c.Do("POST", "/api/authz/changes", change)
+	path := "/api/authz/changes"
+	if change["direction"] == "tighten" {
+		path = "/api/authz/tightenings"
+	}
+	code, out, err := a.c.Do("POST", path, change)
 	if err != nil {
-		return "", fmt.Errorf("POST /api/authz/changes: %w", err)
+		return "", fmt.Errorf("POST %s: %w", path, err)
 	}
 	rec, _ := out["record"].(string)
 	switch {
@@ -286,7 +291,7 @@ func (a *Authz) Change(key string, change map[string]any) (string, error) {
 	case code == 202 && out["outcome"] == "awaiting_confirmation" && rec != "":
 		return rec, a.confirmAsOwner(rec, change)
 	}
-	return "", fmt.Errorf("POST /api/authz/changes: %d %v", code, out)
+	return "", fmt.Errorf("POST %s: %d %v", path, code, out)
 }
 
 // confirmAsOwner confirms a saved protected change with the deployment owner's key, then waits for it to take effect

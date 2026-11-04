@@ -37,9 +37,15 @@ func (e *effectPoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"records": []any{
 			map[string]any{"id": "unit-x", "body": map[string]any{"name": "x"}},
 			map[string]any{"id": "unit-root", "body": map[string]any{"root": true}}}})
-	case r.Method == "POST" && r.URL.Path == "/api/authz/changes":
+	case r.Method == "POST" && (r.URL.Path == "/api/authz/changes" || r.URL.Path == "/api/authz/tightenings"):
 		var in map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&in)
+		// as the member: a tightening has its own route (infra.authz.security_record.tighten), the changes refuse it
+		if (in["direction"] == "tighten") != (r.URL.Path == "/api/authz/tightenings") {
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`{"reason":"REQUEST_INVALID"}`))
+			return
+		}
 		e.changes = append(e.changes, in)
 		key := in["change_key"].(string)
 		if res, ok := e.bound[key]; ok {
