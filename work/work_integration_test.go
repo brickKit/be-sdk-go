@@ -406,6 +406,47 @@ func TestAnItemRunsNoEarlierThanItsRunAt(t *testing.T) { // P7.24, P7.5
 	}
 }
 
+func TestABusinessWaitBacksOffWithItsWaitAndEndsPastItsLimit(t *testing.T) { // P7.13
+	d, admin := dbtest.Schema(t, "work12", nil)
+	job := Job{Name: "waits", Kind: Queue, Effect: Local, MaxWait: time.Hour,
+		Handle: func(context.Context, *Run) error { return Wait(errors.New("the source cannot be proven yet")) }}
+	r := replica(d, 30*time.Second, job)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { cancel(); r.Stop() }()
+	require.NoError(t, r.Start(ctx))
+	id := enqueue(t, d, r, "waits")
+	gap := func() (st string, attempts int, secs float64) {
+		require.NoError(t, admin.QueryRow(context.Background(), `SELECT state, attempts,
+			extract(epoch FROM run_at - now()) FROM be_work_item WHERE id = $1`, id).Scan(&st, &attempts, &secs))
+		return
+	}
+	require.Eventually(t, func() bool { st, _, _ := gap(); return st == "retry_wait" }, 5*time.Second, 20*time.Millisecond)
+	st, attempts, secs := gap()
+	require.Equal(t, "retry_wait", st)
+	assert.Zero(t, attempts, "a wait spends no attempt")
+	assert.InDelta(t, 1, secs, 0.5, "the first wait: the backoff's start")
+
+	// it has waited 20 s: the next wait is as long again (the backoff doubles with the wait, not with attempts, which a
+	// wait never spends); then capped at 5 minutes
+	for _, c := range []struct{ waited, want float64 }{{20, 20}, {1200, 300}} {
+		_, err := admin.Exec(context.Background(), `UPDATE be_work_item SET waiting_since = now() - make_interval(secs => $2),
+			run_at = now() WHERE id = $1`, id, c.waited)
+		require.NoError(t, err)
+		require.Eventually(t, func() bool { _, _, s := gap(); return s > 2 }, 5*time.Second, 20*time.Millisecond)
+		st, attempts, secs = gap()
+		require.Equal(t, "retry_wait", st)
+		assert.Zero(t, attempts)
+		assert.InDelta(t, c.want, secs, 1.5, "waited %v s", c.waited)
+	}
+
+	// past MaxWait the wait is a permanent failure: dead
+	_, err := admin.Exec(context.Background(), `UPDATE be_work_item SET waiting_since = now() - interval '2 hours',
+		run_at = now() WHERE id = $1`, id)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { st, _, _ := gap(); return st == "dead" }, 5*time.Second, 20*time.Millisecond,
+		"waited longer than its limit")
+}
+
 func TestABacklogDoesNotSlowEachClaim(t *testing.T) { // P7.22, P5.33, CK-DB-10
 	// the claim's cached plan settles while the table is small; 20 000 items then arrive. Autovacuum is off on this
 	// table, so only the SDK's statistics upkeep analyzes it: until then the plan joined the claimed item back by

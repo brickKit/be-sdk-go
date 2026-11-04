@@ -405,8 +405,11 @@ func (w *Runner) fail(ctx context.Context, r *Run, cause error) {
 	msg := cause.Error()
 	switch k := kindOf(cause); {
 	case k == "wait":
+		// a wait never spends an attempt, so its backoff doubles with the wait itself: wait again as long as it has
+		// waited, from the backoff's start up to its cap (an item waiting a day is claimed ~300 times, not 86 400)
 		set := `state = 'retry_wait', attempts = attempts - 1, holder = NULL, lease_until = NULL, last_error = $5,
-			waiting_since = coalesce(waiting_since, now()), run_at = now() + make_interval(secs => $6)`
+			waiting_since = coalesce(waiting_since, now()), run_at = now() + make_interval(secs => least($7::float8,
+				greatest($6::float8, extract(epoch FROM now() - coalesce(waiting_since, now()))::float8)))`
 		if r.job.MaxWait > 0 {
 			var waiting bool
 			_ = w.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
@@ -418,7 +421,7 @@ func (w *Runner) fail(ctx context.Context, r *Run, cause error) {
 				return
 			}
 		}
-		_ = r.exec(ctx, set, []any{msg, backoff(r.Attempts).Seconds()}, nil)
+		_ = r.exec(ctx, set, []any{msg, BackoffStart.Seconds(), BackoffCap.Seconds()}, nil)
 	case k == "permanent":
 		w.dead(ctx, r, cause)
 	case r.job.Effect == NonIdempotentExternal && k != "not_effective" && w.unknown(ctx, r):
