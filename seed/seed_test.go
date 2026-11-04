@@ -86,10 +86,28 @@ func TestChangesAreKeyedByComponentAndLinkedIdentity(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, g1, g2)
 
+	// each is security 09a's change request: a widening carries its candidate and the candidate's digest
 	last := e.changes[len(e.changes)-1]
-	assert.Equal(t, "grant.create", last["action"])
-	assert.Equal(t, "unit-root", last["unit"]) // "" is the root
-	assert.Equal(t, role, last["role_revision"])
+	assert.Equal(t, "widen", last["direction"])
+	cand := last["candidate"].(map[string]any)
+	assert.Equal(t, "grant", cand["record_type"])
+	assert.Equal(t, "unit-root", cand["governance_unit"]) // "" is the root
+	assert.Equal(t, role, cand["role_revision"])
+	assert.Equal(t, "p-2", cand["grantee"])
+	raw, _ := json.Marshal(cand)
+	digest, err := sdkauthz.CandidateDigest("grant", raw)
+	require.NoError(t, err)
+	assert.Equal(t, digest, last["candidate_digest"])
+
+	_, err = a.Revoke("old", g1)
+	require.NoError(t, err)
+	revoke := e.changes[len(e.changes)-1]
+	assert.Equal(t, map[string]any{"change_key": "seed:mdm/currency:revoke:old:" + g1, "direction": "tighten", "target": g1}, revoke)
+	_, err = a.Unit("east", "", "east", []sdkauthz.Segment{Segment("mdm.exchange_rate", "mdm.exchange_rate.maintain")}, []string{"x"})
+	require.NoError(t, err)
+	unit := e.changes[len(e.changes)-1]["candidate"].(map[string]any)
+	assert.Equal(t, "management_unit", unit["record_type"])
+	assert.Equal(t, "unit-root", unit["parent"])
 }
 
 func TestSegmentHasNoAtomsAndAFixedStart(t *testing.T) {
@@ -98,6 +116,11 @@ func TestSegmentHasNoAtomsAndAFixedStart(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"resource_type":"mdm.currency","operation":"mdm.currency.read","atoms":{},"read_fields":[],
 		"valid":{"from":"2026-01-01T00:00:00Z"}}`, string(raw))
+	// a resource with dimensions: the named ones hold every value
+	raw, err = json.Marshal(Segment("infra.authz.security_record", "infra.authz.security_record.read", "holder"))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"resource_type":"infra.authz.security_record","operation":"infra.authz.security_record.read",
+		"atoms":{"holder":{"kind":"all"}},"read_fields":[],"valid":{"from":"2026-01-01T00:00:00Z"}}`, string(raw))
 }
 
 func TestAMissingRootIsAnError(t *testing.T) {

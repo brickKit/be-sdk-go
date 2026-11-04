@@ -225,13 +225,20 @@ func (a *Authz) As(token string) *Authz {
 // Root is the root management unit.
 func (a *Authz) Root() string { return a.root }
 
-// Segment grants operation on resourceType everywhere it is visible (no atoms: a resource with no dimensions), from Since.
-func Segment(resourceType, operation string) sdkauthz.Segment {
-	return sdkauthz.Segment{ResourceType: resourceType, Operation: operation, Atoms: map[string]sdkauthz.Atom{},
+// Segment grants operation on resourceType everywhere it is visible, from Since: every dimension named in all (a
+// segment carries one atom for each dimension of the resource, security 09a) holds every value; none for a resource
+// without dimensions.
+func Segment(resourceType, operation string, all ...string) sdkauthz.Segment {
+	atoms := map[string]sdkauthz.Atom{}
+	for _, d := range all {
+		atoms[d] = sdkauthz.Atom{Kind: "all"}
+	}
+	return sdkauthz.Segment{ResourceType: resourceType, Operation: operation, Atoms: atoms,
 		ReadFields: []string{}, Valid: sdkauthz.Window{From: Since}}
 }
 
-// Change sends one change under the key "seed:<component>:<key>" and returns the record it made (or made the first time).
+// Change sends one change request (security 09a's be.security.change_request) under the key "seed:<component>:<key>"
+// and returns the record it made (or made the first time).
 func (a *Authz) Change(key string, change map[string]any) (string, error) {
 	change["change_key"] = "seed:" + a.component + ":" + key
 	out, err := a.c.Must("POST", "/api/authz/changes", change)
@@ -242,37 +249,51 @@ func (a *Authz) Change(key string, change map[string]any) (string, error) {
 	return rec, nil
 }
 
+// widen submits a new record: direction widen with the candidate and its digest (security 09a).
+func (a *Authz) widen(key, recordType string, candidate map[string]any) (string, error) {
+	candidate["record_type"] = recordType
+	raw, err := json.Marshal(candidate)
+	if err != nil {
+		return "", err
+	}
+	digest, err := sdkauthz.CandidateDigest(recordType, raw)
+	if err != nil {
+		return "", err
+	}
+	return a.Change(key, map[string]any{"direction": "widen", "candidate": json.RawMessage(raw), "candidate_digest": digest})
+}
+
 // Role defines a role whose template is segs; it answers the role revision.
 func (a *Authz) Role(key, name string, segs []sdkauthz.Segment) (string, error) {
-	return a.Change("role:"+key, map[string]any{"action": "role.create", "name": name, "segments_template": segs})
+	return a.widen("role:"+key, "role_revision", map[string]any{"name": name, "segments_template": segs})
 }
 
 // GrantRole grants a role revision to a principal in unit (the root when ""); the key carries the principal.
 func (a *Authz) GrantRole(key, unit, principal, roleRevision string) (string, error) {
-	return a.Change("grant:"+key+":"+principal, map[string]any{"action": "grant.create", "unit": a.unitOr(unit),
+	return a.widen("grant:"+key+":"+principal, "grant", map[string]any{"governance_unit": a.unitOr(unit),
 		"grantee": principal, "role_revision": roleRevision})
 }
 
 // Grant grants segs to a principal in unit (the root when ""); the key carries the principal.
 func (a *Authz) Grant(key, unit, principal string, segs []sdkauthz.Segment) (string, error) {
-	return a.Change("grant:"+key+":"+principal, map[string]any{"action": "grant.create", "unit": a.unitOr(unit),
+	return a.widen("grant:"+key+":"+principal, "grant", map[string]any{"governance_unit": a.unitOr(unit),
 		"grantee": principal, "segments": segs})
 }
 
-// Revoke ends a grant.
+// Revoke ends a grant (a tightening of its target).
 func (a *Authz) Revoke(key, grant string) (string, error) {
-	return a.Change("revoke:"+key+":"+grant, map[string]any{"action": "grant.revoke", "target": grant})
+	return a.Change("revoke:"+key+":"+grant, map[string]any{"direction": "tighten", "target": grant})
 }
 
 // Unit creates a management unit under parent (the root when "") whose admins grant operations within scope.
 func (a *Authz) Unit(key, parent, name string, scope []sdkauthz.Segment, operations []string) (string, error) {
-	return a.Change("unit:"+key, map[string]any{"action": "unit.create", "unit": a.unitOr(parent), "name": name,
+	return a.widen("unit:"+key, "management_unit", map[string]any{"parent": a.unitOr(parent), "name": name,
 		"managed_scope": scope, "grantable_operations": operations})
 }
 
 // Hold makes a principal an admin of unit; the key carries the principal.
 func (a *Authz) Hold(key, unit, principal string) (string, error) {
-	return a.Change("hold:"+key+":"+principal, map[string]any{"action": "holding.create", "unit": unit, "holder": principal})
+	return a.widen("hold:"+key+":"+principal, "management_holding", map[string]any{"unit": unit, "holder": principal})
 }
 
 // RoleSpec is one role of a component's seed and the test accounts it is granted to.
