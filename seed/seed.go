@@ -375,10 +375,12 @@ func (a *Authz) Revoke(key, grant string) (string, error) {
 	return a.Change("revoke:"+key+":"+grant, map[string]any{"direction": "tighten", "target": grant})
 }
 
-// Unit creates a management unit under parent (the root when "") whose admins grant operations within scope.
+// Unit creates a management unit under parent (the root when "") whose admins grant operations within scope. It is a
+// leaf: its holders grant, bind roles and revoke within it, and no unit is made below it (max_subdelegation_depth 0).
 func (a *Authz) Unit(key, parent, name string, scope []sdkauthz.Segment, operations []string) (string, error) {
 	return a.widen("unit:"+key, "management_unit", map[string]any{"parent": a.unitOr(parent), "name": name,
-		"managed_scope": scope, "grantable_operations": operations})
+		"managed_scope": scope, "grantable_operations": operations,
+		"management_actions": []string{"grant", "bind_role", "revoke"}, "max_subdelegation_depth": 0})
 }
 
 // Hold makes a principal an admin of unit; the key carries the principal.
