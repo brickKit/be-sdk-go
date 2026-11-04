@@ -11,10 +11,14 @@ package seed
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
 	sdkauthz "github.com/brickKit/be-sdk-go/v3/authz"
@@ -194,6 +198,7 @@ type Authz struct {
 	c         Client
 	component string
 	root      string
+	owner     ed25519.PrivateKey // the deployment owner's confirmation key (SEED_OWNER_KEY), for protected changes
 }
 
 // NewAuthz is the effect point at base, used by component (it prefixes every change key) as the holder of token.
@@ -219,7 +224,36 @@ func NewAuthz(base, token, component string) (*Authz, error) {
 
 // As is the same effect point used by another account (a unit's admin granting within its unit).
 func (a *Authz) As(token string) *Authz {
-	return &Authz{c: NewClient(a.c.Base, token), component: a.component, root: a.root}
+	return &Authz{c: NewClient(a.c.Base, token), component: a.component, root: a.root, owner: a.owner}
+}
+
+// WithOwner confirms protected changes (new units, holdings) with the deployment owner's key, as a deployment with a
+// single authorization admin must (security 08, A124).
+func (a *Authz) WithOwner(key ed25519.PrivateKey) *Authz {
+	b := *a
+	b.owner = key
+	return &b
+}
+
+// OwnerKey reads the deployment owner's private key: PEM, PKCS #8, Ed25519.
+func OwnerKey(path string) (ed25519.PrivateKey, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return nil, fmt.Errorf("%s: not PEM", path)
+	}
+	k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	ed, ok := k.(ed25519.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("%s: not an Ed25519 key", path)
+	}
+	return ed, nil
 }
 
 // Root is the root management unit.
@@ -241,12 +275,63 @@ func Segment(resourceType, operation string, all ...string) sdkauthz.Segment {
 // and returns the record it made (or made the first time).
 func (a *Authz) Change(key string, change map[string]any) (string, error) {
 	change["change_key"] = "seed:" + a.component + ":" + key
-	out, err := a.c.Must("POST", "/api/authz/changes", change)
+	code, out, err := a.c.Do("POST", "/api/authz/changes", change)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("POST /api/authz/changes: %w", err)
 	}
 	rec, _ := out["record"].(string)
-	return rec, nil
+	switch {
+	case code == 200:
+		return rec, nil
+	case code == 202 && out["outcome"] == "awaiting_confirmation" && rec != "":
+		return rec, a.confirmAsOwner(rec, change)
+	}
+	return "", fmt.Errorf("POST /api/authz/changes: %d %v", code, out)
+}
+
+// confirmAsOwner confirms a saved protected change with the deployment owner's key, then waits for it to take effect
+// (the member's job applies it once confirmed).
+func (a *Authz) confirmAsOwner(record string, change map[string]any) error {
+	if a.owner == nil {
+		return fmt.Errorf("record %s waits for a confirmation: give the deployment owner's key (SEED_OWNER_KEY)", record)
+	}
+	p, err := a.c.Must("GET", "/api/authz/confirmations/owner-payload?target="+record, nil)
+	if err != nil {
+		return err
+	}
+	str := func(k string) string { v, _ := p[k].(string); return v }
+	o := sdkauthz.OwnerConfirmation{Deployment: str("deployment"), Target: str("target"),
+		CandidateDigest: str("candidate_digest"), ExpectedRevision: str("expected_revision"), ExpiresAt: str("expires_at")}
+	sig, err := o.Sign(a.owner)
+	if err != nil {
+		return err
+	}
+	code, out, err := a.c.Do("POST", "/api/authz/confirmations", map[string]string{"target": record,
+		"basis": "deployment_owner", "expires_at": o.ExpiresAt, "signature": sig})
+	if err != nil || code != 201 {
+		return fmt.Errorf("confirming %s as the deployment owner: %d %v %v", record, code, out, err)
+	}
+	recordType := ""
+	if c, ok := change["candidate"].(json.RawMessage); ok {
+		var head struct {
+			RecordType string `json:"record_type"`
+		}
+		_ = json.Unmarshal(c, &head)
+		recordType = head.RecordType
+	}
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		out, err := a.c.Must("GET", "/api/authz/records?type="+recordType, nil)
+		if err != nil {
+			return err
+		}
+		recs, _ := out["records"].([]any)
+		for _, r := range recs {
+			if m, _ := r.(map[string]any); m["id"] == record {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("record %s was confirmed but did not take effect within 30 s", record)
 }
 
 // widen submits a new record: direction widen with the candidate and its digest (security 09a).

@@ -1,6 +1,8 @@
 package seed
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -217,4 +219,63 @@ func TestDoWaitsOutAnswersThatSayNothingWasDone(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 503, code, "after Patience the last answer comes back")
 	assert.Equal(t, "NOT_READY", out["reason"])
+}
+
+// protected is a stand-in member whose units wait for a confirmation: it answers awaiting_confirmation, gives the
+// owner's payload, takes the signed confirmation and then lists the unit as active.
+type protected struct {
+	pub       ed25519.PublicKey
+	confirmed bool
+	sig       string
+}
+
+func (p *protected) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	payload := sdkauthz.OwnerConfirmation{Deployment: "dep-1", Target: "unit-new", CandidateDigest: "sha256:c",
+		ExpiresAt: "2026-11-05T00:00:00.000000Z"}
+	switch {
+	case r.Method == "GET" && r.URL.Path == "/api/authz/records":
+		recs := []any{map[string]any{"id": "unit-root", "body": map[string]any{"root": true}}}
+		if p.confirmed {
+			recs = append(recs, map[string]any{"id": "unit-new", "body": map[string]any{"name": "x"}})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"records": recs})
+	case r.Method == "POST" && r.URL.Path == "/api/authz/changes":
+		w.WriteHeader(202)
+		_ = json.NewEncoder(w).Encode(map[string]any{"outcome": "awaiting_confirmation", "record": "unit-new"})
+	case r.Method == "GET" && r.URL.Path == "/api/authz/confirmations/owner-payload":
+		_ = json.NewEncoder(w).Encode(map[string]any{"deployment": payload.Deployment, "target": r.URL.Query().Get("target"),
+			"candidate_digest": payload.CandidateDigest, "expires_at": payload.ExpiresAt})
+	case r.Method == "POST" && r.URL.Path == "/api/authz/confirmations":
+		var in map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		p.sig = in["signature"]
+		if in["basis"] != "deployment_owner" || !payload.Verify(p.pub, in["signature"]) {
+			w.WriteHeader(403)
+			return
+		}
+		p.confirmed = true
+		w.WriteHeader(201)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "conf-1"})
+	default:
+		w.WriteHeader(404)
+	}
+}
+
+func TestAProtectedChangeIsConfirmedWithTheOwnersKey(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	p := &protected{pub: pub}
+	srv := httptest.NewServer(p)
+	defer srv.Close()
+	a, err := NewAuthz(srv.URL, "tok-admin", "mdm/partner")
+	require.NoError(t, err)
+	_, err = a.Unit("x", "", "x", []sdkauthz.Segment{}, []string{})
+	require.Error(t, err, "without the owner's key a protected change stays waiting")
+	assert.Contains(t, err.Error(), "SEED_OWNER_KEY")
+
+	unit, err := a.WithOwner(priv).Unit("x", "", "x", []sdkauthz.Segment{}, []string{})
+	require.NoError(t, err)
+	assert.Equal(t, "unit-new", unit, "confirmed with the owner's signature, then active")
+	assert.True(t, p.confirmed)
 }
