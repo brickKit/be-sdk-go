@@ -69,7 +69,7 @@ func main() { launcher.Main(sales.Definition) }
   | `read_only` | 放行 `GET`、`HEAD` 与声明了 `httpx.Route.ReadOnlyOpen` 的写入（身份成员的一次性码、重设密码、登记第二因素），其余 `MAINTENANCE` | 跑 | 同 `verifying` |
 
 - **恢复操作**：有数据库的组件在定义里写 `Recovery`（操作，惯例 `<前缀>.system.recover`，登记在本组件的 `system` 资源下），没写时启动失败。下面的系统方法都用它，只许恢复工具调用。
-- **证据的重放**（P12.19–P12.22）：写证据的模块实现 `evidence.Replayer`，按类别注册重新执行的函数（`ReplayFunc`：在给定的事务里按记录的 `change` 重新施加，不重做业务前置校验，被引用的对象不在时返回 `evidence.ErrDangling`），定义里写 `Replay`（操作，惯例 `<前缀>.system.replay`）。SDK 挂上 `be.evidence.v1.ReplayService`，按记录身份判“已体现”，重新执行与变更历史在一个事务里。在阶段 `replaying` 下做。
+- **证据的重放**（P12.19–P12.22）：写证据的模块实现 `evidence.Replayer`，按类别注册重新执行的函数（`ReplayFunc`：在给定的事务里按记录的 `change` 重新施加，不重做业务前置校验，被引用的对象不在时返回 `evidence.ErrDangling`），定义里写 `Replay`（操作，惯例 `<前缀>.system.replay`）。SDK 挂上 `be.evidence.v1.ReplayService`，按记录身份判“已体现”，重新执行与变更历史在一个事务里。效果在恢复组之外、不能重新执行的类别（协议 15 的 6.7：身份产品不在恢复组内时的凭据收紧）改用 `Replays.Check` 注册核对（`CheckFunc`，事务之外问那一方，答成立与否；问不出算不成立），SDK 答 `consistent` 或 `inconsistent`，不写变更历史；一个类别只能注册一种（宿主拒绝启动）。在阶段 `replaying` 下做。
 - **外部对账**（P13.11–P13.13）：发对外命令的成员自动挂上 `be.external.v1.ReconcileService`：对上外部记录的按外部推进，没对上的写重发截止、转 `unknown` 或 `manual`，并记下最早一次可能的发送与故障时刻供开放之后判断；结论按恢复留存，重做时回答同样的结论。
 - **核对**（第 14 章）：每个有数据库的成员自动挂上 `be.recovery.v1.CheckService`。SDK 自带三项检查（投影已对齐且没有被隔离的主体、消费者在当前纪元记下了进度且补发没有留下空缺、本地审计积压）；模块实现 `recovery.Checker`，用 `Checks.Add` 加自己负责的业务检查（读库只经传进来的 `Read`，每次一个总是回滚的事务；跨组件的一项在两次读取之间调用另一边；只读本库的用 `recovery.InTx` 包一下），用 `Checks.Presence` 为每个审计业务变更或敏感读取的对象类型登记“还在不在、版本多少”的查询（损失范围；有版本列的表用 `recovery.TablePresence`；审计的 `target` 要带变更之后的 `version`，业务变更用 `audit.TargetOf(类型, 身份, 变更后的对象)` 构造；签发连续单号的业务变更在 `changes` 里放 `document_number: audit.DocumentNumber(序列, 号)`，恢复工具从它求已用的最大值），有连续单号序列的用 `Checks.Void` 登记怎样作废提升跨过的空号。
 

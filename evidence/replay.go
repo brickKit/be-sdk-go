@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/errs"
@@ -18,6 +19,7 @@ type Replayed struct {
 	ID, Category, Phase, Subject string
 	Object                       Object
 	Change                       map[string]any
+	At                           time.Time // the record's at: when it was recorded
 }
 
 // ReplayFunc re-applies a record's change in the replay's transaction, without the business preconditions (P12.21);
@@ -27,16 +29,47 @@ type ReplayFunc func(ctx context.Context, tx db.Tx, r Replayed) error
 // ErrDangling: an object the change refers to no longer exists; nothing is done and the record goes to review.
 var ErrDangling = errors.New("evidence: an object the change refers to no longer exists")
 
-// Replays collects a module's replay functions by evidence category.
-type Replays struct{ byCategory map[string]ReplayFunc }
+// CheckFunc checks a record whose effect lies outside the recovery group (P12.20: the assembly protocol 15's 6.7, a
+// credential tightening in an identity product outside the group): outside any transaction it asks the other side
+// whether the effect still holds. It answers false with the reason when it does not; an error (the other side could
+// not be asked) is an inconsistent answer too.
+type CheckFunc func(ctx context.Context, r Replayed) (consistent bool, detail string, err error)
+
+// Replays collects a module's replay functions and checks by evidence category; a category is one or the other.
+type Replays struct {
+	byCategory map[string]ReplayFunc
+	checks     map[string]CheckFunc
+	err        error
+}
 
 // Add registers the replay of one category.
 func (r *Replays) Add(category string, f ReplayFunc) {
 	if r.byCategory == nil {
 		r.byCategory = map[string]ReplayFunc{}
 	}
+	r.twice(category)
 	r.byCategory[category] = f
 }
+
+// Check registers the check of one category whose effect lies outside the recovery group (P12.20).
+func (r *Replays) Check(category string, f CheckFunc) {
+	if r.checks == nil {
+		r.checks = map[string]CheckFunc{}
+	}
+	r.twice(category)
+	r.checks[category] = f
+}
+
+func (r *Replays) twice(category string) {
+	_, replayed := r.byCategory[category]
+	_, checked := r.checks[category]
+	if (replayed || checked) && r.err == nil {
+		r.err = fmt.Errorf("the category %s is registered twice: one replay or one check (P12.20)", category)
+	}
+}
+
+// Err is the registration's mistake, if any: the host refuses to start with it.
+func (r *Replays) Err() error { return r.err }
 
 // Replayer is implemented by modules that re-execute their own evidence (P12.19); the definition names the
 // operation of the replay (component.Definition.Replay).
@@ -50,6 +83,8 @@ const (
 	Applied          = "applied"
 	Dangling         = "dangling"
 	Unsupported      = "unsupported"
+	Consistent       = "consistent"   // checked: the effect still holds outside the recovery group
+	Inconsistent     = "inconsistent" // checked: it does not, or could not be asked (for review)
 )
 
 // ReplayServer answers be.evidence.v1.ReplayService for one member (P12.19-P12.21).
@@ -69,6 +104,9 @@ func (s *ReplayServer) Replay(ctx context.Context, req *evidencepb.ReplayRequest
 	r, err := ParseReplayed(req.GetRecord(), s.Component)
 	if err != nil {
 		return nil, errs.New(errs.ReasonRequestInvalid, err.Error())
+	}
+	if check := s.Replays.checks[r.Category]; check != nil {
+		return s.check(ctx, req.GetRecovery(), r, check)
 	}
 	f := s.Replays.byCategory[r.Category]
 	if f == nil {
@@ -96,6 +134,34 @@ func (s *ReplayServer) Replay(ctx context.Context, req *evidencepb.ReplayRequest
 	}
 	s.log().Info("an evidence record replayed", "event", "evidence_replayed", "id", r.ID, "category", r.Category,
 		"phase", r.Phase, "outcome", outcome, "recovery", req.GetRecovery())
+	return &evidencepb.ReplayResponse{Outcome: outcome, Detail: detail}, nil
+}
+
+// check answers a record of a checked category (P12.20): reflected by its identity in the change history, else the
+// component's check outside any transaction; nothing written either way.
+func (s *ReplayServer) check(ctx context.Context, recovery string, r Replayed, f CheckFunc) (*evidencepb.ReplayResponse, error) {
+	var done bool
+	if err := s.DB.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+		var err error
+		done, err = Reflected(ctx, tx, r.ID)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	outcome, detail := AlreadyReflected, ""
+	if !done {
+		ok, why, err := f(ctx, r)
+		switch {
+		case err != nil:
+			outcome, detail = Inconsistent, "could not be checked: "+err.Error()
+		case ok:
+			outcome = Consistent
+		default:
+			outcome, detail = Inconsistent, why
+		}
+	}
+	s.log().Info("an evidence record checked", "event", "evidence_checked", "id", r.ID, "category", r.Category,
+		"phase", r.Phase, "outcome", outcome, "detail", detail, "recovery", recovery)
 	return &evidencepb.ReplayResponse{Outcome: outcome, Detail: detail}, nil
 }
 
@@ -134,6 +200,7 @@ func ParseReplayed(raw []byte, component string) (Replayed, error) {
 		Subject  string         `json:"subject"`
 		Object   map[string]any `json:"object"`
 		Change   map[string]any `json:"change"`
+		At       string         `json:"at"`
 	}
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		return Replayed{}, fmt.Errorf("the record is not JSON: %w", err)
@@ -150,8 +217,12 @@ func ParseReplayed(raw []byte, component string) (Replayed, error) {
 	obj.Type, _ = rec.Object["type"].(string)
 	obj.ID, _ = rec.Object["id"].(string)
 	obj.Version, _ = rec.Object["version"].(string)
+	at, err := time.Parse(time.RFC3339Nano, rec.At)
+	if err != nil {
+		return Replayed{}, fmt.Errorf("the record's at %q is not a time: %w", rec.At, err)
+	}
 	return Replayed{ID: rec.ID, Category: rec.Category, Phase: rec.Phase, Subject: rec.Subject, Object: obj,
-		Change: rec.Change}, nil
+		Change: rec.Change, At: at}, nil
 }
 
 // reflect writes the change history row of a replayed record (P12.21): its own identity, the current epoch and a new
@@ -173,7 +244,7 @@ type ReplayClient struct {
 }
 
 // Replay asks the owner to replay one record; it returns the outcome (Applied, AlreadyReflected, Dangling,
-// Unsupported) and its detail.
+// Unsupported; Consistent, Inconsistent for a checked category) and its detail.
 func (c ReplayClient) Replay(ctx context.Context, record []byte, recovery string) (outcome, detail string, err error) {
 	out, err := evidencepb.NewReplayServiceClient(c.Conn).Replay(ctx, &evidencepb.ReplayRequest{Record: record,
 		Recovery: recovery})

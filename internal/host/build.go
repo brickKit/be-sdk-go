@@ -468,6 +468,9 @@ func (m *Member) systemSurface(member obs.Member, rt *runtime.Runtime) error {
 		if err := rp.Replays(&replays); err != nil {
 			return fmt.Errorf("the module's replays could not be registered: %w", err)
 		}
+		if err := replays.Err(); err != nil {
+			return err
+		}
 		if m.Def.Replay == "" {
 			return errors.New("a module that replays its evidence declares the operation of the replay (Definition.Replay, P12.19)")
 		}

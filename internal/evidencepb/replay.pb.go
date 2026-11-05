@@ -83,7 +83,9 @@ type ReplayResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// reflected: the change history has the record's identity (nothing done); applied: re-executed now; dangling: an
 	// object the change refers to no longer exists (nothing done, for review); unsupported: this owner has no replay
-	// for the record's category (nothing done, for review).
+	// for the record's category (nothing done, for review). For a category whose effect lies outside the recovery group
+	// (P12.20: checked, not re-executed): consistent: the effect still holds there; inconsistent: it does not, or could
+	// not be asked (for review; detail says why).
 	Outcome       string `protobuf:"bytes,1,opt,name=outcome,proto3" json:"outcome,omitempty"`
 	Detail        string `protobuf:"bytes,2,opt,name=detail,proto3" json:"detail,omitempty"`
 	unknownFields protoimpl.UnknownFields

@@ -4,8 +4,10 @@ package evidence
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/errs"
@@ -97,4 +99,85 @@ func TestTheOwnerReplaysItsEvidence(t *testing.T) {
 	assert.True(t, errs.Is(err, "be", errs.ReasonRequestInvalid), "a cancelled record is not replayed: %v", err)
 	_, err = ask([]byte(`{"record_type":"other"}`))
 	assert.Error(t, err)
+}
+
+// A category whose effect lies outside the recovery group is checked, not re-executed (P12.20): outside any
+// transaction, consistent or inconsistent (an error asking is inconsistent too), no change history written, so it is
+// checked again on the next run; a record whose identity the change history has is reflected and not checked.
+func TestTheOwnerChecksWhatLiesOutsideTheRecoveryGroup(t *testing.T) {
+	ctx := context.Background()
+	d, admin := dbtest.Schema(t, "evcheck", nil)
+	var replays Replays
+	var asked []Replayed
+	replays.Check("credential_tightening", func(ctx context.Context, r Replayed) (bool, string, error) {
+		asked = append(asked, r)
+		if db.InTx(ctx) {
+			return false, "", errors.New("the check runs in a transaction")
+		}
+		switch r.Change["kind"] {
+		case "password":
+			return true, "", nil
+		case "second_factor":
+			return false, "the factors are back", nil
+		}
+		return false, "", errors.New("the product cannot be reached")
+	})
+	require.NoError(t, replays.Err())
+	s := &ReplayServer{DB: d, Component: "demo/iam", Replays: &replays}
+	w := &Writer{DB: d, Component: "demo/iam", Instance: "iam-1"}
+	at := time.Date(2026, 11, 5, 21, 0, 0, 123000000, time.UTC)
+	w.Now = func() time.Time { return at }
+	record := func(id, kind string) []byte {
+		r := w.record("0190f3a1-0000-7000-8000-00000000c"+id, "credential_tightening", "intent", sectestBob,
+			Object{Type: "demo.account", ID: sectestBob, Version: "3"}, map[string]any{"kind": kind}, nil)
+		s, err := Seal(r)
+		require.NoError(t, err)
+		return s.Record
+	}
+	ask := func(raw []byte) (string, string) {
+		out, err := s.Replay(ctx, &evidencepb.ReplayRequest{Record: raw, Recovery: "r1"})
+		require.NoError(t, err)
+		return out.GetOutcome(), out.GetDetail()
+	}
+	history := func() int {
+		var n int
+		require.NoError(t, admin.QueryRow(ctx, "SELECT count(*) FROM evcheck.be_change_history").Scan(&n))
+		return n
+	}
+
+	got, _ := ask(record("001", "password"))
+	assert.Equal(t, Consistent, got)
+	require.Len(t, asked, 1)
+	assert.True(t, asked[0].At.Equal(at), "the check sees the record's time: %v", asked[0].At)
+	assert.Equal(t, sectestBob, asked[0].Object.ID)
+	got, _ = ask(record("001", "password"))
+	assert.Equal(t, Consistent, got, "checked again: nothing written that would make it reflected")
+	assert.Len(t, asked, 2)
+	got, detail := ask(record("002", "second_factor"))
+	assert.Equal(t, Inconsistent, got)
+	assert.Equal(t, "the factors are back", detail)
+	got, detail = ask(record("003", "unknown"))
+	assert.Equal(t, Inconsistent, got, "could not be asked: inconsistent, for review")
+	assert.Contains(t, detail, "cannot be reached")
+	assert.Zero(t, history(), "a check writes no change history")
+
+	_, err := admin.Exec(ctx, `INSERT INTO evcheck.be_change_history (evidence_id, object_type, object_id, epoch, commit_seq)
+		VALUES ('0190f3a1-0000-7000-8000-00000000c004', 'demo.account', $1, 1, 1)`, sectestBob)
+	require.NoError(t, err)
+	n := len(asked)
+	got, _ = ask(record("004", "password"))
+	assert.Equal(t, AlreadyReflected, got, "in the restored change history: reflected, not checked")
+	assert.Len(t, asked, n)
+}
+
+// One category is either re-executed or checked (P12.20): registering both is a mistake the host refuses.
+func TestACategoryIsReplayedOneWay(t *testing.T) {
+	var r Replays
+	r.Add("credential_tightening", func(context.Context, db.Tx, Replayed) error { return nil })
+	r.Check("credential_tightening", func(context.Context, Replayed) (bool, string, error) { return true, "", nil })
+	assert.Error(t, r.Err())
+	var ok Replays
+	ok.Add("a", func(context.Context, db.Tx, Replayed) error { return nil })
+	ok.Check("b", func(context.Context, Replayed) (bool, string, error) { return true, "", nil })
+	assert.NoError(t, ok.Err())
 }
