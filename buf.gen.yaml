@@ -16,6 +16,9 @@ managed:
       path: be/source/v1/resend.proto
       value: github.com/brickKit/be-sdk-go/v3/internal/sourcepb
     - file_option: go_package
+      path: be/evidence/v1/replay.proto
+      value: github.com/brickKit/be-sdk-go/v3/internal/evidencepb
+    - file_option: go_package
       path: be/session/v1/session.proto
       value: github.com/brickKit/be-sdk-go/v3/sessionpb
 plugins:

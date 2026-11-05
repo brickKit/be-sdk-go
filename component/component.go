@@ -34,6 +34,10 @@ type Definition struct {
 	// P6.38), declared in its resource definition like every system method's; any component of the deployment may
 	// call it. Required with Streams.
 	Resend string
+	// Replay is the operation of the evidence replay (be.evidence.v1.ReplayService, P12.19), declared in the resource
+	// definition; only the recovery tool (ops/recover) calls it. Required when the module implements
+	// evidence.Replayer.
+	Replay string
 	// Subscribes says the module implements events.Subscriber; it needs Migrations (the inbox).
 	Subscribes bool
 	// Evidence says the component writes tightening intents or irreversible commands' records (be-protocol P12.16):

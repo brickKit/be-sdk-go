@@ -133,15 +133,15 @@ func TestRedeliveryAfterTheConsumersDatabaseWentBack(t *testing.T) {
 			host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 			pgtest.Member(t, "rdprod", "")
 			pgtest.Member(t, "rdcons", "")
+			admin := pgtest.Admin(t, pgtest.Database) // one connection: a new one each poll runs the instance out of clients
 			sql := func(format string, a ...any) {
 				t.Helper()
-				pgtest.Exec(t, pgtest.Admin(t, pgtest.Database), fmt.Sprintf(format, a...))
+				pgtest.Exec(t, admin, fmt.Sprintf(format, a...))
 			}
 			count := func(q string) int {
 				t.Helper()
-				c := pgtest.Admin(t, pgtest.Database)
 				var n int
-				require.NoError(t, c.QueryRow(context.Background(), q).Scan(&n))
+				require.NoError(t, admin.QueryRow(context.Background(), q).Scan(&n))
 				return n
 			}
 			grpcPort := freePort(t)

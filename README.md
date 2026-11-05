@@ -47,7 +47,9 @@ func main() { launcher.Main(sales.Definition) }
 
 补发（P6.36–P6.40）：有流的组件在定义里写 `Resend`（补发方法 `be.source.v1.ResendService` 的操作，惯例是 `<前缀>.system.resend`，登记在本组件的 `system` 资源下），SDK 挂上这个系统方法，部署内任何组件可以调用；没写时启动失败。消费者的收件表记下每个事件在来源的位置，订阅每次启动记一行；库回退过（恢复代次推进或时间线变了）的消费者启动时按进度向它见过的生产者要补发，生产者的地址取依赖的 `grpc` 端口（`<依赖>_GRPC_ENDPOINT`），没有地址的记错误日志。补发覆盖不了的分区（之后的行已清掉）记进 `be_resend_gap`；读模型的订阅在 `Sub.Repair` 里给出修复（通常是投影的 `Align`）。
 
-恢复模式（P1.22–P1.24）：部署级配置键 `RECOVERY_PHASE`（`frozen`、`redelivering`）有值时成员进入“恢复就绪”：`/readyz` 答 200 并带阶段，用户面全部答 `MAINTENANCE`；`frozen` 不跑模块的 `Start`、发件转发、订阅与作业，`redelivering` 跑模块的 `Start`、转发与订阅（补发与投影），不跑作业；系统面一直照常。阶段只在启动时读，换阶段就重启（整套恢复的工具改共用变量再 `brickkit up`）。模块有自己的后台要在某个阶段再收住时，读 `rt.RecoveryPhase()`。
+恢复模式（P1.22–P1.24）：部署级配置键 `RECOVERY_PHASE`（`frozen`、`redelivering`、`replaying`）有值时成员进入“恢复就绪”：`/readyz` 答 200 并带阶段，用户面全部答 `MAINTENANCE`；`frozen` 不跑模块的 `Start`、发件转发、订阅与作业，`redelivering` 跑模块的 `Start`、转发与订阅（补发与投影），不跑作业；系统面一直照常。阶段只在启动时读，换阶段就重启（整套恢复的工具改共用变量再 `brickkit up`）。模块有自己的后台要在某个阶段再收住时，读 `rt.RecoveryPhase()`。
+
+证据的重放（P12.19–P12.22）：写证据的模块实现 `evidence.Replayer`，按类别注册重新执行的函数（`ReplayFunc`：在给定的事务里按记录的 `change` 重新施加，不重做业务前置校验，被引用的对象不在时返回 `evidence.ErrDangling`），定义里写 `Replay`（操作，惯例 `<前缀>.system.replay`）。SDK 挂上 `be.evidence.v1.ReplayService`，只许恢复工具（`ops/recover`）调用，按记录身份判“已体现”，重新执行与变更历史在一个事务里。整套恢复的第 6 步在阶段 `replaying` 下做（与 `redelivering` 一样运行转发与订阅）。
 
 ### 后台工作
 

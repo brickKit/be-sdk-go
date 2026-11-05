@@ -4,11 +4,11 @@ BUF := bufbuild/buf:1.74.0@sha256:621f108266b19236906aa328e64b7c50340738472c5da4
 PROTO = $(shell go list -m -f '{{.Dir}}' github.com/brickKit/be-protocol/v3)/proto
 RUN = docker run --rm -u $(shell id -u):$(shell id -g) -e HOME=/tmp -e BUF_CACHE_DIR=/tmp/buf -v $(CURDIR):/w -v $(PROTO):/proto:ro -w /w
 gen:  ## internal/sourcepb and sessionpb from be-protocol's proto/ (committed)
-	rm -rf internal/sourcepb sessionpb
+	rm -rf internal/sourcepb internal/evidencepb sessionpb
 	$(RUN) $(BUF) generate /proto --template buf.gen.yaml
 gen-check:  ## the committed code is exactly what buf generates from the pinned proto/
-	@T=$$(mktemp -d) && cp -r internal/sourcepb sessionpb $$T/ && $(MAKE) -s gen >/dev/null && \
-	  diff -r $$T/sourcepb internal/sourcepb && diff -r $$T/sessionpb sessionpb && rm -rf $$T && echo "generated code up to date"
+	@T=$$(mktemp -d) && cp -r internal/sourcepb internal/evidencepb sessionpb $$T/ && $(MAKE) -s gen >/dev/null && \
+	  diff -r $$T/sourcepb internal/sourcepb && diff -r $$T/evidencepb internal/evidencepb && diff -r $$T/sessionpb sessionpb && rm -rf $$T && echo "generated code up to date"
 vet:  ## go vet with and without the integration tag, and gofmt (unformatted files fail)
 	@test -z "$$(gofmt -l .)" || { gofmt -l .; echo "gofmt: the files above are not formatted"; exit 1; }
 	go vet ./...

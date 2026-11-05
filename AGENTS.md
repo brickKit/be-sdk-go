@@ -27,7 +27,7 @@
 | `httpx/`、`grpcx/` | 用户面（Gin）与系统面（gRPC）的服务器与中间件链 | 第 04、08 章 |
 | `clock/` | 系统挂起时也计时的时钟 | P1.11 |
 | `mergesafety/` | 找出合进外壳会坏的代码（进程级的全局状态） | 协议 17 |
-| `evidence/` | 记录者一侧的证据：收紧两段写（意图、结论、取消）、一般记录、变更历史与提交序号、“已体现”、转运作业 `be.evidence.transfer`；运行时的 `rt.Evidence`，组件定义的 `Evidence` 标记给它运行档案的键 | 第 12 章 |
+| `evidence/` | 记录者一侧的证据：收紧两段写（意图、结论、取消）、一般记录、变更历史与提交序号、“已体现”、转运作业 `be.evidence.transfer`；属主的重放（`replay.go`，`ReplayService`，P12.19–P12.21）；运行时的 `rt.Evidence`，组件定义的 `Evidence` 标记给它运行档案的键 | 第 12 章 |
 | `runprofile/` | 运行档案与告警渠道：对象锁的桶、签名的记录、恢复代次的读取与推进、告警的两份（`internal/s3sig` 是 SDK 自己的 SigV4，事件的大载荷也用） | 第 12 章 |
 | `sectest/` | 测试用的安全部署：令牌、信任根、授权与审计的替身、账号的安全变更（只给测试） | — |
 | `sessionpb/` | `be.session.v1` 的生成代码（`make gen`），身份成员实现 `SessionService` 时用 | P8.28 |

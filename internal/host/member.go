@@ -41,10 +41,15 @@ const (
 	RecoveryReady = "recovery_ready"
 )
 
+// RecoveryTool is the full recovery tool's service identity (be-ops recover): the only caller of the replay
+// (P12.19), and the evidence store's reader.
+const RecoveryTool = "ops/recover"
+
 // The recovery phases (P1.23): a deployment variable read at start; a phase change restarts.
 const (
 	PhaseFrozen       = "frozen"
 	PhaseRedelivering = "redelivering"
+	PhaseReplaying    = "replaying"
 )
 
 // Defaults of the SDK's own keys.
@@ -59,7 +64,7 @@ func SDKKeys() []config.Key {
 	return []config.Key{
 		{Name: "LOG_LEVEL", Type: config.Enum, Values: []string{"debug", "info", "warn", "error"}, Default: "info"},
 		{Name: "OTEL_URL", Type: config.String, Process: true},
-		{Name: "RECOVERY_PHASE", Type: config.Enum, Values: []string{PhaseFrozen, PhaseRedelivering}, Process: true},
+		{Name: "RECOVERY_PHASE", Type: config.Enum, Values: []string{PhaseFrozen, PhaseRedelivering, PhaseReplaying}, Process: true},
 		{Name: "STOP_DRAIN_DELAY", Type: config.Duration, Default: DefaultDrainDelay},
 		{Name: "STOP_TIMEOUT", Type: config.Duration, Default: DefaultStopTimeout},
 	}
@@ -185,7 +190,7 @@ func (m *Member) Describe() map[string]any {
 // and no job. The system surface and the authorization view run in every phase.
 func (m *Member) Start(bg context.Context) error {
 	phase := m.Phase()
-	moving := phase == "" || phase == PhaseRedelivering // events and projections run
+	moving := phase == "" || phase == PhaseRedelivering || phase == PhaseReplaying // events and projections run
 	if s, ok := m.Module.(component.Starter); ok && moving {
 		if err := s.Start(bg); err != nil {
 			return err

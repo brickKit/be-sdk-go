@@ -66,10 +66,11 @@ func TestRecoveryPhases(t *testing.T) {
 	require.NoError(t, pgqueue.Migrate(context.Background(), busURL, slog.New(slog.NewTextHandler(io.Discard, nil))))
 	pgtest.Member(t, "rcprod", "")
 	pgtest.Member(t, "rccons", "")
+	conn := pgtest.Admin(t, pgtest.Database) // one connection: a new one each poll ran the instance out of clients
 	count := func(q string) int {
 		t.Helper()
 		var n int
-		require.NoError(t, pgtest.Admin(t, pgtest.Database).QueryRow(context.Background(), q).Scan(&n))
+		require.NoError(t, conn.QueryRow(context.Background(), q).Scan(&n))
 		return n
 	}
 	prodEnv := pgtest.MemberEnv(host, port, "rcprod")
@@ -149,6 +150,22 @@ func TestRecoveryPhases(t *testing.T) {
 	stopCons()
 	stopProd()
 
+	// replaying (step 6): as redelivering, forwarding and subscriptions run, still no job
+	pgtest.Exec(t, pgtest.Admin(t, pgtest.Database), `INSERT INTO rcprod.be_outbox (event_id, stream, partition, type,
+		occurred_at, record_id, version, projection, hops, payload, digest) SELECT gen_random_uuid(), stream, partition, type,
+		occurred_at, gen_random_uuid()::text, version, projection, hops, payload, digest FROM rcprod.be_outbox LIMIT 1`)
+	prodURL, _, stopProd = runLogged(t, prodDef, phased(prodEnv, "replaying"))
+	consURL, _, stopCons = runLogged(t, consDef, phased(consEnv, "replaying"))
+	_, ready = readiness(prodURL)
+	assert.Equal(t, "replaying", ready["phase"])
+	// the redelivering run before held the partitions' forwarding leases (10 s, P6.11): this run waits them out
+	require.Eventually(t, func() bool { return count("SELECT count(*) FROM rccons.rseen") == 4 }, 25*time.Second,
+		50*time.Millisecond, "forwarded and received while replaying")
+	time.Sleep(500 * time.Millisecond)
+	assert.Equal(t, ticks, count("SELECT count(*) FROM rcprod.ticks"), "no job while replaying")
+	stopCons()
+	stopProd()
+
 	// running again: everything
 	prodURL, _, stopProd = runLogged(t, prodDef, phased(prodEnv, ""))
 	defer stopProd()
@@ -161,7 +178,7 @@ func TestRecoveryPhases(t *testing.T) {
 
 	// a phase this version does not know: a configuration error before any port opens (P1.9, P2.6)
 	var out syncBuffer
-	bad := phased(prodEnv, "replaying")
+	bad := phased(prodEnv, "verifying")
 	maps.Copy(bad, map[string]string{"COMPONENT_ID": prodDef.ID, "COMPONENT_VERSION": prodDef.Version,
 		"PORT": strconv.Itoa(freePort(t))})
 	assert.Equal(t, ExitConfiguration, Run(context.Background(), prodDef, Options{Env: env(secured(t, prodDef, bad)),

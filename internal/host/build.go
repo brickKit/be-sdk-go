@@ -23,6 +23,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/idem"
 	"github.com/brickKit/be-sdk-go/v3/identity"
+	"github.com/brickKit/be-sdk-go/v3/internal/evidencepb"
 	"github.com/brickKit/be-sdk-go/v3/internal/sourcepb"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/runprofile"
@@ -377,6 +378,21 @@ func (m *Member) systemSurface(member obs.Member, rt *runtime.Runtime) error {
 		if ok {
 			services.Register(&sourcepb.WatermarkService_ServiceDesc, m.watermark, map[string]grpcx.Method{"Pull": method})
 		}
+	}
+	if rp, ok := m.Module.(evidence.Replayer); ok { // the owner's replay of its evidence (P12.19)
+		var replays evidence.Replays
+		if err := rp.Replays(&replays); err != nil {
+			return fmt.Errorf("the module's replays could not be registered: %w", err)
+		}
+		if m.Def.Replay == "" {
+			return errors.New("a module that replays its evidence declares the operation of the replay (Definition.Replay, P12.19)")
+		}
+		if m.db == nil {
+			return errors.New("a module that replays its evidence has a database (Migrations)")
+		}
+		services.Register(&evidencepb.ReplayService_ServiceDesc, &evidence.ReplayServer{DB: m.db, Component: m.Def.ID,
+			Replays: &replays, Log: m.Logger}, map[string]grpcx.Method{"Replay": {Operation: m.Def.Replay,
+			Callers: []string{RecoveryTool}}})
 	}
 	if m.resender != nil { // the redelivery of the member's streams (P6.38)
 		if m.Def.Resend == "" {
