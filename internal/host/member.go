@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -138,7 +139,10 @@ type Member struct {
 	hasJobs   bool
 	// external are the member's external commands; in verifying and read_only they only query (P13.10, P1.23).
 	external *extcmd.Commands
-	querying chan struct{}
+	// loops are the SDK's work that runs outside the job runner in some recovery phases (P1.23); looping ends with
+	// the background context.
+	loops   []loop
+	looping sync.WaitGroup
 	// db keeps the statistics of the SDK's tables fresh between Start and Stop (P5.33); nil without a database.
 	db         *db.DB
 	statistics chan struct{}
@@ -222,8 +226,15 @@ func (m *Member) Start(bg context.Context) error {
 	}
 	if m.external != nil && (phase == PhaseVerifying || phase == PhaseReadOnly) {
 		m.external.QueryOnly = true // what is unknown is asked, nothing is sent (P13.10)
-		m.querying = make(chan struct{})
-		go func() { defer close(m.querying); m.queryExternal(bg) }()
+		m.loops = append(m.loops, loop{name: "the external commands", every: extcmd.RunEvery,
+			in:  func(string) bool { return true },
+			run: func(ctx context.Context) error { _, err := m.external.Run(ctx); return err }})
+	}
+	for _, l := range m.loops {
+		if l.in(phase) {
+			m.looping.Add(1)
+			go func() { defer m.looping.Done(); m.runLoop(bg, l) }()
+		}
 	}
 	if m.db != nil {
 		m.statistics = make(chan struct{})
@@ -326,26 +337,31 @@ func (m *Member) Stop(ctx context.Context) error {
 	if m.statistics != nil {
 		<-m.statistics // ends with the background context
 	}
-	if m.querying != nil {
-		<-m.querying // ends with the background context
-	}
+	m.looping.Wait() // ends with the background context
 	if s, ok := m.Module.(component.Stopper); ok {
 		return s.Stop(ctx)
 	}
 	return nil
 }
 
-// queryExternal runs the external commands outside the job runner, which does not run in recovery: every RunEvery,
-// the due commands, query only.
-func (m *Member) queryExternal(bg context.Context) {
+// loop is SDK work the host runs itself, outside the job runner, in the recovery phases in reports true for.
+type loop struct {
+	name  string
+	every time.Duration
+	in    func(phase string) bool
+	run   func(ctx context.Context) error
+}
+
+// runLoop runs l every l.every until the background context ends.
+func (m *Member) runLoop(bg context.Context, l loop) {
 	for {
-		if _, err := m.external.Run(bg); err != nil && bg.Err() == nil {
-			m.Logger.Warn("the external commands could not be queried; trying again", "error", err.Error())
+		if err := l.run(bg); err != nil && bg.Err() == nil {
+			m.Logger.Warn(l.name+" failed in the recovery phase; trying again", "error", err.Error())
 		}
 		select {
 		case <-bg.Done():
 			return
-		case <-time.After(extcmd.RunEvery):
+		case <-time.After(l.every):
 		}
 	}
 }

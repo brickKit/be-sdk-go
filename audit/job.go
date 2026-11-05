@@ -94,29 +94,35 @@ func (a *Auditor) Drain(ctx context.Context, s Sender) (int, error) {
 func (a *Auditor) Job(sender *GRPCSender, log *slog.Logger) work.Job {
 	return work.Job{Name: "be.audit.transfer", Kind: work.Singleton, Effect: work.IdempotentExternal,
 		Interval: TransferEvery, MaxAttempts: work.Unlimited, Handle: func(ctx context.Context, _ *work.Run) error {
-			if _, err := a.Number(ctx); err != nil {
-				return fmt.Errorf("numbering audit records: %w", err)
-			}
-			if _, err := a.Flush(ctx); err != nil {
-				return fmt.Errorf("summarizing denials: %w", err)
-			}
-			if sender != nil {
-				// calls need a deadline (P4.4): each batch gets one
-				ctx, cancel := context.WithTimeout(ctx, SendTimeout)
-				defer cancel()
-				if _, err := a.Drain(ctx, sender); err != nil {
-					log.Warn("audit records could not be transferred; they stay local", "error", err.Error())
-				}
-				if w, err := sender.Watermark(ctx); err == nil {
-					if _, _, err := a.Purge(ctx, w); err != nil {
-						return err
-					}
-				}
-			}
-			n, err := a.Backlog(ctx)
-			if err == nil && a.Capacity > 0 && n >= a.Capacity {
-				log.Error("the audit backlog reached its capacity; required audited operations are refused", "backlog", n)
-			}
-			return err
+			return a.Cycle(ctx, sender, log)
 		}}
+}
+
+// Cycle is one round of the transfer: the job's, and the host's own in the recovery phases but frozen, where no job
+// runs (P1.23: the audit store never goes back).
+func (a *Auditor) Cycle(ctx context.Context, sender *GRPCSender, log *slog.Logger) error {
+	if _, err := a.Number(ctx); err != nil {
+		return fmt.Errorf("numbering audit records: %w", err)
+	}
+	if _, err := a.Flush(ctx); err != nil {
+		return fmt.Errorf("summarizing denials: %w", err)
+	}
+	if sender != nil {
+		// calls need a deadline (P4.4): each batch gets one
+		ctx, cancel := context.WithTimeout(ctx, SendTimeout)
+		defer cancel()
+		if _, err := a.Drain(ctx, sender); err != nil {
+			log.Warn("audit records could not be transferred; they stay local", "error", err.Error())
+		}
+		if w, err := sender.Watermark(ctx); err == nil {
+			if _, _, err := a.Purge(ctx, w); err != nil {
+				return err
+			}
+		}
+	}
+	n, err := a.Backlog(ctx)
+	if err == nil && a.Capacity > 0 && n >= a.Capacity {
+		log.Error("the audit backlog reached its capacity; required audited operations are refused", "backlog", n)
+	}
+	return err
 }

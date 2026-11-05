@@ -152,6 +152,10 @@ func (m *Member) auditTransfer(a *audit.Auditor, values *config.Values) error {
 		return err
 	}
 	m.hasJobs = true
+	// in the recovery phases but frozen no job runs, yet the audit store never goes back (P1.23)
+	m.loops = append(m.loops, loop{name: "the audit transfer", every: audit.TransferEvery,
+		in:  func(phase string) bool { return phase != "" && phase != PhaseFrozen },
+		run: func(ctx context.Context) error { return a.Cycle(ctx, sender, m.Logger) }})
 	return nil
 }
 
