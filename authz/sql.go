@@ -190,7 +190,10 @@ func Compile(r *Resource, segs []Segment, op, principal string, at time.Time, al
 		fieldSegs, hitPreds = opSegs, opPreds
 		used = append(append([]Segment{}, view...), opSegs...)
 	}
-	p.Hits = hitPreds
+	// each bit a boolean: a predicate NULL because of a NULL column is not a hit (P8.17)
+	for _, h := range hitPreds {
+		p.Hits = append(p.Hits, "COALESCE("+h+", FALSE)")
+	}
 	for _, s := range fieldSegs {
 		var fs []string
 		for _, f := range s.ReadFields {

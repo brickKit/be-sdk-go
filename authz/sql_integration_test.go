@@ -68,14 +68,15 @@ func TestCompiledListsMatchTheVectors(t *testing.T) { // P8.17, P8.18, CK-AZ-05
 			}
 			defer rows.Close()
 			for rows.Next() {
-				vals, err := rows.Values()
-				if err != nil {
-					return err
+				// strictly as booleans, as a component scans them: a NULL bit fails here (P8.17)
+				var id string
+				hits := make([]bool, len(p.Hits))
+				dest := []any{&id}
+				for i := range hits {
+					dest = append(dest, &hits[i])
 				}
-				id := vals[0].(string)
-				hits := make([]bool, len(vals)-1)
-				for i, v := range vals[1:] {
-					hits[i], _ = v.(bool)
+				if err := rows.Scan(dest...); err != nil {
+					return err
 				}
 				ids = append(ids, id)
 				fields[id] = p.Fields(hits)
