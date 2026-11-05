@@ -96,6 +96,10 @@ type evalCase struct {
 	Segments                    []Segment
 	Filter                      map[string]string
 	Expect                      json.RawMessage
+	Segment                     Segment        // kind check
+	Valid                       bool           // kind check
+	Object                      map[string]any // kind mask
+	Readable                    []string       // kind mask
 }
 
 func loadEval(t testing.TB) (evalFixture, []evalCase) {
@@ -124,8 +128,9 @@ func TestSegmentEvalVectors(t *testing.T) {
 			Records map[string]struct {
 				Visible, Action string
 				Fields          []string
-				ReadError       *string `json:"read_error"`
-				ActionError     *string `json:"action_error"`
+				ActionFields    []string `json:"action_fields"`
+				ReadError       *string  `json:"read_error"`
+				ActionError     *string  `json:"action_error"`
 			}
 		}
 		require.NoError(t, json.Unmarshal(c.Expect, &want))
@@ -138,18 +143,57 @@ func TestSegmentEvalVectors(t *testing.T) {
 			w := want.Records[id]
 			assert.Equal(t, w.Visible, triName(d.Visible), "%s %s visible", c.ID, id)
 			assert.Equal(t, w.Action, triName(d.Action), "%s %s action", c.ID, id)
-			if w.Fields == nil {
-				w.Fields = []string{}
-			}
-			if d.Fields == nil {
-				d.Fields = []string{}
-			}
-			assert.Equal(t, w.Fields, d.Fields, "%s %s fields", c.ID, id)
 			read := Evaluate(r, c.Segments, r.ViewOperation, f.facts(r, rec), c.Principal, at)
+			assert.Equal(t, orEmpty(w.Fields), orEmpty(read.Fields), "%s %s fields", c.ID, id)
+			assert.Equal(t, orEmpty(w.ActionFields), orEmpty(d.Fields), "%s %s the operation's own fields", c.ID, id)
 			assert.Equal(t, w.ReadError, reasonOf(read.Err()), "%s %s read error", c.ID, id)
 			assert.Equal(t, w.ActionError, reasonOf(d.Err()), "%s %s action error", c.ID, id)
 		}
 	}
+}
+
+func orEmpty(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+// TestSegmentCheckVectors: what a component refuses against its own resource definition (P8.14, EN08-EN10).
+func TestSegmentCheckVectors(t *testing.T) {
+	f, cases := loadEval(t)
+	r := f.resource()
+	n := 0
+	for _, c := range cases {
+		if c.Kind != "check" {
+			continue
+		}
+		n++
+		err := c.Segment.Check(r)
+		assert.Equal(t, c.Valid, err == nil, "%s: %v", c.ID, err)
+	}
+	require.NotZero(t, n, "precondition: the vector has check cases")
+}
+
+// TestMaskVectors: the masked output (P8.31).
+func TestMaskVectors(t *testing.T) {
+	f, cases := loadEval(t)
+	r := f.resource()
+	n := 0
+	for _, c := range cases {
+		if c.Kind != "mask" {
+			continue
+		}
+		n++
+		var want map[string]any
+		require.NoError(t, json.Unmarshal(c.Expect, &want))
+		got, err := json.Marshal(Mask(r, c.Object, c.Readable))
+		require.NoError(t, err)
+		var back map[string]any
+		require.NoError(t, json.Unmarshal(got, &back))
+		assert.Equal(t, want, back, c.ID)
+	}
+	require.NotZero(t, n, "precondition: the vector has mask cases")
 }
 
 func TestSegmentCanonicalVectors(t *testing.T) {

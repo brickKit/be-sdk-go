@@ -93,12 +93,23 @@ func TestCompiledListsMatchTheVectors(t *testing.T) { // P8.17, P8.18, CK-AZ-05
 					IDs    []string `json:"ids"`
 					Fields map[string][]string
 				}
+				ActionList struct {
+					IDs    []string `json:"ids"`
+					Fields map[string][]string
+				} `json:"action_list"`
 			}
 			require.NoError(t, json.Unmarshal(c.Expect, &want))
 			ids, fields := list(c, r.ViewOperation, nil)
 			assert.ElementsMatch(t, want.List.IDs, ids, c.ID)
 			for _, id := range want.List.IDs {
 				assert.Equal(t, want.List.Fields[id], fields[id], "%s %s: list and single object give the same fields", c.ID, id)
+			}
+			// the list of an operation (an export, a special read) is visible AND permitted, with the operation's
+			// own fields (security 01's three lists; P8.15)
+			ids, fields = list(c, c.Action, nil)
+			assert.ElementsMatch(t, want.ActionList.IDs, ids, "%s: the operation's list", c.ID)
+			for _, id := range want.ActionList.IDs {
+				assert.Equal(t, orEmpty(want.ActionList.Fields[id]), orEmpty(fields[id]), "%s %s: the operation's fields", c.ID, id)
 			}
 		case "list":
 			var want struct {

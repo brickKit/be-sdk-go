@@ -151,17 +151,21 @@ func entitled(segs []Segment, op string, facts Facts, principal string, at time.
 // Decision is the result for one record (security 01's formulas).
 type Decision struct {
 	Visible Tri
-	Action  Tri      // PermissionAllowed for the operation asked; equals Visible for the view operation
-	Fields  []string // readable fields (never a secret one), sorted; empty unless visible
+	Action  Tri // PermissionAllowed for the operation asked; equals Visible for the view operation
+	// Fields are readable for the operation asked (security 01's Readable(C,K,r,f), P8.15): its own true segments'
+	// read fields, never a secret one, sorted; empty unless visible. An export or special read outputs these, not
+	// the page's.
+	Fields []string
 }
 
 // Evaluate decides one record for a subject's segments: visibility by the resource's view operation, the
-// operation's permission, and the readable fields.
+// operation's permission, and the fields readable for the operation.
 func Evaluate(r *Resource, segs []Segment, op string, facts Facts, principal string, at time.Time) Decision {
 	visible, fields := entitled(segs, r.ViewOperation, facts, principal, at)
 	d := Decision{Visible: visible, Action: visible}
 	if op != r.ViewOperation {
-		act, _ := entitled(segs, op, facts, principal, at)
+		var act Tri
+		act, fields = entitled(segs, op, facts, principal, at)
 		d.Action = and(visible, act)
 	}
 	if visible == True {

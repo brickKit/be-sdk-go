@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -81,6 +82,9 @@ type Request struct {
 	Q       string
 	Cursor  string
 	Limit   int
+	// ReadableOnly asks for only the rows whose listed restricted fields the caller can read (P9.4, security 07's
+	// FX12): the result narrows, and those fields may then filter, sort and search.
+	ReadableOnly []string
 }
 
 // Query is a compiled list page: SELECT the columns you need plus Hits, FROM your table AS the spec's alias,
@@ -91,6 +95,8 @@ type Query struct {
 	OrderBy string
 	Limit   int
 	Hits    []string
+	// ReadableOnly is the request's narrowing, sorted and without repeats: the answer says it (P9.4).
+	ReadableOnly []string
 
 	spec       Spec
 	plan       *authz.Plan
@@ -148,9 +154,28 @@ func Build(ctx context.Context, subj *authz.Subject, spec Spec, req Request) (co
 	}
 	q.Args = append(q.Args, plan.Args...)
 	where := []string{plan.Where}
+	res, _ := subj.Defs.Resource(resourceOf(subj, spec.Operation))
+	narrowed := map[string]bool{}
+	for _, f := range req.ReadableOnly {
+		var fd authz.Field
+		ok := res != nil
+		if ok {
+			fd, ok = res.Fields[f]
+		}
+		if !ok || fd.Class == authz.Secret {
+			return ctx, nil, bad("readable_only."+f, "not a field of this list")
+		}
+		if !narrowed[f] {
+			narrowed[f] = true
+			q.ReadableOnly = append(q.ReadableOnly, f)
+			where = append(where, plan.ReadableWhere(f))
+		}
+	}
+	sort.Strings(q.ReadableOnly)
+	// a restricted field may filter, sort or search where every listed row shows it: every segment reads it, or
+	// the list is narrowed to the rows that do
 	restricted := func(field string) bool {
-		r, _ := subj.Defs.Resource(resourceOf(subj, spec.Operation))
-		return r != nil && r.Fields[field].Class != authz.Ordinary
+		return res != nil && res.Fields[field].Class != authz.Ordinary && !narrowed[field]
 	}
 	for _, f := range req.Filters {
 		c, ok := q.cols[f.Field]
@@ -193,7 +218,7 @@ func Build(ctx context.Context, subj *authz.Subject, spec Spec, req Request) (co
 		}
 	}
 	q.sorts = req.Sort
-	q.filterHash = digest(map[string]any{"filters": req.Filters, "q": nq, "sort": req.Sort})
+	q.filterHash = digest(map[string]any{"filters": req.Filters, "q": nq, "sort": req.Sort, "readable_only": q.ReadableOnly})
 	q.planHash = plan.Digest
 	if req.Cursor != "" {
 		cond, limit, err := q.resume(req.Cursor, req.Limit)

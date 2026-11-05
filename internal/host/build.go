@@ -268,6 +268,7 @@ func (m *Member) guard(values *config.Values, sh Shared, ops []string) (httpx.Gu
 		return nil, err
 	}
 	m.holder = authz.NewHolder(m.Def.ID, authz.GRPCSource{Conn: conn}, m.Logger)
+	m.holder.Defs = m.Def.Authz
 	m.definitions = authzv3.NewDefinitionServiceClient(conn)
 	m.deployment = values.String("DEPLOYMENT_ID")
 	return &guard.User{Defs: m.Def.Authz, Holder: m.holder, Log: m.Logger,

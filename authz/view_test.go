@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -291,4 +292,32 @@ func TestAVerificationThatTimesOutIsNotAStall(t *testing.T) { // P8.10: only the
 	h.tick()
 	_, err := h.Lookup("demo.order", alice, "low")
 	require.NoError(t, err, "the view renewed by the first answer is still valid")
+}
+
+// TestSegmentsThatDoNotFitTheDefinitionsAreRefused: a segment missing a declared dimension (an old grant after the
+// resource gained one) would leave that dimension unconstrained; on adoption it is refused, logged once, and the rest
+// of the view is used (P8.14, FX01, EN08).
+func TestSegmentsThatDoNotFitTheDefinitionsAreRefused(t *testing.T) {
+	order := Resource{Type: "demo.order", ViewOperation: "demo.order.read",
+		Dimensions: map[string]Dimension{"region": {Kind: ValueSet, Column: "region"}},
+		Fields:     map[string]Field{"id": {Class: Ordinary}}}
+	defs := &Definitions{Component: "demo/orders", Resources: []Resource{order},
+		Operations: []Operation{{Key: "demo.order.read", ResourceType: "demo.order", Purpose: "read", RiskClass: "low"}}}
+	require.NoError(t, defs.Validate())
+	s := shard()
+	fits := Segment{ResourceType: "demo.order", Operation: "demo.order.read", ReadFields: []string{"id"},
+		Atoms: map[string]Atom{"region": {Kind: "in", Values: []string{"east"}}}, Valid: Window{From: "2026-01-01T00:00:00Z"}}
+	s.Subjects[alice] = SubjectEntry{Segments: []Segment{s.Subjects[alice].Segments[0], fits}} // the first has no region
+	h, _ := holderWith(&fakeSource{gen: "1", status: "changed", shard: s})
+	var logged strings.Builder
+	h.Log = slog.New(slog.NewTextHandler(&logged, nil))
+	h.Defs = defs
+	require.NoError(t, h.Verify(context.Background()))
+	g, err := h.Lookup("demo.order", alice, "low")
+	require.NoError(t, err)
+	assert.Equal(t, []Segment{fits}, g.Segments, "the segment without the region is not used; the other is")
+	assert.Equal(t, 1, strings.Count(logged.String(), "event=segment_refused"), logged.String())
+	d := Evaluate(&order, g.Segments, "demo.order.read", Facts{"region": Value("west")}, alice, time.Now())
+	assert.Equal(t, False, d.Visible, "a west record stays invisible: the refused segment is not read as region all")
+	assert.Equal(t, "sha256:1", h.shards["orders"].shard.Digest, "the held digest is the received bytes' (P8.11)")
 }

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -57,7 +58,7 @@ func (n *notesModule) read(c *httpx.Context, status int, id string) error {
 	if err != nil {
 		return err
 	}
-	return c.JSON(status, authz.Mask(map[string]any{"id": id, "text": text, "cost": cost}, d.Fields))
+	return c.JSON(status, authz.Mask(&noteDefs.Resources[0], map[string]any{"id": id, "text": text, "cost": cost}, d.Fields))
 }
 
 func (n *notesModule) Routes(r *httpx.Routes) error {
@@ -180,8 +181,10 @@ func TestIdempotentCommandsOnBothSurfaces(t *testing.T) { // CK-IDEM-01..03
 	w.Grant(sectest.Alice, ownNote("demo.note.read", "id", "text"), ownNote("demo.note.create"))
 	require.Eventually(t, func() bool {
 		code, now := post(alice, "note-1", `{"text":"a","cost":"5"}`)
-		_, hasCost := now["cost"]
-		return code == 201 && now["id"] == first["id"] && !hasCost
+		// P8.31: the masked cost is null and named, not dropped
+		cost, hasCost := now["cost"]
+		return code == 201 && now["id"] == first["id"] && hasCost && cost == nil &&
+			fmt.Sprint(now["_masked"]) == "[cost]"
 	}, 15*time.Second, 200*time.Millisecond, "the replay is masked by the current authorization")
 
 	// the system surface: the key is scoped to the calling component

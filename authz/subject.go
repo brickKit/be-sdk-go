@@ -2,6 +2,7 @@ package authz
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/errs"
@@ -91,19 +92,35 @@ func (s *Subject) List(ctx context.Context, op, alias string, argBase int) (cont
 	return ctx, p, err
 }
 
-// Mask keeps only the readable fields of an output object; fields that are not declared never pass.
-func Mask(out map[string]any, readable []string) map[string]any {
+// Masked is the key that names an output object's masked fields (P8.31).
+const Masked = "_masked"
+
+// Mask shapes an output object for the caller (P8.31): readable fields as they are; the resource's other ordinary
+// and restricted fields null and named, sorted, under _masked (only when there is one), so a caller tells "no value"
+// from "not yours to see"; secret and undeclared keys never pass.
+func Mask(r *Resource, out map[string]any, readable []string) map[string]any {
 	keep := map[string]bool{}
 	for _, f := range readable {
 		keep[f] = true
 	}
-	masked := map[string]any{}
+	shaped := map[string]any{}
+	var masked []string
 	for k, v := range out {
-		if keep[k] {
-			masked[k] = v
+		fd, declared := r.Fields[k]
+		switch {
+		case !declared || fd.Class == Secret:
+		case keep[k]:
+			shaped[k] = v
+		default:
+			shaped[k] = nil
+			masked = append(masked, k)
 		}
 	}
-	return masked
+	if len(masked) > 0 {
+		sort.Strings(masked)
+		shaped[Masked] = masked
+	}
+	return shaped
 }
 
 type staleKey struct{}

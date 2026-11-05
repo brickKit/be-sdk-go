@@ -21,6 +21,7 @@ func TestSecurityRecordVectors(t *testing.T) {
 			RecordType string `json:"record_type"`
 			Record     map[string]any
 			Valid      bool
+			Read       string
 			Canonical  string
 			Digest     string
 		}
@@ -40,6 +41,11 @@ func TestSecurityRecordVectors(t *testing.T) {
 		assert.Equal(t, c.Canonical, string(body), c.ID)
 		assert.Equal(t, c.Digest, digest, c.ID)
 		_, err = Open(c.RecordType, body, digest)
+		if c.Read == "refused" { // P8.30: schema-valid, a required feature this reader does not know
+			assert.ErrorIs(t, err, ErrInvalid, c.ID)
+			continue
+		}
+		assert.Equal(t, "accepted", c.Read, c.ID)
 		assert.NoError(t, err, c.ID)
 	}
 }

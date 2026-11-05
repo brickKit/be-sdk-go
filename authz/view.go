@@ -108,8 +108,10 @@ type Holder struct {
 	Component string
 	Source    Source
 	Log       *slog.Logger
-	Boot      func() time.Duration // the suspend-aware clock; replaceable in tests
-	Wall      func() time.Time
+	// Defs are the component's declarations: a view's segments are checked against them on adoption (P8.14).
+	Defs *Definitions
+	Boot func() time.Duration // the suspend-aware clock; replaceable in tests
+	Wall func() time.Time
 
 	mu          sync.RWMutex
 	shards      map[string]*held
@@ -237,6 +239,10 @@ func (h *Holder) apply(ans VerifyAnswer, gen int64, sent time.Duration) bool {
 	h.recovery, h.hasRecovery, h.instance = gen, true, ans.Instance
 	for _, a := range ans.Shards {
 		s, ok := h.shards[a.Shard]
+		if a.View != nil {
+			v := fitting(*a.View, h.Defs, h.Log)
+			a.View = &v
+		}
 		switch a.Status {
 		case "unchanged":
 			if ok && !s.stopped {

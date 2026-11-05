@@ -218,3 +218,50 @@ func TestChineseSearchByPinyin(t *testing.T) { // P9.6
 		assert.Equal(t, []string{"0190f3a1-0000-7000-8000-0000000000ff"}, ids, q)
 	}
 }
+
+// TestReadableOnlyNarrowsToTheRowsThatShowAField: cost is readable only on the alpha rows; an explicit readable_only
+// narrows the list to them, lets cost sort and filter there, and changes the filter digest (P9.4, security 07's FX12).
+// Without it nothing narrows.
+func TestReadableOnlyNarrowsToTheRowsThatShowAField(t *testing.T) {
+	d, _, _ := setup(t)
+	byName := &authz.Definitions{Component: "demo/items", Resources: []authz.Resource{{Type: "demo.item", ViewOperation: "demo.item.read",
+		Dimensions: map[string]authz.Dimension{"name": {Kind: authz.ValueSet, Column: "name"}},
+		Fields:     defs.Resources[0].Fields}}, Operations: defs.Operations}
+	require.NoError(t, byName.Validate())
+	alphaCost := seg("id", "name", "cost")
+	alphaCost.Atoms = map[string]authz.Atom{"name": {Kind: "in", Values: []string{"alpha"}}}
+	others := seg("id", "name")
+	others.Atoms = map[string]authz.Atom{"name": {Kind: "all"}}
+	g := &grants{segs: []authz.Segment{alphaCost, others}}
+	h := authz.NewHolder("demo/items", g, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, h.Verify(context.Background()))
+	s := &authz.Subject{Principal: alice, Defs: byName, Holder: h, At: time.Now()}
+
+	ids, _, err := page(t, d, s, Request{})
+	require.NoError(t, err)
+	assert.Len(t, ids, 8, "no narrowing unless asked: the rows without a readable cost are listed (masked)")
+	_, _, err = page(t, d, s, Request{Sort: []Order{{Field: "cost"}}})
+	assert.True(t, errs.Is(err, "be", errs.ReasonFieldNotQueryable), "precondition: cost is not readable everywhere: %v", err)
+
+	narrowed := Request{ReadableOnly: []string{"cost", "cost"}, Sort: []Order{{Field: "cost"}},
+		Filters: []Filter{{Field: "cost", Op: "gte", Values: []string{"1"}}}, Limit: 2}
+	ids, next, err := page(t, d, s, narrowed)
+	require.NoError(t, err, "narrowed to the alpha rows, cost sorts and filters")
+	rest, _, err := page(t, d, s, Request{ReadableOnly: narrowed.ReadableOnly, Sort: narrowed.Sort, Filters: narrowed.Filters,
+		Limit: 2, Cursor: next})
+	require.NoError(t, err)
+	assert.Len(t, append(ids, rest...), 3, "the three alpha rows")
+	_, q, err := Build(context.Background(), s, spec, narrowed)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"cost"}, q.ReadableOnly, "the answer says how it narrowed")
+
+	// the same sort, only the narrowing differs: a cursor of the narrowed list does not continue the whole one
+	sorted := Request{ReadableOnly: []string{"cost"}, Sort: []Order{{Field: "name"}}, Limit: 2}
+	_, next, err = page(t, d, s, sorted)
+	require.NoError(t, err)
+	require.NotEmpty(t, next, "precondition: a second page")
+	_, _, err = page(t, d, s, Request{Sort: sorted.Sort, Limit: 2, Cursor: next})
+	assert.True(t, errs.Is(err, "be", errs.ReasonCursorInvalid), "the narrowing is part of the filter digest: %v", err)
+	_, _, err = page(t, d, s, Request{ReadableOnly: []string{"nonexistent"}})
+	assert.True(t, errs.Is(err, "be", errs.ReasonRequestInvalid), "%v", err)
+}

@@ -102,5 +102,16 @@ func Open(recordType string, raw []byte, digest string) (map[string]any, error) 
 	if !ok {
 		return nil, fmt.Errorf("%w: not an object", ErrInvalid)
 	}
+	if req, _ := m["required_features"].([]any); len(req) > 0 {
+		for _, f := range req {
+			if name, _ := f.(string); !knownFeatures[name] {
+				return nil, fmt.Errorf("%w: %s requires the feature %v, which this reader does not know", ErrInvalid, recordType, f)
+			}
+		}
+	}
 	return m, nil
 }
+
+// knownFeatures are the feature names this reader understands (P8.30: none in this protocol version). A record that
+// requires any other is refused whole, never read with the requirement ignored (security 09a). Its ext is ignored.
+var knownFeatures = map[string]bool{}

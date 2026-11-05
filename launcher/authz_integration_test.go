@@ -56,8 +56,9 @@ func (l *ledger) Routes(r *httpx.Routes) error {
 		}
 		var out []map[string]any
 		err = l.rt.DB.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
-			rows, err := tx.Query(ctx, "SELECT e.id::text, e.amount::text, e.cost::text, e.note, "+strings.Join(plan.Hits, ", ")+
-				" FROM entries e WHERE "+plan.Where+" ORDER BY e.id", plan.Args...)
+			sel := append([]string{"e.id::text", "e.amount::text", "e.cost::text", "e.note"}, plan.Hits...)
+			rows, err := tx.Query(ctx, "SELECT "+strings.Join(sel, ", ")+" FROM entries e WHERE "+plan.Where+" ORDER BY e.id",
+				plan.Args...)
 			if err != nil {
 				return err
 			}
@@ -71,7 +72,7 @@ func (l *ledger) Routes(r *httpx.Routes) error {
 				for i, v := range vals[4:] {
 					hits[i], _ = v.(bool)
 				}
-				out = append(out, authz.Mask(row([]string{"id", "amount", "cost", "note"}, vals[:4]), plan.Fields(hits)))
+				out = append(out, authz.Mask(&ledgerDefs.Resources[0], row([]string{"id", "amount", "cost", "note"}, vals[:4]), plan.Fields(hits)))
 			}
 			return rows.Err()
 		})
@@ -100,7 +101,7 @@ func (l *ledger) Routes(r *httpx.Routes) error {
 		if err != nil {
 			return nil, err
 		}
-		return authz.Mask(row([]string{"id", "amount", "cost", "note"}, vals), d.Fields), nil
+		return authz.Mask(&ledgerDefs.Resources[0], row([]string{"id", "amount", "cost", "note"}, vals), d.Fields), nil
 	}
 	// who the request is: the verified subject only (TI05, TI08)
 	r.GET("/api/whoami", "demo.entry.read", func(c *httpx.Context) error {
@@ -173,6 +174,11 @@ func TestOthersSeeNothingAndFieldsFollowTheSegments(t *testing.T) { // T2.8 acce
 	w := worldOf(t)
 	w.Grant(sectest.Alice, own("demo.entry.read", "id", "amount", "cost", "note"), own("demo.entry.approve"))
 	w.Grant(sectest.Bob, own("demo.entry.read", "id", "amount"))
+	// a segment without the owner dimension (P8.14, FX01): refused against the declarations, never read as "all owners"
+	carol := "0190f3a1-0000-7000-8000-0000000000c3"
+	noOwner := own("demo.entry.read", "id", "amount")
+	noOwner.Atoms = map[string]authz.Atom{}
+	w.Grant(carol, noOwner)
 	httpPort := freePort(t)
 	serve := maps.Clone(vars)
 	maps.Copy(serve, w.Env(t, def.ID))
@@ -195,14 +201,20 @@ func TestOthersSeeNothingAndFieldsFollowTheSegments(t *testing.T) { // T2.8 acce
 		{"id": "0190f3a1-0000-7000-8000-00000000e001", "amount": "10", "cost": "7"},
 		{"id": "0190f3a1-0000-7000-8000-00000000e002", "amount": "20", "cost": "8"}}, list(alice),
 		"Alice sees her own entries with cost; the secret note never leaves")
-	assert.Equal(t, []map[string]any{{"id": "0190f3a1-0000-7000-8000-00000000e003", "amount": "30"}}, list(bob),
-		"Bob sees only his entry and no cost")
+	// P8.31: the cost Bob may not read is null and named under _masked (not dropped)
+	assert.Equal(t, []map[string]any{{"id": "0190f3a1-0000-7000-8000-00000000e003", "amount": "30", "cost": nil,
+		"_masked": []any{"cost"}}}, list(bob), "Bob sees only his entry and no cost")
 
 	code, body := call(t, "GET", base+"/api/entries/0190f3a1-0000-7000-8000-00000000e003", alice)
 	assert.Equal(t, 404, code, "another's entry is not found: %s", body)
 	code, body = call(t, "GET", base+"/api/entries/0190f3a1-0000-7000-8000-00000000e003", bob)
 	assert.Equal(t, 200, code)
-	assert.JSONEq(t, `{"id":"0190f3a1-0000-7000-8000-00000000e003","amount":"30"}`, body, "single object and list agree")
+	assert.JSONEq(t, `{"id":"0190f3a1-0000-7000-8000-00000000e003","amount":"30","cost":null,"_masked":["cost"]}`, body,
+		"single object and list agree")
+	assert.Empty(t, list(w.Bearer(carol)), "a segment missing a dimension gives nothing")
+	code, _ = call(t, "GET", base+"/api/entries/0190f3a1-0000-7000-8000-00000000e003", w.Bearer(carol))
+	assert.Equal(t, 404, code)
+	assert.Contains(t, out.String(), "segment_refused", "the refusal is logged")
 	code, _ = call(t, "POST", base+"/api/entries/0190f3a1-0000-7000-8000-00000000e003/approve", bob)
 	assert.Equal(t, 403, code, "visible without the operation")
 	code, _ = call(t, "POST", base+"/api/entries/0190f3a1-0000-7000-8000-00000000e003/approve", alice)

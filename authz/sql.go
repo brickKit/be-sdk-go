@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -216,6 +217,19 @@ func Compile(r *Resource, segs []Segment, op, principal string, at time.Time, al
 	sum := sha256.Sum256([]byte(strings.Join(append(digests, rd, op), "\n")))
 	p.Digest = hex.EncodeToString(sum[:16])
 	return p, nil
+}
+
+// ReadableWhere is the condition "this row's field is readable": OR over the plan's segments that read it (FALSE
+// when none does). A list that ANDs it in narrows to the rows where the field can be shown, filtered and sorted
+// (security 07's FX12, P9.4's readable_only).
+func (p *Plan) ReadableWhere(field string) string {
+	var ors []string
+	for i, set := range p.sets {
+		if slices.Contains(set, field) {
+			ors = append(ors, p.Hits[i])
+		}
+	}
+	return orAll(ors)
 }
 
 // ReadableEverywhere reports whether every segment of the plan reads the field: then every visible row can be

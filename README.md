@@ -27,7 +27,7 @@ func main() { launcher.Main(sales.Definition) }
 
 模块在 `Routes` 里登记路由，每条路由声明它的操作（`httpx.Route.Operation`），公开接口显式标 `Public`；有系统面的模块实现 `Services`，用 `grpcx.Services.Register` 登记服务，每个方法同样声明操作与允许调用它的组件，定义里写 `GRPCPort`（`component.yaml` 中 `grpc` 额外端口）。系统面只接受部署 mTLS，方法里用 `grpcx.Caller` 得到调用的组件。
 
-受保护的路由与系统方法的操作都要在定义的 `Authz` 中声明（未声明则启动失败）。启动时 SDK 把这些声明作为定义记录提交给授权成员（`contract-infra-authz` 的 `DefinitionService.Submit`），被接受之前成员不就绪；同一版本只能有一套定义，改了声明就要升组件的版本。视图、定义与审计记录都以规范 JSON 字节传输，收到的按 be-protocol 的 `schemas/security/` 校验（D76）。用户面的请求由 SDK 核验凭据并取得授权视图，处理函数用 `authz.From(ctx)` 得到请求的 `Subject`：单条记录用 `Check`（看不见答 404、看得见无权答 403、无法证明答 503），列表用 `List` 得到要与自己的筛选相与的谓词与逐行命中位图，输出用 `authz.Mask` 按可读字段裁剪。写事务在提交前自动再查一次截止时间。
+受保护的路由与系统方法的操作都要在定义的 `Authz` 中声明（未声明则启动失败）。启动时 SDK 把这些声明作为定义记录提交给授权成员（`contract-infra-authz` 的 `DefinitionService.Submit`），被接受之前成员不就绪；同一版本只能有一套定义，改了声明就要升组件的版本。视图、定义与审计记录都以规范 JSON 字节传输，收到的按 be-protocol 的 `schemas/security/` 校验（D76）。用户面的请求由 SDK 核验凭据并取得授权视图，处理函数用 `authz.From(ctx)` 得到请求的 `Subject`：单条记录用 `Check`（看不见答 404、看得见无权答 403、无法证明答 503），列表用 `List` 得到要与自己的筛选相与的谓词与逐行命中位图，输出用 `authz.Mask(资源, 对象, 可读字段)` 成形：不可读的声明字段为 `null` 并列在 `_masked`，秘密与未声明的键不出现（P8.31）；`Check` 给的可读字段是所问操作自己的段的（导出、特殊读取不借读取页面的字段，P8.15）。视图里与组件自己的资源定义不合的段（少一维、多一维等）不参与求值（P8.14）。列表可以用 `ReadableOnly` 只看某些受限字段可读的行（P9.4）。写事务在提交前自动再查一次截止时间。
 
 ### 数据库与数据形态
 
