@@ -301,6 +301,9 @@ func (m *Member) Stop(ctx context.Context) error {
 	if m.hasJobs {
 		m.runner.Stop() // handlers were cancelled with the background context; their leases are released
 	}
+	if m.forwarder != nil {
+		m.forwarder.Wait() // ended with the background context; its leases given up (P6.11)
+	}
 	if m.statistics != nil {
 		<-m.statistics // ends with the background context
 	}

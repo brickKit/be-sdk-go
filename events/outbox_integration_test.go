@@ -470,6 +470,32 @@ func TestTheForwardingLeaseOnlyReducesContention(t *testing.T) { // P6.11
 	assert.Zero(t, unpublished(), "every row published")
 }
 
+// P6.11: a forwarder that stops gives its leases up, so the next process (a restart, a replica) forwards at once.
+func TestAStoppedForwarderGivesItsLeasesUp(t *testing.T) {
+	d, admin := source(t, "evsrc_release")
+	one := Stream{Name: "demo.one", Partitions: 1}
+	p, err := NewProducer("demo/evsrc_release", []Stream{one}, nil)
+	require.NoError(t, err)
+	f := &Forwarder{DB: d, Producer: p, Transport: NewMemory(0), Source: "demo/evsrc_release",
+		Impl: "6f1c2d3e-4a5b-4c6d-8e7f-901234567890", Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Poll: 10 * time.Second}
+	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, f.Start(ctx))
+	require.NoError(t, d.Tx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+		id := ids.New().String()
+		_, err := p.Emit(ctx, tx, "demo.one", Event{Type: "demo.one.moved.v1", RecordID: id, Version: 1, Projection: Full,
+			Data: map[string]string{"id": id}})
+		return err
+	}))
+	owner := func() (o *string) {
+		require.NoError(t, admin.QueryRow(context.Background(), "SELECT max(lease_owner) FROM be_outbox_partition WHERE stream = 'demo.one'").Scan(&o))
+		return o
+	}
+	require.Eventually(t, func() bool { return owner() != nil }, 5*time.Second, 50*time.Millisecond, "the precondition: a lease held")
+	cancel()
+	f.Wait()
+	assert.Nil(t, owner(), "given up on the stop")
+}
+
 // outboxRows writes rows of demo.stock partition 0 straight into be_outbox, numbered seq from..to in epoch (1, 1),
 // published or not.
 func outboxRows(t *testing.T, admin *pgx.Conn, from, to int, published bool) {

@@ -38,6 +38,7 @@ type Forwarder struct {
 	owner     string
 	mu        sync.Mutex
 	held      map[streamPart]time.Time // until when this forwarder holds each partition's lease, by its own clock
+	stopped   chan struct{}            // closed when run has ended (Wait)
 }
 
 func (f *Forwarder) defaults() {
@@ -68,8 +69,41 @@ func (f *Forwarder) Start(ctx context.Context) error {
 			return fmt.Errorf("event stream %s: %w", s.Name, err)
 		}
 	}
-	go f.run(ctx)
+	f.stopped = make(chan struct{})
+	go func() {
+		defer close(f.stopped)
+		f.run(ctx)
+		f.release()
+	}()
 	return nil
+}
+
+// releaseLimit bounds giving the leases up on a stop.
+const releaseLimit = 2 * time.Second
+
+// release gives up the leases this forwarder holds (P6.11), after its context ended: the next process forwards at
+// once instead of waiting for them to run out. Best effort: a lease not given up still runs out.
+func (f *Forwarder) release() {
+	ctx, cancel := context.WithTimeout(context.Background(), releaseLimit)
+	defer cancel()
+	err := f.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE be_outbox_partition SET lease_owner = NULL, lease_until = NULL
+			WHERE lease_owner = $1`, f.owner)
+		return err
+	})
+	if err != nil {
+		f.Log.Warn("the forwarding leases could not be given up; they run out", "error", err.Error())
+	}
+	f.mu.Lock()
+	clear(f.held)
+	f.mu.Unlock()
+}
+
+// Wait returns once the forwarder started has ended (its context done) and given its leases up (P6.11).
+func (f *Forwarder) Wait() {
+	if f.stopped != nil {
+		<-f.stopped
+	}
 }
 
 // run forwards on two signals (P6.29): a commit of this member wakes it for the partitions that commit wrote to, and
