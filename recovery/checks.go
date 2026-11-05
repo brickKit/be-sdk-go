@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/brickKit/be-sdk-go/v3/db"
+	"github.com/jackc/pgx/v5"
 )
 
 // The outcomes of a check (P14.1).
@@ -37,12 +38,27 @@ type Result struct {
 	Disposal    string // what to do about the differences
 }
 
+// Read runs fn in a transaction that is always rolled back: a check reads its database only through it (P14.1).
+type Read func(ctx context.Context, fn func(ctx context.Context, tx db.Tx) error) error
+
 // Check is one consistency check: its identity, what it rests on (the assembly project's protocol and item) and how
-// it runs, in a transaction the server rolls back. A check across components is reported by one side only (P14.2).
+// it runs. It reads through read and, across components, asks the other side over the system surface between two
+// reads, never inside one. A check across components is reported by one side only (P14.2).
 type Check struct {
 	Name  string
 	Basis string
-	Run   func(ctx context.Context, tx db.Tx) (Result, error)
+	Run   func(ctx context.Context, read Read) (Result, error)
+}
+
+// InTx is a check that only reads its own database, in one read-only transaction.
+func InTx(f func(ctx context.Context, tx db.Tx) (Result, error)) func(context.Context, Read) (Result, error) {
+	return func(ctx context.Context, read Read) (res Result, err error) {
+		err = read(ctx, func(ctx context.Context, tx db.Tx) (err error) {
+			res, err = f(ctx, tx)
+			return err
+		})
+		return res, err
+	}
 }
 
 // PresenceFunc answers, for ids of one object type, each present object's revision; an id not in the map is absent.
@@ -80,6 +96,29 @@ func (c *Checks) Presence(objectType string, f PresenceFunc) {
 		c.presence = map[string]PresenceFunc{}
 	}
 	c.presence[objectType] = f
+}
+
+// TablePresence answers presence from a table: id and version are its columns (the version a bigint).
+func TablePresence(table, id, version string) PresenceFunc {
+	q := fmt.Sprintf("SELECT %s::text, %s FROM %s WHERE %s::text = ANY($1)", pgx.Identifier{id}.Sanitize(),
+		pgx.Identifier{version}.Sanitize(), pgx.Identifier{table}.Sanitize(), pgx.Identifier{id}.Sanitize())
+	return func(ctx context.Context, tx db.Tx, ids []string) (map[string]int64, error) {
+		rows, err := tx.Query(ctx, q, ids)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := map[string]int64{}
+		for rows.Next() {
+			var k string
+			var v int64
+			if err := rows.Scan(&k, &v); err != nil {
+				return nil, err
+			}
+			out[k] = v
+		}
+		return out, rows.Err()
+	}
 }
 
 // Void registers how the component voids the numbers a raise skips over; required when it has continuous series.

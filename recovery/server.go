@@ -44,7 +44,7 @@ func (s *Server) readOnly(ctx context.Context, fn func(context.Context, db.Tx) e
 	return err
 }
 
-// Check runs every check (P14.1, P14.2), each in its own read-only transaction. A check that fails to run answers
+// Check runs every check (P14.1, P14.2), reading only through rolled-back transactions. A check that fails to run answers
 // unprovable with the error, so one broken check does not hide the others.
 func (s *Server) Check(ctx context.Context, req *recoverypb.CheckRequest) (*recoverypb.CheckResponse, error) {
 	if req.GetRecovery() == "" {
@@ -52,12 +52,7 @@ func (s *Server) Check(ctx context.Context, req *recoverypb.CheckRequest) (*reco
 	}
 	out := &recoverypb.CheckResponse{}
 	for _, ch := range s.checks {
-		var res Result
-		err := s.readOnly(ctx, func(ctx context.Context, tx db.Tx) error {
-			var err error
-			res, err = ch.Run(ctx, tx)
-			return err
-		})
+		res, err := ch.Run(ctx, s.readOnly)
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}

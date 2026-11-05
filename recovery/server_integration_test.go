@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/fstest"
 
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/errs"
@@ -31,14 +32,27 @@ func outcomes(t *testing.T, s *Server) map[string]*recoverypb.CheckResult {
 func TestChecks(t *testing.T) {
 	d, admin := dbtest.Schema(t, "recovery_checks", nil)
 	reg := &Checks{}
-	require.NoError(t, reg.Add(Check{Name: "demo.writes", Basis: "test", Run: func(ctx context.Context, tx db.Tx) (Result, error) {
+	require.NoError(t, reg.Add(Check{Name: "demo.writes", Basis: "test", Run: InTx(func(ctx context.Context, tx db.Tx) (Result, error) {
 		_, err := tx.Exec(ctx, "INSERT INTO be_doc_series (series, last_number, gapless) VALUES ('x', 1, true)")
 		return Result{Outcome: Pass}, err
+	})}))
+	reads := 0
+	require.NoError(t, reg.Add(Check{Name: "demo.twice", Basis: "test", Run: func(ctx context.Context, read Read) (Result, error) {
+		for range 2 { // a read, a call to the other side in between, a read
+			if err := read(ctx, func(ctx context.Context, tx db.Tx) error {
+				reads++
+				_, err := tx.Exec(ctx, "INSERT INTO be_doc_series (series, last_number, gapless) VALUES ('y', 1, true)")
+				return err
+			}); err != nil {
+				return Result{}, err
+			}
+		}
+		return Result{Outcome: Pass}, nil
 	}}))
-	require.NoError(t, reg.Add(Check{Name: "demo.broken", Basis: "test", Run: func(context.Context, db.Tx) (Result, error) {
+	require.NoError(t, reg.Add(Check{Name: "demo.broken", Basis: "test", Run: func(context.Context, Read) (Result, error) {
 		return Result{}, errors.New("cannot tell")
 	}}))
-	assert.Error(t, reg.Add(Check{Name: "demo.broken", Run: func(context.Context, db.Tx) (Result, error) { return Result{}, nil }}))
+	assert.Error(t, reg.Add(Check{Name: "demo.broken", Run: func(context.Context, Read) (Result, error) { return Result{}, nil }}))
 	s := NewServer(d, true, reg)
 
 	got := outcomes(t, s)
@@ -46,11 +60,13 @@ func TestChecks(t *testing.T) {
 	assert.Equal(t, Pass, got[CheckAuditBacklog].GetOutcome())
 	assert.Equal(t, Diff, got[CheckConsumerEpoch].GetOutcome(), "never recorded in this epoch")
 	assert.Equal(t, Pass, got["demo.writes"].GetOutcome())
+	assert.Equal(t, Pass, got["demo.twice"].GetOutcome())
+	assert.Equal(t, 2, reads)
 	assert.Equal(t, Unprovable, got["demo.broken"].GetOutcome())
 	assert.Contains(t, got["demo.broken"].GetDisposal(), "cannot tell")
 	var n int
 	require.NoError(t, admin.QueryRow(context.Background(), "SELECT count(*) FROM be_doc_series").Scan(&n))
-	assert.Zero(t, n, "a check's writes are rolled back")
+	assert.Zero(t, n, "a check's writes are rolled back, every read")
 	assert.NotContains(t, outcomes(t, NewServer(d, false, nil)), CheckConsumerEpoch, "only a member that subscribes")
 
 	pgtest.Exec(t, admin, "INSERT INTO be_consumer_epoch (epoch_generation, epoch_timeline) SELECT generation, timeline FROM be_current_db_epoch()")
@@ -88,10 +104,13 @@ func TestChecks(t *testing.T) {
 }
 
 // P14.3: present at the revision asked or later, older, absent; a type without a question, a version that is no
-// revision.
+// revision; a table's presence.
 func TestPresent(t *testing.T) {
-	d, _ := dbtest.Schema(t, "recovery_present", nil)
+	d, _ := dbtest.Schema(t, "recovery_present", fstest.MapFS{"0001_invoice.up.sql": {Data: []byte(
+		`CREATE TABLE invoice (id uuid PRIMARY KEY, version bigint NOT NULL);
+		INSERT INTO invoice VALUES ('0190f3a1-0000-7000-8000-0000000000b1', 3);`)}})
 	reg := &Checks{}
+	reg.Presence("invoice", TablePresence("invoice", "id", "version"))
 	reg.Presence("order", func(_ context.Context, _ db.Tx, ids []string) (map[string]int64, error) {
 		out := map[string]int64{}
 		for _, id := range ids {
@@ -111,7 +130,13 @@ func TestPresent(t *testing.T) {
 		got = append(got, a.GetObject().GetId()+":"+a.GetAnswer()+":"+a.GetVersion())
 	}
 	assert.Equal(t, []string{"o-1:present:5", "o-2:older:5", "o-gone:absent:", "o-3:present:5"}, got)
-	_, err = s.Present(context.Background(), &recoverypb.PresentRequest{Recovery: "rec-1", Objects: []*recoverypb.ObjectRef{{Type: "invoice", Id: "i-1"}}})
+	inv, err := s.Present(context.Background(), &recoverypb.PresentRequest{Recovery: "rec-1", Objects: []*recoverypb.ObjectRef{
+		{Type: "invoice", Id: "0190f3a1-0000-7000-8000-0000000000b1", Version: "4"}, {Type: "invoice", Id: "not-a-uuid"}}})
+	require.NoError(t, err)
+	assert.Equal(t, Older, inv.GetAnswers()[0].GetAnswer())
+	assert.Equal(t, "3", inv.GetAnswers()[0].GetVersion())
+	assert.Equal(t, Absent, inv.GetAnswers()[1].GetAnswer())
+	_, err = s.Present(context.Background(), &recoverypb.PresentRequest{Recovery: "rec-1", Objects: []*recoverypb.ObjectRef{{Type: "shipment", Id: "i-1"}}})
 	assert.True(t, errs.Is(err, "be", errs.ReasonCapabilityUnsupported), "%v", err)
 	_, err = s.Present(context.Background(), &recoverypb.PresentRequest{Recovery: "rec-1", Objects: []*recoverypb.ObjectRef{{Type: "order", Id: "o-1", Version: "v5"}}})
 	assert.True(t, errs.Is(err, "be", errs.ReasonRequestInvalid), "%v", err)

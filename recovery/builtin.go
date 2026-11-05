@@ -20,12 +20,12 @@ const (
 // builtins are the SDK's own checks; the consumer epoch only for a member that subscribes.
 func builtins(subscribes bool) []Check {
 	out := []Check{
-		{Name: CheckProjections, Basis: "装配项目协议 02；be-protocol P9.25", Run: projections},
+		{Name: CheckProjections, Basis: "装配项目协议 02；be-protocol P9.25", Run: InTx(projections)},
 	}
 	if subscribes {
-		out = append(out, Check{Name: CheckConsumerEpoch, Basis: "be-protocol P6.39、P6.40；装配项目协议 15 的 RC04", Run: consumerEpoch})
+		out = append(out, Check{Name: CheckConsumerEpoch, Basis: "be-protocol P6.39、P6.40；装配项目协议 15 的 RC04", Run: InTx(consumerEpoch)})
 	}
-	return append(out, Check{Name: CheckAuditBacklog, Basis: "装配项目协议 03 的积压与故障", Run: auditBacklog})
+	return append(out, Check{Name: CheckAuditBacklog, Basis: "装配项目协议 03 的积压与故障", Run: InTx(auditBacklog)})
 }
 
 func outcome(diffs []Difference, disposal string) Result {
