@@ -114,12 +114,16 @@ type Pending struct {
 
 // Intent writes a tightening's intent before the business transaction (P12.16): to the evidence store within
 // IntentTimeout, else to the alert channel within the same limit, else the double failure is logged; the caller
-// goes on in every case. The change is the change itself (what is removed), never the resulting state.
+// goes on in every case. The change is the change itself (what is removed), never the resulting state. An intent the
+// canonical form cannot encode (a defect of the caller) is logged here, at error level, and returned as an error.
 func (w *Writer) Intent(ctx context.Context, category, subject string, obj Object, change map[string]any) (*Pending, error) {
 	p := &Pending{w: w, ID: ids.New().String(), category: category, subject: subject, obj: obj, change: change}
 	rec := w.record(p.ID, category, "intent", subject, obj, change, nil)
 	s, err := Seal(rec)
 	if err != nil {
+		w.log().Error("an intent could not be encoded: neither the evidence store nor the alert channel gets it",
+			"event", "evidence_intent_unsealed", "category", category, "object_type", obj.Type, "object", obj.ID,
+			"error", err)
 		return nil, err
 	}
 	if w.Store != nil {
