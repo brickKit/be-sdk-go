@@ -134,6 +134,17 @@ func TestATamperedOrForeignRecordIsNotUsed(t *testing.T) {
 	cur, _, err := s.Current(ctx, KindAuthzGeneration)
 	require.NoError(t, err)
 	assert.EqualValues(t, 4, cur, "the tampered 99 and the foreign 50 are not the generation")
+
+	// ListAll: every record with its verification; an untrusted one comes with its content (6.2 reviews it)
+	all, err := s.ListAll(ctx, KindAuthzGeneration)
+	require.NoError(t, err)
+	require.Len(t, all, 3)
+	bodies := map[string]bool{}
+	for _, l := range all {
+		require.True(t, l.Read, l.Key)
+		bodies[string(l.Record.Body)] = l.Err == nil
+	}
+	assert.Equal(t, map[string]bool{`{"value":4}`: true, `{"value":99}`: false, `{"value":50}`: false}, bodies)
 }
 
 // A generation advances to the largest value seen anywhere plus one, written to the run profile first; without the

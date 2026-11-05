@@ -272,6 +272,32 @@ const unsigned = "UNSIGNED-PAYLOAD"
 // List reads every record of a kind and keeps those whose signature holds against the trust root; the rest are
 // returned as problems for the caller to alert on (P12.4). err: the listing itself failed (nothing is known).
 func (s *Store) List(ctx context.Context, kind string) (recs []Record, problems []error, err error) {
+	all, err := s.ListAll(ctx, kind)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, l := range all {
+		if l.Err != nil {
+			problems = append(problems, l.Err)
+			continue
+		}
+		recs = append(recs, l.Record)
+	}
+	return recs, problems, nil
+}
+
+// Listed is one record of ListAll: Err is why it is not to be trusted (it could not be read, it is no record, its
+// signature does not hold, P12.4), with the record as read when there was one. The recovery tool reviews a record
+// whose signature does not hold and closes the subjects it names (assembly protocol 15, 6.2): it needs the content.
+type Listed struct {
+	Key    string
+	Record Record
+	Read   bool // the record was read and decoded (whatever its signature)
+	Err    error
+}
+
+// ListAll is every record of a kind, each with its verification (P12.4).
+func (s *Store) ListAll(ctx context.Context, kind string) ([]Listed, error) {
 	var keys []string
 	token := ""
 	for {
@@ -281,7 +307,7 @@ func (s *Store) List(ctx context.Context, kind string) (recs []Record, problems 
 		}
 		raw, err := s.do(ctx, http.MethodGet, "", q, nil, nil, unsigned)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		var page struct {
 			Contents []struct{ Key string } `xml:"Contents"`
@@ -289,7 +315,7 @@ func (s *Store) List(ctx context.Context, kind string) (recs []Record, problems 
 			More     bool                   `xml:"IsTruncated"`
 		}
 		if err := xml.Unmarshal(raw, &page); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		for _, c := range page.Contents {
 			keys = append(keys, c.Key)
@@ -299,24 +325,24 @@ func (s *Store) List(ctx context.Context, kind string) (recs []Record, problems 
 		}
 		token = page.Next
 	}
+	out := make([]Listed, 0, len(keys))
 	for _, k := range keys {
+		l := Listed{Key: k}
 		raw, err := s.do(ctx, http.MethodGet, k, "", nil, nil, unsigned)
-		if err != nil {
-			problems = append(problems, err)
-			continue
+		switch {
+		case err != nil:
+			l.Err = err
+		case json.Unmarshal(raw, &l.Record) != nil:
+			l.Err = fmt.Errorf("run profile: %s: not a record", k)
+		default:
+			l.Read = true
+			if err := s.Verify(l.Record); err != nil {
+				l.Err = fmt.Errorf("run profile: %s: %w", k, err)
+			}
 		}
-		var r Record
-		if err := json.Unmarshal(raw, &r); err != nil {
-			problems = append(problems, fmt.Errorf("run profile: %s: %w", k, err))
-			continue
-		}
-		if err := s.Verify(r); err != nil {
-			problems = append(problems, fmt.Errorf("run profile: %s: %w", k, err))
-			continue
-		}
-		recs = append(recs, r)
+		out = append(out, l)
 	}
-	return recs, problems, nil
+	return out, nil
 }
 
 // Verify checks a record's signature and its signer's chain against the trust root (P12.2, P12.4).
