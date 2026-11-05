@@ -3,6 +3,7 @@ package shell
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	goruntime "runtime"
 	"runtime/debug"
@@ -96,6 +97,7 @@ func check(raw string, defs []component.Definition, bi *debug.BuildInfo, modOf f
 	var refusals []refusal
 	var warnings []string
 	seenIDs, seenPorts := map[string]bool{}, map[int]string{}
+	phase := processPhase(served)
 	for _, s := range served {
 		id := s.ComponentID
 		if seenIDs[id] {
@@ -138,7 +140,7 @@ func check(raw string, defs []component.Definition, bi *debug.BuildInfo, modOf f
 				}
 			}
 		}
-		values, problems := config.Parse(host.Keys(def), config.Map(s.Config))
+		values, problems := config.Parse(host.Keys(def), config.Map(withPhase(s.Config, phase)))
 		for _, p := range problems {
 			refusals = append(refusals, refusal{id, p.Key, p.Kind, p.Expected})
 		}
@@ -176,6 +178,34 @@ func targetsAgree(members []planned) []refusal {
 
 // goVersion is the Go module version of a component version: v + version (the /vN path suffix is in the module path).
 func goVersion(v string) string { return "v" + v }
+
+// phaseKey is the recovery phase: the process's state, not a resource (P2.11): a member that leaves it unset (its
+// manifest declares none, as a probe's) runs in the phase the others set, never on while they are frozen.
+const phaseKey = "RECOVERY_PHASE"
+
+// processPhase is the recovery phase a member sets ("" when none does; members that disagree are refused by
+// processKeysAgree).
+func processPhase(served []Served) string {
+	for _, s := range served {
+		if p := s.Config[phaseKey]; p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+// withPhase is a member's configuration with the process's phase where it sets none.
+func withPhase(cfg map[string]string, phase string) map[string]string {
+	if phase == "" || cfg[phaseKey] != "" {
+		return cfg
+	}
+	out := maps.Clone(cfg)
+	if out == nil {
+		out = map[string]string{}
+	}
+	out[phaseKey] = phase
+	return out
+}
 
 // processKeysAgree checks that every key marked Process has the same value in every member that sets it (P2.11); a
 // member that leaves it unset does not use that resource (the identity member verifies no tokens) and agrees with any.

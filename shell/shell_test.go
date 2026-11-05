@@ -310,7 +310,8 @@ func TestAShellInRecovery(t *testing.T) {
 	frozen := func(g string) map[string]string { return map[string]string{"GREETING": g, "RECOVERY_PHASE": "frozen"} }
 	js := served(t, secure(t, defs,
 		Served{ComponentID: "demo/alpha", Version: "0.1.0", HTTPPort: pa, Config: frozen("a")},
-		Served{ComponentID: "demo/beta", Version: "0.1.0", HTTPPort: pb, Config: frozen("b")})...)
+		// beta leaves the phase unset (its manifest declares none, as a probe's): the phase is the process's (P2.11)
+		Served{ComponentID: "demo/beta", Version: "0.1.0", HTTPPort: pb, Config: map[string]string{"GREETING": "b"}})...)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	go func() {
@@ -323,9 +324,11 @@ func TestAShellInRecovery(t *testing.T) {
 	assert.JSONEq(t, `{"state":"recovery_ready","phase":"frozen"}`, ready)
 	_, desc := get(t, shellURL+"/.well-known/be-component")
 	assert.Contains(t, desc, `"recovery_phase":"frozen"`)
-	code, body := get(t, "http://127.0.0.1:"+strconv.Itoa(pa)+"/api/hello")
-	assert.Equal(t, 503, code)
-	assert.Contains(t, body, `"reason":"MAINTENANCE"`)
+	for _, p := range []int{pa, pb} {
+		code, body := get(t, "http://127.0.0.1:"+strconv.Itoa(p)+"/api/hello")
+		assert.Equal(t, 503, code, "every member of the shell, the one without the key too")
+		assert.Contains(t, body, `"reason":"MAINTENANCE"`)
+	}
 	cancel()
 	assert.Equal(t, 0, <-done)
 }
