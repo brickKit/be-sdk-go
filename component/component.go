@@ -44,6 +44,10 @@ type Definition struct {
 	// it gets the run profile's keys, so an intent the evidence store does not take goes to the alert channel. Every
 	// component with Migrations writes evidence through rt.Evidence; without this flag a failed intent is only logged.
 	Evidence bool
+	// ExternalCommands says the module implements extcmd.Provider (be-protocol chapter 13): it sends external
+	// commands through rt.External; it needs Migrations, and gets EXTERNAL_COMMANDS_QUERY_ONLY. An irrevocable
+	// operation also needs Evidence (its issue records).
+	ExternalCommands bool
 	// Authz declares the resources, operations and fields the component owns (protocol P8.7). Every protected
 	// route and every system method uses one of its operations.
 	Authz *authz.Definitions

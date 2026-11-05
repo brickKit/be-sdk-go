@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.82",
+  "protocol": "3.0.0-alpha.84",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -559,6 +559,21 @@
       "evidence": [
         "evidence.TestTheOwnerReplaysItsEvidence",
         "launcher.TestTheReplayIsTheRecoveryToolsOnly"
+      ]
+    },
+    "external-commands": {
+      "status": "verified",
+      "evidence": [
+        "extcmd.TestExternalCommandVectors",
+        "extcmd.TestARequestIsIdempotentByItsReference",
+        "extcmd.TestASuccessfulSend",
+        "extcmd.TestAnUnknownResultIsQueriedFirst",
+        "extcmd.TestNotFoundWithoutDedupeGoesToManual",
+        "extcmd.TestRetriesAndTakeovers",
+        "extcmd.TestPastTheDeadlineNothingIsSent",
+        "extcmd.TestQueryOnlySendsNothing",
+        "extcmd.TestAnIrrevocableCommandNeedsItsIssueRecord",
+        "launcher.TestTheExternalCommandsAreTheSDKs"
       ]
     }
   }

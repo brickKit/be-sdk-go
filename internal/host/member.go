@@ -22,6 +22,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/events/bus"
+	"github.com/brickKit/be-sdk-go/v3/extcmd"
 	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/runprofile"
@@ -99,6 +100,9 @@ func Keys(def component.Definition) []config.Key {
 	}
 	if def.Evidence {
 		keys = append(keys, runprofile.Keys()...)
+	}
+	if def.ExternalCommands {
+		keys = append(keys, extcmd.Keys()...)
 	}
 	return keys
 }

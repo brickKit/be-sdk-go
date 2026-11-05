@@ -18,6 +18,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/evidence"
+	"github.com/brickKit/be-sdk-go/v3/extcmd"
 	"github.com/brickKit/be-sdk-go/v3/grpcx"
 	"github.com/brickKit/be-sdk-go/v3/guard"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
@@ -104,9 +105,17 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 			}
 		}
 	}
+	var external *extcmd.Commands
+	if def.ExternalCommands {
+		if sh.DB == nil {
+			return nil, errors.New("the definition says ExternalCommands but the component has no database (Migrations)")
+		}
+		external = &extcmd.Commands{DB: sh.DB, Component: def.ID, Evidence: writer,
+			QueryOnly: values.Bool(extcmd.QueryOnlyKey), Log: m.Logger}
+	}
 	rt := runtime.New(runtime.Parts{Member: member, Config: values, Logger: m.Logger, Metrics: m.Registry,
 		Tracer: tp.Tracer(def.ID), Addresses: sh.Addresses, DB: sh.DB, Outbound: m.Outbound, Events: producer,
-		Work: m.runner, Audit: auditor, Evidence: writer})
+		Work: m.runner, Audit: auditor, Evidence: writer, External: external})
 	if m.Module, err = newModule(def, rt); err != nil {
 		return nil, fmt.Errorf("the module could not be built: %w", err)
 	}
@@ -357,6 +366,19 @@ func hostPort(addr string) string {
 }
 
 func (m *Member) background(sh Shared, rt *runtime.Runtime) error {
+	p, provides := m.Module.(extcmd.Provider)
+	switch {
+	case provides && rt.External == nil:
+		return errors.New("the module sends external commands but the definition does not say ExternalCommands")
+	case !provides && rt.External != nil:
+		return errors.New("the definition says ExternalCommands but the module does not implement extcmd.Provider")
+	case provides: // the adapter and its operations; the SDK's job sends and queries (be-protocol chapter 13)
+		rt.External.Adapter, rt.External.Ops = p.ExternalCommands()
+		if err := m.runner.Add(rt.External.Job()); err != nil {
+			return err
+		}
+		m.hasJobs = true
+	}
 	if wk, ok := m.Module.(work.Worker); ok {
 		if m.runner == nil {
 			return errors.New("the module has background jobs but the component has no database (Migrations)")

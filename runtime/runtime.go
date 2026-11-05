@@ -14,6 +14,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/evidence"
+	"github.com/brickKit/be-sdk-go/v3/extcmd"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/work"
 	"github.com/prometheus/client_golang/prometheus"
@@ -39,6 +40,9 @@ type Runtime struct {
 	Audit *audit.Auditor
 	// Evidence writes the member's evidence (be-protocol P12.15-P12.18); nil without a database.
 	Evidence *evidence.Writer
+	// External requests the member's external commands (be-protocol chapter 13); nil unless the definition says
+	// ExternalCommands.
+	External *extcmd.Commands
 
 	addresses config.Source // where the platform's *_ENDPOINT values are looked up
 	calls     *calls.Member
@@ -58,12 +62,13 @@ type Parts struct {
 	Work      *work.Runner
 	Audit     *audit.Auditor
 	Evidence  *evidence.Writer
+	External  *extcmd.Commands
 }
 
 // New is used by the launcher and the shell.
 func New(p Parts) *Runtime {
 	return &Runtime{Member: p.Member, Config: p.Config, Logger: p.Logger, Metrics: p.Metrics, Tracer: p.Tracer, DB: p.DB,
-		Events: p.Events, Work: p.Work, Audit: p.Audit, Evidence: p.Evidence, addresses: p.Addresses, calls: p.Outbound}
+		Events: p.Events, Work: p.Work, Audit: p.Audit, Evidence: p.Evidence, External: p.External, addresses: p.Addresses, calls: p.Outbound}
 }
 
 // RecoveryPhase is the full recovery's phase the member started in (be-protocol P1.22, P1.23); empty: running. A
