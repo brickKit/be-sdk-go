@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/records"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -53,4 +54,10 @@ func TestTargetOf(t *testing.T) {
 	assert.Equal(t, map[string]any{"type": "o", "id": "1"}, TargetOf("o", "1", ptr{}), "no version")
 	assert.Equal(t, map[string]any{"type": "o", "id": "1"}, TargetOf("o", "1", nil))
 	assert.Equal(t, map[string]any{"type": "o", "id": "1"}, TargetOf("o", "1", map[string]any{"version": "v2"}), "not a number")
+}
+
+// P14.5: the issued number in a business change's audit.
+func TestDocumentNumber(t *testing.T) {
+	assert.Equal(t, map[string]any{"legal_entity": "le-1", "code": "INV", "period": "2026", "number": "42"},
+		DocumentNumber(db.Series{LegalEntity: "le-1", Code: "INV", Period: "2026"}, 42))
 }

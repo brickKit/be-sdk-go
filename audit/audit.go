@@ -70,6 +70,13 @@ func TargetOf(typ, id string, after any) map[string]any {
 	return t
 }
 
+// DocumentNumber is the changes entry of a business change that issued a number of a continuous series
+// (be-protocol P14.5): after a full recovery the tool takes each series' used maximum from these.
+func DocumentNumber(s db.Series, number int64) map[string]any {
+	return map[string]any{"legal_entity": s.LegalEntity, "code": s.Code, "period": s.Period,
+		"number": strconv.FormatInt(number, 10)}
+}
+
 func versionOf(after any) (int64, bool) {
 	if after == nil {
 		return 0, false
