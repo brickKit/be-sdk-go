@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -287,4 +288,49 @@ func TestThePullChecksTheRowAtThePosition(t *testing.T) { // CK-WM-03, P9.15, SK
 		Partition: 0, Position: &sourcepb.Position{Impl: echo.GetImpl(), Epoch: "0.1", Seq: 2}, Row: record(rec, version, digest)}}})
 	assert.Equal(t, sourcepb.NeedSnapshot_NEED_SNAPSHOT_UNSPECIFIED, need, "another epoch is not checked")
 	assert.Len(t, recs, 1, "echo only")
+}
+
+// TestTheStepBeforeTheEchoRunsFirst: a source mirroring an external product pulls the product's changes into the
+// outbox before the echo (security 03); when that fails, no echo is written and the pull answers UNAVAILABLE, so the
+// consumer's watermark does not advance (P9.16).
+func TestTheStepBeforeTheEchoRunsFirst(t *testing.T) {
+	var fail bool
+	var producer *Producer
+	var d *db.DB
+	mirrored := []string{}
+	s := people
+	s.Watermark = &Watermark{Operation: people.Watermark.Operation, Pullers: people.Watermark.Pullers,
+		Before: func(ctx context.Context) error {
+			if fail {
+				return errors.New("the product is down")
+			}
+			return d.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+				id, err := emitPerson(ctx, tx, producer)
+				mirrored = append(mirrored, id)
+				return err
+			})
+		}}
+	var admin *pgx.Conn
+	var w *sectest.World
+	var addr string
+	d, admin, producer, w, addr = watermarkSource(t, "wmsrc_before", s)
+
+	pages, err := pull(t, w, addr, "demo/consumer", &sourcepb.PullRequest{Stream: "demo.people", Nonce: nonce()})
+	require.NoError(t, err)
+	_, _, echo, _ := pulled(pages)
+	require.NotNil(t, echo)
+	require.Len(t, mirrored, 1, "the step ran")
+	assert.Equal(t, uint64(2), echo.GetSeq(), "the product's change (1) is before the echo (2)")
+
+	fail = true
+	var echoes int
+	require.NoError(t, admin.QueryRow(context.Background(), "SELECT count(*) FROM wmsrc_before.be_outbox WHERE type = $1",
+		EchoType).Scan(&echoes))
+	_, err = pull(t, w, addr, "demo/consumer", &sourcepb.PullRequest{Stream: "demo.people", Nonce: nonce()})
+	require.Error(t, err)
+	assert.Equal(t, codes.Unavailable, status.Code(err), "%v", err)
+	var after int
+	require.NoError(t, admin.QueryRow(context.Background(), "SELECT count(*) FROM wmsrc_before.be_outbox WHERE type = $1",
+		EchoType).Scan(&after))
+	assert.Equal(t, echoes, after, "no echo when the step failed")
 }

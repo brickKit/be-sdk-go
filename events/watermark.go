@@ -109,6 +109,14 @@ func (w *WatermarkSource) Pull(ctx context.Context, req *sourcepb.PullRequest) (
 	}
 	if tok.Stream == "" {
 		w.Log.Info("watermark pull", "event", "watermark_pull", "caller", caller, "stream", s.Name, "nonce", req.GetNonce())
+		if before := s.Watermark.Before; before != nil {
+			if err := before(ctx); err != nil { // no echo: the watermark must not pass changes not brought in (P9.16)
+				w.Log.Warn("the source could not bring its changes up to date before the echo; no echo written",
+					"event", "watermark_before_failed", "stream", s.Name, "error", err.Error())
+				return nil, errs.New(errs.ReasonDependencyUnavailable, "the source's changes could not be brought up to date").
+					Wrap(err)
+			}
+		}
 		var err error
 		if tok, err = w.firstPage(ctx, s, req, caller); err != nil {
 			return nil, err

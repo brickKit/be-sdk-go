@@ -4,6 +4,7 @@
 package events
 
 import (
+	"context"
 	"fmt"
 	"hash/fnv"
 	"regexp"
@@ -29,6 +30,11 @@ type Watermark struct {
 	// Pullers are the components (service identities) that may pull the stream: the ones that subscribe to it and
 	// use watermarks, and readers of its high point (protocol 06's cost component).
 	Pullers []string
+	// Before, when set, runs and commits before a pull's first page writes its echoes (P9.16): a source mirroring an
+	// external product pulls the product's changes up to now into the outbox here, so they come before the echo
+	// (the assembly project's security 03). When it fails no echo is written and the pull answers UNAVAILABLE: the
+	// consumer's watermark does not advance.
+	Before func(ctx context.Context) error
 }
 
 var streamName = regexp.MustCompile(`^[a-z0-9_]+(\.[a-z0-9_]+)*$`)
