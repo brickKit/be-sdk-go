@@ -590,3 +590,45 @@ func TestJudgeManyAtTwoFreshnesses(t *testing.T) { // P9.24; security 03: high-r
 	assert.False(t, a.HasWatermark, "the caller needs a second person without a watermark")
 	assert.Equal(t, Unprovable, ww.applied("p2").Records["p2"].Verdict, "a row of another epoch")
 }
+
+// P9.35 (assembly protocol 15, 6.4): whether the watermark is no older than a moment on the consumer's clock, and a
+// pull at the next step when asked, whatever the watermark's age; the source's changes before the moment are then
+// applied.
+func TestAWatermarkNoOlderThanAMoment(t *testing.T) {
+	ww := newWMWorld(t, "wm_since")
+	ww.set("p1", "Ann")
+	ww.step(3) // adopt, align, the first pull after it
+	require.Equal(t, Usable, ww.judge("p1"), "the precondition: a fresh watermark")
+	noOlder := func(at time.Time) (ok bool) {
+		require.NoError(t, ww.con.BackgroundTx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+			var err error
+			ok, err = ww.w.NoOlderThan(ctx, tx, at)
+			return err
+		}))
+		return ok
+	}
+	var at time.Time
+	require.NoError(t, ww.conAdmin.QueryRow(context.Background(), "SELECT now()").Scan(&at))
+	ww.set("p1", "Anna") // committed at the source after the moment
+	assert.False(t, noOlder(at), "the watermark is from a pull before the moment")
+	ww.step(1)
+	assert.Equal(t, "Ann", ww.name("p1"), "a watermark not yet half its freshness old pulls nothing by itself")
+	assert.False(t, noOlder(at))
+
+	ww.w.PullSoon()
+	ww.step(1)
+	assert.True(t, noOlder(at), "asked: the next step pulls")
+	assert.Equal(t, "Anna", ww.name("p1"), "what the source committed before the answer is applied")
+	ww.step(1)
+	var calls int
+	require.NoError(t, ww.conAdmin.QueryRow(context.Background(),
+		"SELECT count(*) FROM be_watermark_pull WHERE projection = 'people' AND m_p >= $1", at).Scan(&calls))
+	assert.Equal(t, 1, calls, "asked once, one pull")
+
+	pgtest.Exec(t, ww.conAdmin, "UPDATE be_projection_source SET status = 'stalled' WHERE projection = 'people'")
+	assert.False(t, noOlder(at), "a source that is not aligned has no watermark that counts")
+	pgtest.Exec(t, ww.conAdmin, "UPDATE be_projection_source SET status = 'aligned' WHERE projection = 'people'")
+	require.True(t, noOlder(at), "the precondition: aligned again")
+	pgtest.Exec(t, ww.conAdmin, "UPDATE be_watermark_partition SET echo_mp = NULL WHERE projection = 'people' AND partition = 1")
+	assert.False(t, noOlder(at), "a partition without an echo: no watermark")
+}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/db"
@@ -48,6 +49,7 @@ type Watermarked struct {
 
 	mu   sync.Mutex // one pull, alignment or re-fetch at a time
 	poke chan struct{}
+	soon atomic.Bool // a pull asked for (P9.35): at the next step, whatever the watermark's age
 }
 
 // Install records the source once (P9.26's first state: aligning, nothing adopted).
@@ -535,6 +537,24 @@ func (w *Watermarked) judgeMany(ctx context.Context, tx db.Tx, asked map[string]
 	return out, nil
 }
 
+// NoOlderThan answers whether the source's watermark is no older than at, on the consumer primary's clock (the clock
+// of m_p; P9.35): the source aligned, every partition with an echo, and the watermark (P9.23) not before at. A pull
+// recorded after at echoes after everything the source committed before it reached the source, so a yes means the
+// source's commits before at are applied. Read it in one snapshot with whatever is judged on it.
+func (w *Watermarked) NoOlderThan(ctx context.Context, tx db.Tx, at time.Time) (bool, error) {
+	var ok bool
+	err := tx.QueryRow(ctx, `SELECT coalesce(bool_and(ps.status = $2 AND p.echo_mp IS NOT NULL AND p.echo_mp >= $3), false)
+		FROM be_projection_source ps JOIN be_watermark_partition p USING (projection) WHERE projection = $1`,
+		w.Name, Aligned, at).Scan(&ok)
+	return ok, err
+}
+
+// PullSoon asks for a pull at the next step, whatever the watermark's age (P9.35); one pull at a time as ever.
+func (w *Watermarked) PullSoon() {
+	w.soon.Store(true)
+	w.wake()
+}
+
 // Confirm records an operator's confirmation that a blocked source's configuration is corrected (P9.26); the next
 // primary answer decides.
 func (w *Watermarked) Confirm(ctx context.Context) error {
@@ -597,7 +617,7 @@ func (w *Watermarked) Step(ctx context.Context) error {
 		return nil // a misconfigured address: no pull writes echoes into another deployment
 	case st.adopted.Impl != "" && (st.refetch || st.State == Aligning):
 		return w.align(ctx, st)
-	case st.adopted.Impl == "", st.State == Aligned && (age == nil || *age >= half):
+	case w.soon.Swap(false), st.adopted.Impl == "", st.State == Aligned && (age == nil || *age >= half):
 		return w.pull(ctx)
 	case st.State != Aligned && (last == nil || *last >= half):
 		return w.pull(ctx) // stalled or a confirmed correction: look for a larger epoch at the watermark's pace
