@@ -95,3 +95,23 @@ func TestAFormIsSentFormEncoded(t *testing.T) {
 		Request{Method: "POST", Path: "/x", Form: form, Body: map[string]string{}}, nil)
 	assert.ErrorContains(t, err, "both a body and a form")
 }
+
+// An external product's own API credential (Casdoor's client credentials as Basic) goes in the Authorization header,
+// never in the URL where access logs keep it; it cannot be combined with forwarding the user's credential.
+func TestAnExternalCredentialGoesInTheHeader(t *testing.T) {
+	var auth, query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth, query = r.Header.Get("Authorization"), r.URL.RawQuery
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	m, err := NewMember(nil)
+	require.NoError(t, err)
+	require.NoError(t, m.HTTP("casdoor", srv.URL).Do(withDeadline(t, 2e9),
+		Request{Method: "GET", Path: "/api/get-users?owner=o", Credential: "Basic Y2xpZW50OnNlY3JldA=="}, nil))
+	assert.Equal(t, "Basic Y2xpZW50OnNlY3JldA==", auth)
+	assert.Equal(t, "owner=o", query)
+	err = m.HTTP("casdoor", srv.URL).Do(withDeadline(t, 2e9),
+		Request{Method: "GET", Path: "/x", Credential: "Basic x", ForwardUser: true}, nil)
+	assert.ErrorContains(t, err, "both")
+}

@@ -52,6 +52,9 @@ type Request struct {
 	// ForwardUser forwards the caller's own credential: reads on the user's behalf go through the user surface with
 	// the original credential, never with the service's identity (component implementation conventions).
 	ForwardUser bool
+	// Credential is an external product's own API credential, the Authorization header's value (Casdoor's client
+	// credentials as Basic): never in the URL, where access logs keep it, and never logged. Not with ForwardUser.
+	Credential string
 }
 
 // HTTP returns the client for a dependency's user surface at base (its *_ENDPOINT URL).
@@ -76,7 +79,10 @@ func (h *HTTP) Do(ctx context.Context, req Request, out any) error {
 	case req.Form != nil:
 		body, contentType = []byte(req.Form.Encode()), "application/x-www-form-urlencoded"
 	}
-	auth := ""
+	auth := req.Credential
+	if req.ForwardUser && req.Credential != "" {
+		return errs.From(fmt.Errorf("calls: a request to %s with both a credential and the user's", h.dep.ID))
+	}
 	if req.ForwardUser {
 		if auth = reqctx.UserCredential(ctx); auth == "" {
 			return errs.From(errors.New("calls: ForwardUser without a user credential in the context"))
