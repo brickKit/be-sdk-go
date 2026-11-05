@@ -16,6 +16,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/events"
+	"github.com/brickKit/be-sdk-go/v3/evidence"
 	"github.com/brickKit/be-sdk-go/v3/grpcx"
 	"github.com/brickKit/be-sdk-go/v3/guard"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
@@ -23,6 +24,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/internal/sourcepb"
 	"github.com/brickKit/be-sdk-go/v3/obs"
+	"github.com/brickKit/be-sdk-go/v3/runprofile"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/brickKit/be-sdk-go/v3/work"
 	authzv3 "github.com/brickKit/contract-infra-authz/v3/gen/go/be/authz/v3"
@@ -79,11 +81,15 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		return nil, err
 	}
 	var auditor *audit.Auditor
+	var writer *evidence.Writer
 	if sh.DB != nil {
 		m.db = sh.DB
 		m.runner = work.NewRunner(sh.DB, def.ID, m.Logger)
 		auditor = audit.New(sh.DB)
 		if err := m.auditTransfer(auditor, values); err != nil {
+			return nil, err
+		}
+		if writer, err = m.evidenceWriter(values, sh); err != nil {
 			return nil, err
 		}
 		if err := m.runner.Add(partitionJob(m.Logger)); err != nil {
@@ -97,7 +103,7 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 	}
 	rt := runtime.New(runtime.Parts{Member: member, Config: values, Logger: m.Logger, Metrics: m.Registry,
 		Tracer: tp.Tracer(def.ID), Addresses: sh.Addresses, DB: sh.DB, Outbound: m.Outbound, Events: producer,
-		Work: m.runner, Audit: auditor})
+		Work: m.runner, Audit: auditor, Evidence: writer})
 	if m.Module, err = newModule(def, rt); err != nil {
 		return nil, fmt.Errorf("the module could not be built: %w", err)
 	}
@@ -130,6 +136,41 @@ func (m *Member) auditTransfer(a *audit.Auditor, values *config.Values) error {
 	}
 	m.hasJobs = true
 	return nil
+}
+
+// evidenceWriter builds the member's evidence writer and registers be.evidence.transfer (P12.15): the evidence store
+// is the audit component's EvidenceService at AUDIT_GRPC_URL; the alert channel is the run profile, for the
+// components that declare Evidence and configure RUN_PROFILE_URL.
+func (m *Member) evidenceWriter(values *config.Values, sh Shared) (*evidence.Writer, error) {
+	instance := m.Def.ID
+	if len(m.Def.Streams) > 0 {
+		instance = values.String("IMPLEMENTATION_INSTANCE")
+	}
+	w := &evidence.Writer{DB: sh.DB, Component: m.Def.ID, Instance: instance, Log: m.Logger}
+	if addr := values.String("AUDIT_GRPC_URL"); addr != "" {
+		conn, err := m.Outbound.GRPC("infra/audit", hostPort(addr))
+		if err != nil {
+			return nil, err
+		}
+		w.Store = evidence.GRPCStore{Conn: conn}
+	}
+	if m.Def.Evidence && values.String("RUN_PROFILE_URL") != "" && m.tls != nil {
+		rp, err := runprofile.New(runprofile.Options{Endpoint: values.String("RUN_PROFILE_URL"),
+			Region: values.String("RUN_PROFILE_REGION"), Bucket: values.String("RUN_PROFILE_BUCKET"),
+			AccessKey: values.String("RUN_PROFILE_ACCESS_KEY"), Secret: func() string { return values.String("RUN_PROFILE_SECRET_KEY") },
+			Deployment: values.String("DEPLOYMENT_ID"), Writer: runprofile.Writer{Component: m.Def.ID, Instance: instance},
+			Identity: m.tls, Webhook: values.String("ALERT_WEBHOOK_URL"),
+			Log: func(msg string, args ...any) { m.Logger.Error(msg, args...) }})
+		if err != nil {
+			return nil, err
+		}
+		w.Alert = rp
+	}
+	if err := m.runner.Add(evidence.Job(sh.DB, w.Store, m.Logger)); err != nil {
+		return nil, err
+	}
+	m.hasJobs = true
+	return w, nil
 }
 
 // partitionJob keeps the declared tables' monthly partitions ahead (P5.24); a boundary anomaly fails the run.

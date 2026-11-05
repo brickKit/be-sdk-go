@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/canon"
+	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/internal/s3sig"
 )
@@ -132,6 +133,19 @@ func New(o Options) (*Store, error) {
 		return nil, err
 	}
 	return &Store{o: o, signer: s}, nil
+}
+
+// Keys are the run profile's and the alert channel's configuration keys, for the components that write evidence
+// intents (component.Definition.Evidence). All optional: without RUN_PROFILE_URL there is no alert channel.
+func Keys() []config.Key {
+	return []config.Key{
+		{Name: "RUN_PROFILE_URL", Type: config.String},    // the object store, http(s)://host[:port]
+		{Name: "RUN_PROFILE_BUCKET", Type: config.String}, // the object-locked bucket
+		{Name: "RUN_PROFILE_REGION", Type: config.String, Default: "us-east-1"},
+		{Name: "RUN_PROFILE_ACCESS_KEY", Type: config.String},
+		{Name: "RUN_PROFILE_SECRET_KEY", Type: config.String, Secret: true},
+		{Name: "ALERT_WEBHOOK_URL", Type: config.String}, // the alert channel's notification
+	}
 }
 
 // Key is a record's object key (P12.1).

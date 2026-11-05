@@ -24,6 +24,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/events/bus"
 	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/obs"
+	"github.com/brickKit/be-sdk-go/v3/runprofile"
 	"github.com/brickKit/be-sdk-go/v3/work"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
@@ -81,6 +82,9 @@ func Keys(def component.Definition) []config.Key {
 	}
 	if def.Subscribes {
 		keys = append(keys, events.ConsumerKeys()...)
+	}
+	if def.Evidence {
+		keys = append(keys, runprofile.Keys()...)
 	}
 	return keys
 }

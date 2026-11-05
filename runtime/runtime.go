@@ -13,6 +13,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/events"
+	"github.com/brickKit/be-sdk-go/v3/evidence"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/work"
 	"github.com/prometheus/client_golang/prometheus"
@@ -36,6 +37,8 @@ type Runtime struct {
 	// Audit writes the member's audit records (with the business change, before a sensitive read, on a denial);
 	// nil without a database.
 	Audit *audit.Auditor
+	// Evidence writes the member's evidence (be-protocol P12.15-P12.18); nil without a database.
+	Evidence *evidence.Writer
 
 	addresses config.Source // where the platform's *_ENDPOINT values are looked up
 	calls     *calls.Member
@@ -54,12 +57,13 @@ type Parts struct {
 	Events    *events.Producer
 	Work      *work.Runner
 	Audit     *audit.Auditor
+	Evidence  *evidence.Writer
 }
 
 // New is used by the launcher and the shell.
 func New(p Parts) *Runtime {
 	return &Runtime{Member: p.Member, Config: p.Config, Logger: p.Logger, Metrics: p.Metrics, Tracer: p.Tracer, DB: p.DB,
-		Events: p.Events, Work: p.Work, Audit: p.Audit, addresses: p.Addresses, calls: p.Outbound}
+		Events: p.Events, Work: p.Work, Audit: p.Audit, Evidence: p.Evidence, addresses: p.Addresses, calls: p.Outbound}
 }
 
 // HTTP returns the client for a dependency's user surface (protocol chapter 04: deadline, retries, breaker and limit

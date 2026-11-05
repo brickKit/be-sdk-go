@@ -34,7 +34,9 @@ import (
 	authzv3 "github.com/brickKit/contract-infra-authz/v3/gen/go/be/authz/v3"
 	auditv3 "github.com/brickKit/infra-audit/contract/v3/gen/go/be/audit/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 )
 
 // Principals used by tests.
@@ -68,6 +70,15 @@ type World struct {
 	RefuseDefinitions string
 	accountCheck      func(*authzv3.CheckAccountChangeRequest) *authzv3.CheckAccountChangeResponse
 	accountChecks     []*authzv3.CheckAccountChangeRequest
+	evidence          map[[2]string]evidenceKept // (id, phase) -> what the fake evidence store keeps
+	evidenceSeq       int64
+	evidenceDown      bool
+}
+
+type evidenceKept struct {
+	digest string
+	record []byte
+	seq    int64
 }
 
 // New starts the issuer and the fake authorization member.
@@ -468,7 +479,59 @@ func (w *World) Audited() map[string]json.RawMessage {
 
 type auditMember struct {
 	auditv3.UnimplementedIntakeServiceServer
+	auditv3.UnimplementedEvidenceServiceServer
 	w *World
+}
+
+// Append is the fake evidence store (be-protocol P12.10): kept once by (id, phase), the same digest a duplicate,
+// another a conflict. EvidenceDown makes it unavailable.
+func (m auditMember) Append(_ context.Context, in *auditv3.AppendRequest) (*auditv3.AppendResponse, error) {
+	w := m.w
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.evidenceDown {
+		return nil, status.Error(codes.Unavailable, "the test's evidence store is down")
+	}
+	if w.evidence == nil {
+		w.evidence = map[[2]string]evidenceKept{}
+	}
+	out := &auditv3.AppendResponse{}
+	for _, r := range in.GetRecords() {
+		var head struct{ ID, Phase string }
+		_ = json.Unmarshal(r.GetRecord(), &head)
+		k := [2]string{head.ID, head.Phase}
+		rc := &auditv3.EvidenceReceipt{Id: head.ID, Phase: head.Phase, Epoch: "1.1"}
+		switch kept, ok := w.evidence[k]; {
+		case ok && kept.digest == r.GetDigest():
+			rc.Status, rc.Seq = auditv3.EvidenceStatus_EVIDENCE_STATUS_DUPLICATE, kept.seq
+		case ok:
+			rc.Status = auditv3.EvidenceStatus_EVIDENCE_STATUS_CONFLICT
+		default:
+			w.evidenceSeq++
+			w.evidence[k] = evidenceKept{digest: r.GetDigest(), record: r.GetRecord(), seq: w.evidenceSeq}
+			rc.Status, rc.Seq = auditv3.EvidenceStatus_EVIDENCE_STATUS_ACCEPTED, w.evidenceSeq
+		}
+		out.Receipts = append(out.Receipts, rc)
+	}
+	return out, nil
+}
+
+// EvidenceDown makes the fake evidence store unavailable (true) or available again.
+func (w *World) EvidenceDown(down bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.evidenceDown = down
+}
+
+// Evidence returns the records the fake evidence store keeps, by "<id>/<phase>".
+func (w *World) Evidence() map[string]json.RawMessage {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := map[string]json.RawMessage{}
+	for k, v := range w.evidence {
+		out[k[0]+"/"+k[1]] = v.record
+	}
+	return out
 }
 
 // Submit stores records idempotently by ID and checks them as the audit component must (contract/README.md).
@@ -506,6 +569,7 @@ func (w *World) startAudit(t testing.TB) {
 	tls := w.TLS(t, "infra/audit")
 	srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(tls.ServerConfig())))
 	auditv3.RegisterIntakeServiceServer(srv, auditMember{w: w})
+	auditv3.RegisterEvidenceServiceServer(srv, auditMember{w: w})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

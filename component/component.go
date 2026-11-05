@@ -32,6 +32,10 @@ type Definition struct {
 	Streams []events.Stream
 	// Subscribes says the module implements events.Subscriber; it needs Migrations (the inbox).
 	Subscribes bool
+	// Evidence says the component writes tightening intents or irreversible commands' records (be-protocol P12.16):
+	// it gets the run profile's keys, so an intent the evidence store does not take goes to the alert channel. Every
+	// component with Migrations writes evidence through rt.Evidence; without this flag a failed intent is only logged.
+	Evidence bool
 	// Authz declares the resources, operations and fields the component owns (protocol P8.7). Every protected
 	// route and every system method uses one of its operations.
 	Authz *authz.Definitions
