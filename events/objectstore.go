@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/config"
+	"github.com/brickKit/be-sdk-go/v3/internal/s3sig"
 )
 
 // ClaimTTL is how long a claim's presigned read stays valid: the transport retention, also SigV4's maximum (P6.14).
@@ -33,7 +34,7 @@ func StoreKeys() []config.Key {
 // member's own transport: through the AWS SDK an upload with presigning cost about 1.2 ms of CPU (2.2 ms with 8 at
 // once), against 0.7 ms (1.2 ms). The secret is read at every upload, so a rotated file applies from the next one.
 type S3Store struct {
-	signer *signer
+	signer *s3sig.Signer
 	client *http.Client
 	bucket string
 	prefix string
@@ -50,7 +51,7 @@ func NewS3Store(v *config.Values) (*S3Store, error) {
 	if v.String("OBJECT_STORE_BUCKET") == "" || v.String("OBJECT_STORE_ACCESS_KEY") == "" || secret == nil {
 		return nil, fmt.Errorf("object storage: OBJECT_STORE_BUCKET, OBJECT_STORE_ACCESS_KEY and OBJECT_STORE_SECRET_KEY go with OBJECT_STORE_URL")
 	}
-	s, err := newSigner(url, v.String("OBJECT_STORE_REGION"), v.String("OBJECT_STORE_ACCESS_KEY"))
+	s, err := s3sig.New(url, v.String("OBJECT_STORE_REGION"), v.String("OBJECT_STORE_ACCESS_KEY"))
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +63,7 @@ func NewS3Store(v *config.Values) (*S3Store, error) {
 func (s *S3Store) Put(ctx context.Context, eventID string, data []byte) (string, error) {
 	key := s.prefix + "events/" + eventID
 	secret := s.secret.Value()
-	u, headers := s.signer.putHeaders(secret, s.bucket, key, sha256Hex(data), "application/json", len(data), time.Now())
+	u, headers := s.signer.PutHeaders(secret, s.bucket, key, sha256Hex(data), "application/json", len(data), time.Now())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, bytes.NewReader(data))
 	if err != nil {
 		return "", fmt.Errorf("object storage: putting %s: %w", key, err)
@@ -81,7 +82,7 @@ func (s *S3Store) Put(ctx context.Context, eventID string, data []byte) (string,
 		return "", fmt.Errorf("object storage: putting %s: answered %d: %s", key, resp.StatusCode, b)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body) // the connection goes back to the pool
-	return s.signer.presignGet(secret, s.bucket, key, ClaimTTL, time.Now()), nil
+	return s.signer.PresignGet(secret, s.bucket, key, ClaimTTL, time.Now()), nil
 }
 
 // memberHTTPClient is one member's own client for object storage (never the process-wide default transport).

@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -145,6 +146,27 @@ func (s *ServiceTLS) verify(raw [][]byte, usage x509.ExtKeyUsage) (string, error
 		return "", fmt.Errorf("the peer %q is not a component of this deployment", id)
 	}
 	return id, nil
+}
+
+// SigningKey is the current credential's private key and certificate chain (DER, leaf first): records the member writes
+// outside the deployment are signed with its service identity (chapter 12, P12.2).
+func (s *ServiceTLS) SigningKey() (crypto.Signer, [][]byte, error) {
+	c, _ := s.current()
+	if c == nil || len(c.Certificate) == 0 {
+		return nil, nil, errors.New("no service credential")
+	}
+	k, ok := c.PrivateKey.(crypto.Signer)
+	if !ok {
+		return nil, nil, errors.New("the service credential's key cannot sign")
+	}
+	return k, c.Certificate, nil
+}
+
+// VerifySigner checks a record signer's chain (DER, leaf first) against the current trust root and returns its
+// identity (spiffe://<deployment>/component/<id>; P12.4). The trust material's history (rotations, revocations) is
+// the caller's to apply.
+func (s *ServiceTLS) VerifySigner(chain [][]byte) (string, error) {
+	return s.verify(chain, x509.ExtKeyUsageClientAuth)
 }
 
 // ServerConfig requires and verifies a client certificate of this deployment.
