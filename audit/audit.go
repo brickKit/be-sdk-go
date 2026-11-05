@@ -59,6 +59,35 @@ type Record struct {
 	Request     map[string]any // request and trace IDs, call mode
 }
 
+// TargetOf is a business change's target (be-protocol P14.3): the object's type and identity, and its version after
+// the change when after (the object as written, a struct or a map) has a "version" field: a full recovery asks the
+// owner whether the object is still there at that version.
+func TargetOf(typ, id string, after any) map[string]any {
+	t := map[string]any{"type": typ, "id": id}
+	if v, ok := versionOf(after); ok {
+		t["version"] = strconv.FormatInt(v, 10)
+	}
+	return t
+}
+
+func versionOf(after any) (int64, bool) {
+	if after == nil {
+		return 0, false
+	}
+	raw, err := json.Marshal(after)
+	if err != nil {
+		return 0, false
+	}
+	var m struct {
+		Version *json.Number `json:"version"`
+	}
+	if json.Unmarshal(raw, &m) != nil || m.Version == nil {
+		return 0, false
+	}
+	v, err := m.Version.Int64()
+	return v, err == nil
+}
+
 // Auditor writes a member's audit records.
 type Auditor struct {
 	DB       *db.DB

@@ -36,3 +36,21 @@ func TestChangesKeepIntegersAndLeaveOutNulls(t *testing.T) {
 	_, _, err = records.Seal("be.audit.record", b)
 	assert.Error(t, err, "a fraction is not in the canonical encoding")
 }
+
+// P14.3: the target carries the version after the change when the object has one.
+func TestTargetOf(t *testing.T) {
+	type order struct {
+		ID      string `json:"id"`
+		Version int64  `json:"version"`
+	}
+	type ptr struct {
+		Version *int64 `json:"version"`
+	}
+	seven := int64(7)
+	assert.Equal(t, map[string]any{"type": "o", "id": "1", "version": "3"}, TargetOf("o", "1", order{ID: "1", Version: 3}))
+	assert.Equal(t, map[string]any{"type": "o", "id": "1", "version": "7"}, TargetOf("o", "1", &ptr{Version: &seven}))
+	assert.Equal(t, map[string]any{"type": "o", "id": "1", "version": "9"}, TargetOf("o", "1", map[string]any{"version": 9}))
+	assert.Equal(t, map[string]any{"type": "o", "id": "1"}, TargetOf("o", "1", ptr{}), "no version")
+	assert.Equal(t, map[string]any{"type": "o", "id": "1"}, TargetOf("o", "1", nil))
+	assert.Equal(t, map[string]any{"type": "o", "id": "1"}, TargetOf("o", "1", map[string]any{"version": "v2"}), "not a number")
+}
