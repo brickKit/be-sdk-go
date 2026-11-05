@@ -1,5 +1,5 @@
 # The standard system methods (be-protocol proto/, read from the pinned module), committed (make gen; make gen-check):
-# the watermark pull into internal/sourcepb (the SDK serves and calls it), the sessions into sessionpb (public: the
+# the watermark pull, the record reads and the redelivery into internal/sourcepb (the SDK serves and calls them), the sessions into sessionpb (public: the
 # identity member implements it, P8.28). The plugin versions equal what go.mod locks: google.golang.org/protobuf
 # v1.36.12 and grpc-go; the same remote plugins as the contract repositories.
 version: v2
@@ -11,6 +11,9 @@ managed:
       value: github.com/brickKit/be-sdk-go/v3/internal/sourcepb
     - file_option: go_package
       path: be/source/v1/records.proto
+      value: github.com/brickKit/be-sdk-go/v3/internal/sourcepb
+    - file_option: go_package
+      path: be/source/v1/resend.proto
       value: github.com/brickKit/be-sdk-go/v3/internal/sourcepb
     - file_option: go_package
       path: be/session/v1/session.proto

@@ -45,6 +45,8 @@ func main() { launcher.Main(sales.Definition) }
 
 产生事件的组件在定义里声明 `Streams`，在业务事务内调用 `rt.Events.Emit`；SDK 负责编号、转发与信封。超过 64 KiB 的载荷经对象存储：生产者配置自己的 `OBJECT_STORE_*`，转发时写入并发出预签名的只读地址，订阅者不需要存储凭据。消费事件的组件声明 `Subscribes` 并实现 `Subscriptions`，处理函数在 SDK 开的事务里执行，收件表与业务写入同时提交，重复投递只生效一次，最后一次仍失败的记为死信。两者都需要数据库与 `BUS_URL`。发布的事件类型同时列在 `component.yaml` 的 `events.publishes`：组件的测试用 `launcher.EventProblems` 核对它与 `contract/events/` 下的契约一一对应；订阅的列在 `events.subscribes`，由组件自己保持一致。
 
+补发（P6.36–P6.40）：有流的组件在定义里写 `Resend`（补发方法 `be.source.v1.ResendService` 的操作，惯例是 `<前缀>.system.resend`，登记在本组件的 `system` 资源下），SDK 挂上这个系统方法，部署内任何组件可以调用；没写时启动失败。消费者的收件表记下每个事件在来源的位置，订阅每次启动记一行；库回退过（恢复代次推进或时间线变了）的消费者启动时按进度向它见过的生产者要补发，生产者的地址取依赖的 `grpc` 端口（`<依赖>_GRPC_ENDPOINT`），没有地址的记错误日志。补发覆盖不了的分区（之后的行已清掉）记进 `be_resend_gap`；读模型的订阅在 `Sub.Repair` 里给出修复（通常是投影的 `Align`）。
+
 ### 后台工作
 
 有后台工作的模块实现 `Jobs`，每个作业声明种类（queue、cron、singleton、every）与副作用种类；queue 作业在业务事务内用 `rt.Work.Enqueue` 排入。处理函数拿到 `*work.Run`：`local` 作业用 `Complete` 把效果与完成标记一起提交；非幂等外部调用先 `BeforeCall` 再发出；singleton 用 `Checkpoint` 分段提交进度。返回 `work.Permanent`、`work.NotEffective`、`work.Wait` 区分失败，其余错误按退避重试；每次运行有截止时间（`Job.Timeout`，缺省 5 分钟），出站调用靠它。

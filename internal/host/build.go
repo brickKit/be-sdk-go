@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"google.golang.org/grpc"
 	"io"
 	"log/slog"
 	"net/url"
@@ -110,7 +111,7 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 	if err := m.userSurface(member, values, sh, rt); err != nil {
 		return nil, err
 	}
-	if err := m.background(sh); err != nil {
+	if err := m.background(sh, rt); err != nil {
 		return nil, err
 	}
 	if err := m.systemSurface(member, rt); err != nil {
@@ -239,6 +240,8 @@ func (m *Member) producer(values *config.Values, sh Shared) (*events.Producer, e
 		Deployment: values.String("DEPLOYMENT_ID"), Log: m.Logger}
 	m.records = &events.RecordSource{DB: sh.DB, Producer: p, Impl: m.forwarder.Impl,
 		Deployment: values.String("DEPLOYMENT_ID"), Log: m.Logger}
+	m.resender = &events.Resender{DB: sh.DB, Producer: p, Transport: sh.Transport, Source: m.Def.ID,
+		Impl: m.forwarder.Impl, Log: m.Logger}
 	return p, nil
 }
 
@@ -325,7 +328,7 @@ func hostPort(addr string) string {
 	return addr
 }
 
-func (m *Member) background(sh Shared) error {
+func (m *Member) background(sh Shared, rt *runtime.Runtime) error {
 	if wk, ok := m.Module.(work.Worker); ok {
 		if m.runner == nil {
 			return errors.New("the module has background jobs but the component has no database (Migrations)")
@@ -351,6 +354,10 @@ func (m *Member) background(sh Shared) error {
 			m.consumers = append(m.consumers, &events.Consumer{Member: m.Def.ID, Sub: s, DB: sh.DB, Log: m.Logger,
 				Claims: events.NewHTTPClaims(), Configured: int(m.Values.Int(events.ConcurrencyKey))})
 		}
+		m.redeliver = &events.Redelivery{DB: sh.DB, Subs: subs.List(), Log: m.Logger, Conn: func(c string) (grpc.ClientConnInterface, bool) {
+			conn, ok := rt.GRPC(c)
+			return conn, ok
+		}}
 	}
 	return nil
 }
@@ -370,6 +377,13 @@ func (m *Member) systemSurface(member obs.Member, rt *runtime.Runtime) error {
 		if ok {
 			services.Register(&sourcepb.WatermarkService_ServiceDesc, m.watermark, map[string]grpcx.Method{"Pull": method})
 		}
+	}
+	if m.resender != nil { // the redelivery of the member's streams (P6.38)
+		if m.Def.Resend == "" {
+			return errors.New("a component with streams declares the operation of its redelivery (Definition.Resend, P6.38)")
+		}
+		services.Register(&sourcepb.ResendService_ServiceDesc, m.resender, map[string]grpcx.Method{"Resend": {
+			Operation: m.Def.Resend, Callers: []string{grpcx.AnyComponent}, Timeout: events.ResendCallTimeout}})
 	}
 	if m.records != nil { // the batch read and snapshot of the member's streams (P9.30)
 		method, ok, err := m.records.Method()

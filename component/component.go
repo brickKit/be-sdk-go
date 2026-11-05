@@ -30,6 +30,10 @@ type Definition struct {
 	// Streams are the event streams the component produces (protocol chapter 06); they need Migrations (the outbox).
 	// rt.Events emits into them and the SDK forwards them.
 	Streams []events.Stream
+	// Resend is the operation of the redelivery every component with Streams serves (be.source.v1.ResendService,
+	// P6.38), declared in its resource definition like every system method's; any component of the deployment may
+	// call it. Required with Streams.
+	Resend string
 	// Subscribes says the module implements events.Subscriber; it needs Migrations (the inbox).
 	Subscribes bool
 	// Evidence says the component writes tightening intents or irreversible commands' records (be-protocol P12.16):

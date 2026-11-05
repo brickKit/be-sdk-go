@@ -105,7 +105,9 @@ type Member struct {
 	forwarder *events.Forwarder
 	watermark *events.WatermarkSource // answers pulls when the member has watermark streams
 	records   *events.RecordSource    // answers batch reads and snapshots when the member's streams declare them
+	resender  *events.Resender        // answers redeliveries when the member has streams (P6.38)
 	consumers []*events.Consumer
+	redeliver *events.Redelivery // asks the producers for a redelivery when the database went back (P6.39)
 	subs      []events.Subscription
 	transport events.Transport
 	runner    *work.Runner
@@ -197,11 +199,17 @@ func (m *Member) Start(bg context.Context) error {
 		}
 	}
 	for _, c := range m.consumers {
+		if err := events.StartRun(bg, c.DB, c.Sub.Name); err != nil { // a run of this subscription (P6.36)
+			return fmt.Errorf("subscription %s: %w", c.Sub.Name, err)
+		}
 		sub, err := m.transport.Subscribe(bg, c.Spec(), c.Handle)
 		if err != nil {
 			return fmt.Errorf("subscription %s: %w", c.Sub.Name, err)
 		}
 		m.subs = append(m.subs, sub)
+	}
+	if m.redeliver != nil {
+		go m.redeliver.Run(bg)
 	}
 	go m.rereadSecrets(bg)
 	return nil

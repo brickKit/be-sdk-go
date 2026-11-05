@@ -51,6 +51,9 @@ type Sub struct {
 	// Ordered marks a subscription that depends on arrival order: it always handles one message at a time, whatever
 	// the deployment sets.
 	Ordered bool
+	// Repair, for a read model, rebuilds it from the source when a redelivery cannot cover its progress (P6.40: the
+	// rows after it were purged at the producer), typically the projection's Align. Nil: the gap is recorded only.
+	Repair func(ctx context.Context, source SourceKey) error
 }
 
 // ConcurrencyKey is the deployment's setting of how many messages each subscription of a member handles at once.
@@ -163,8 +166,14 @@ func (c *Consumer) process(ctx context.Context, d *Delivery) error {
 	}
 	ctx = WithCause(obs.Propagator.Extract(ctx, carrier), r.ID, r.Hops)
 	return c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
-		tag, err := tx.Exec(ctx, `INSERT INTO be_inbox (subscription, event_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-			c.Sub.Name, r.ID)
+		// the source position too (P6.36): a subscription's progress is read from these rows (P6.37)
+		var gen, tl, seq any
+		if e, err := ParseEpoch(r.Epoch); err == nil && r.Impl != "" && r.Seq > 0 {
+			gen, tl, seq = e.Generation, e.Timeline, r.Seq
+		}
+		tag, err := tx.Exec(ctx, `INSERT INTO be_inbox (subscription, event_id, source_component, source_impl, source_stream,
+			source_partition, epoch_generation, epoch_timeline, seq) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT DO NOTHING`, c.Sub.Name, r.ID, sourceOf(r.Source), r.Impl, r.Stream, r.Partition, gen, tl, seq)
 		if err != nil {
 			return err
 		}

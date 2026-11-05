@@ -369,11 +369,59 @@ func (f *Forwarder) markPublished(ctx context.Context, ords, claimed []int64) er
 }
 
 // Purge deletes published rows older than the redelivery retention, in batches (P6.12); unpublished rows are never
-// deleted.
+// deleted. Each batch notes on the partition's counter row the largest position it deleted, in the same transaction: a
+// redelivery from before it is beyond the retention (P6.38).
 func Purge(ctx context.Context, d *db.DB, retention time.Duration) (int64, error) {
-	return db.DeleteInBatches(ctx, d, `DELETE FROM be_outbox WHERE ord IN (SELECT ord FROM be_outbox
-		WHERE published_at IS NOT NULL AND published_at < now() - make_interval(secs => $1)
-		LIMIT $2 FOR UPDATE SKIP LOCKED)`, retention.Seconds())
+	var total int64
+	for {
+		var n int64
+		err := d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+			rows, err := tx.Query(ctx, `DELETE FROM be_outbox WHERE ord IN (SELECT ord FROM be_outbox
+				WHERE published_at IS NOT NULL AND published_at < now() - make_interval(secs => $1)
+				LIMIT $2 FOR UPDATE SKIP LOCKED)
+				RETURNING stream, partition, epoch_generation, epoch_timeline, seq`, retention.Seconds(), db.Batch)
+			if err != nil {
+				return err
+			}
+			top := map[streamPart]Point{}
+			for rows.Next() {
+				var sp streamPart
+				var g, tl, seq *int64
+				if err := rows.Scan(&sp.stream, &sp.n, &g, &tl, &seq); err != nil {
+					rows.Close()
+					return err
+				}
+				n++
+				if seq == nil || g == nil || tl == nil {
+					continue // never numbered (a row a test wrote by hand): no position to note
+				}
+				p := Point{Epoch: Epoch{Generation: *g, Timeline: *tl}, Seq: *seq}
+				if cur, ok := top[sp]; !ok || cur.Less(p) {
+					top[sp] = p
+				}
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			for sp, p := range top {
+				if _, err := tx.Exec(ctx, `UPDATE be_outbox_partition SET purged_generation = $3, purged_timeline = $4,
+					purged_seq = $5 WHERE stream = $1 AND partition = $2 AND (purged_generation IS NULL
+					OR (purged_generation, purged_timeline, purged_seq) < ($3, $4, $5))`, sp.stream, sp.n,
+					p.Epoch.Generation, p.Epoch.Timeline, p.Seq); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return total, err
+		}
+		total += n
+		if n < db.Batch {
+			return total, nil
+		}
+	}
 }
 
 // PurgeJob is the hourly purge every member with a database runs (P6.12): published rows past the redelivery

@@ -222,8 +222,8 @@ func (t *Transport) Publish(ctx context.Context, m events.Message) error {
 		return err
 	}
 	var id any
-	if m.ID() != "" {
-		id = m.ID()
+	if m.DedupID() != "" {
+		id = m.DedupID()
 	}
 	tag, err := t.pool.Exec(ctx, `INSERT INTO `+t.t("be_bus_message")+` (msg_id, subject, headers, data)
 		VALUES ($1, $2, $3, $4) ON CONFLICT (msg_id) WHERE msg_id IS NOT NULL DO NOTHING`, id, m.Subject, headers, m.Data)

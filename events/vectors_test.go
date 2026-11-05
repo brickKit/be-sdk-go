@@ -124,3 +124,51 @@ func TestWatermarkPullCheckVectors(t *testing.T) { // P9.15
 		assert.Equal(t, c.Expect, got, c.ID)
 	}
 }
+
+// The progress of P6.37 against be-protocol's inbox-progress vector: the cut by runs and the delivery lifetime, the
+// largest position handled at or before it.
+func TestProgressVectors(t *testing.T) {
+	base := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
+	at := func(s int64) time.Time { return base.Add(time.Duration(s) * time.Second) }
+	for _, raw := range cases(t, "inbox-progress") {
+		var c struct {
+			ID    string
+			Input struct {
+				Runs []int64
+				Rows []struct {
+					Key string
+					Pos []int64
+					At  int64
+				}
+				Lifetime int64
+			}
+			Expected struct{ Progress map[string][]int64 }
+		}
+		require.NoError(t, json.Unmarshal(raw, &c))
+		runs := make([]time.Time, len(c.Input.Runs))
+		for i, s := range c.Input.Runs {
+			runs[i] = at(s)
+		}
+		var rows []Handled
+		for _, r := range c.Input.Rows {
+			h := Handled{Key: SourceKey{Component: "c", Impl: "i", Stream: "s", Partition: partitionOfKey(t, r.Key)}, At: at(r.At)}
+			if r.Pos != nil {
+				h.Pos = &Point{Epoch: Epoch{Generation: r.Pos[0], Timeline: r.Pos[1]}, Seq: r.Pos[2]}
+			}
+			rows = append(rows, h)
+		}
+		got := ProgressOf(runs, rows, time.Duration(c.Input.Lifetime)*time.Second)
+		want := map[SourceKey]Point{}
+		for k, p := range c.Expected.Progress {
+			want[SourceKey{Component: "c", Impl: "i", Stream: "s", Partition: partitionOfKey(t, k)}] =
+				Point{Epoch: Epoch{Generation: p[0], Timeline: p[1]}, Seq: p[2]}
+		}
+		assert.Equal(t, want, got, c.ID)
+	}
+}
+
+func partitionOfKey(t *testing.T, key string) int {
+	n, err := strconv.Atoi(key[1:]) // p0, p1
+	require.NoError(t, err)
+	return n
+}

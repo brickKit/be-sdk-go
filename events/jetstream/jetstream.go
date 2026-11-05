@@ -78,7 +78,7 @@ func (t *Transport) Publish(ctx context.Context, m events.Message) error {
 		return events.ErrTooLarge
 	}
 	var opts []js.PublishOpt
-	if id := m.ID(); id != "" {
+	if id := m.DedupID(); id != "" {
 		opts = append(opts, js.WithMsgID(id))
 	}
 	_, err := t.js.PublishMsg(ctx, msg, opts...)

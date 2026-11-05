@@ -12,10 +12,21 @@ type Message struct {
 	Subject string
 	Headers map[string]string
 	Data    []byte
+	// MsgID is the identity the transport deduplicates by; empty: the event ID. A redelivery sets its own (P6.38):
+	// the original message may still be in the transport's deduplication window.
+	MsgID string
 }
 
 // ID returns the message's event ID.
 func (m Message) ID() string { return m.Headers[HeaderID] }
+
+// DedupID is the identity the transport deduplicates by (P6.10, P6.38).
+func (m Message) DedupID() string {
+	if m.MsgID != "" {
+		return m.MsgID
+	}
+	return m.ID()
+}
 
 // Retentions (protocol 15's parameters): published outbox rows are kept for redelivery (P6.12), and the transport
 // buffers messages as long (P6.27); a consumer away longer recovers through redelivery and alignment.

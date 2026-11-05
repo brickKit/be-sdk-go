@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.76",
+  "protocol": "3.0.0-alpha.77",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -259,6 +259,16 @@
         "events.TestTheLastFailureBecomesOneDeadLetter"
       ],
       "note": "收件表不清理：P6.26 只禁止提前清理；按覆盖它的版本或墓碑证明的清理随水位与对账加入"
+    },
+    "redelivery": {
+      "status": "verified",
+      "evidence": [
+        "events.TestProgressVectors",
+        "events.TestResendFromTheAskedPosition",
+        "events.TestTheRedeliveryStartsAtTheSmallestProgress",
+        "events.TestPurgeKeepsUnpublishedAndRecentRows",
+        "launcher.TestRedeliveryAfterTheConsumersDatabaseWentBack"
+      ]
     },
     "work": {
       "status": "verified",

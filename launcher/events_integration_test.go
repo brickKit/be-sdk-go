@@ -142,7 +142,8 @@ func TestEventsFlowBetweenComponentsOnBothTransports(t *testing.T) {
 			consEnv := pgtest.MemberEnv(host, port, "evcons")
 			consEnv["BUS_URL"] = busURL
 			prodDef := component.Definition{ID: "demo/evprod", Version: "3.0.0", Streams: []events.Stream{things},
-				Authz:      sectest.Defs("demo/evprod", "demo.things", "demo.things.read", "demo.things.create"),
+				Resend: "demo.things.resend", GRPCPort: freePort(t),
+				Authz:      sectest.Defs("demo/evprod", "demo.things", "demo.things.read", "demo.things.create", "demo.things.resend"),
 				Migrations: fstest.MapFS{"0001_things.up.sql": {Data: []byte("CREATE TABLE things (id uuid PRIMARY KEY);")}},
 				New:        func(rt *runtime.Runtime) (component.Module, error) { return &producer{rt: rt}, nil }}
 			consDef := component.Definition{ID: "demo/evcons", Version: "3.0.0", Subscribes: true,

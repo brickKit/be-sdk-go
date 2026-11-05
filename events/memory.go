@@ -81,13 +81,13 @@ func (m *Memory) Publish(_ context.Context, msg Message) error {
 	if m.closed {
 		return errors.New("events: transport closed")
 	}
-	if id := msg.ID(); id != "" {
+	if id := msg.DedupID(); id != "" {
 		if m.seen[id] {
 			return nil
 		}
 		m.seen[id] = true
 	}
-	stored := Message{Subject: msg.Subject, Headers: map[string]string{}, Data: append([]byte(nil), msg.Data...)}
+	stored := Message{Subject: msg.Subject, Headers: map[string]string{}, Data: append([]byte(nil), msg.Data...), MsgID: msg.MsgID}
 	for k, v := range msg.Headers {
 		stored.Headers[k] = v
 	}
