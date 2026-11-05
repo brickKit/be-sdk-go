@@ -66,6 +66,8 @@ type World struct {
 	auditDigests      map[string]string
 	submitted         map[string]string
 	RefuseDefinitions string
+	accountCheck      func(*authzv3.CheckAccountChangeRequest) *authzv3.CheckAccountChangeResponse
+	accountChecks     []*authzv3.CheckAccountChangeRequest
 }
 
 // New starts the issuer and the fake authorization member.
@@ -326,7 +328,35 @@ func (w *World) view() ([]byte, string, error) {
 type authzMember struct {
 	authzv3.UnimplementedViewServiceServer
 	authzv3.UnimplementedDefinitionServiceServer
+	authzv3.UnimplementedAccountServiceServer
 	w *World
+}
+
+// CheckAccountChange answers as the test set with AccountCheck (allowed, no admin, by default) and remembers the
+// request (an identity member asks before it changes an account's status, A134).
+func (m authzMember) CheckAccountChange(_ context.Context, in *authzv3.CheckAccountChangeRequest) (*authzv3.CheckAccountChangeResponse, error) {
+	m.w.mu.Lock()
+	m.w.accountChecks = append(m.w.accountChecks, in)
+	answer := m.w.accountCheck
+	m.w.mu.Unlock()
+	if answer == nil {
+		return &authzv3.CheckAccountChangeResponse{Verdict: authzv3.AccountChangeVerdict_ACCOUNT_CHANGE_VERDICT_ALLOWED}, nil
+	}
+	return answer(in), nil
+}
+
+// AccountCheck sets the fake member's answer to CheckAccountChange (nil: allowed, no admin).
+func (w *World) AccountCheck(answer func(*authzv3.CheckAccountChangeRequest) *authzv3.CheckAccountChangeResponse) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.accountCheck = answer
+}
+
+// AccountChecks returns the CheckAccountChange requests the fake member received, in order.
+func (w *World) AccountChecks() []*authzv3.CheckAccountChangeRequest {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]*authzv3.CheckAccountChangeRequest(nil), w.accountChecks...)
 }
 
 func (m authzMember) Verify(_ context.Context, in *authzv3.VerifyRequest) (*authzv3.VerifyResponse, error) {
@@ -415,6 +445,7 @@ func (w *World) startAuthz(t testing.TB) {
 	srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(tls.ServerConfig())))
 	authzv3.RegisterViewServiceServer(srv, authzMember{w: w})
 	authzv3.RegisterDefinitionServiceServer(srv, authzMember{w: w})
+	authzv3.RegisterAccountServiceServer(srv, authzMember{w: w})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
