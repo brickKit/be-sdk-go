@@ -66,7 +66,7 @@ var errRollback = errors.New("evidence: replay rolled back")
 // Replay implements be.evidence.v1.ReplayService: one record, reflected by its identity or re-executed by its
 // category's function with the change history in one transaction.
 func (s *ReplayServer) Replay(ctx context.Context, req *evidencepb.ReplayRequest) (*evidencepb.ReplayResponse, error) {
-	r, err := parseReplayed(req.GetRecord(), s.Component)
+	r, err := ParseReplayed(req.GetRecord(), s.Component)
 	if err != nil {
 		return nil, errs.New(errs.ReasonRequestInvalid, err.Error())
 	}
@@ -77,24 +77,18 @@ func (s *ReplayServer) Replay(ctx context.Context, req *evidencepb.ReplayRequest
 	outcome, detail := "", ""
 	err = s.DB.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
 		outcome, detail = "", ""
-		done, err := Reflected(ctx, tx, r.ID)
-		if err != nil {
-			return err
-		}
-		if done {
-			outcome = AlreadyReflected
-			return nil
-		}
-		if err := f(ctx, tx, r); errors.Is(err, ErrDangling) {
+		done, err := ReplayTx(ctx, tx, r, f)
+		switch {
+		case errors.Is(err, ErrDangling):
 			outcome, detail = Dangling, err.Error()
 			return errRollback
-		} else if err != nil {
+		case err != nil:
 			return err
+		case done:
+			outcome = AlreadyReflected
+		default:
+			outcome = Applied
 		}
-		if err := reflect(ctx, tx, r.ID, r.Object); err != nil {
-			return err
-		}
-		outcome = Applied
 		return nil
 	})
 	if err != nil && !errors.Is(err, errRollback) {
@@ -112,8 +106,23 @@ func (s *ReplayServer) log() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
-// parseReplayed reads a be.evidence.record that this component recorded, in a phase that is replayed.
-func parseReplayed(raw []byte, component string) (Replayed, error) {
+// ReplayTx replays one record in the caller's transaction (P12.20, P12.21): reflected by its identity already, it does
+// nothing and answers true; else f re-executes it and the change history is written under the record's identity. An
+// error (ErrDangling among them) leaves the caller to roll the transaction back. ReplayServer uses it; an owner uses
+// it for a replay of its own besides the standard method (the authorization member's deferred revocations, 6.5).
+func ReplayTx(ctx context.Context, tx db.Tx, r Replayed, f ReplayFunc) (reflected bool, err error) {
+	done, err := Reflected(ctx, tx, r.ID)
+	if err != nil || done {
+		return done, err
+	}
+	if err := f(ctx, tx, r); err != nil {
+		return false, err
+	}
+	return false, reflect(ctx, tx, r.ID, r.Object)
+}
+
+// ParseReplayed reads a be.evidence.record that this component recorded, in a phase that is replayed (P12.20).
+func ParseReplayed(raw []byte, component string) (Replayed, error) {
 	var rec struct {
 		RecordType string `json:"record_type"`
 		ID         string `json:"id"`
