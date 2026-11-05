@@ -34,6 +34,8 @@ type Platform struct {
 	Ready func() (ready bool, state string, waiting []string)
 	// Describe returns the self-description document.
 	Describe func() any
+	// Phase is the recovery phase when the member or shell is ready in recovery mode (P1.22); nil or empty: none.
+	Phase func() string
 	// Metrics serves the metrics (the member's registry, or the shell's aggregate).
 	Metrics http.Handler
 }
@@ -53,6 +55,9 @@ type Deps struct {
 	Platform Platform
 	// Guard admits requests to non-public routes; an engine with such routes is not built without one.
 	Guard Guard
+	// Phase is the recovery phase the member started in (P1.22): every route answers MAINTENANCE while it is set;
+	// health, readiness and the self-description still answer.
+	Phase string
 }
 
 // validRequestID reports whether a caller's request ID can be kept: 1 to 128 of [A-Za-z0-9._:-]. A loop rather than a
@@ -114,6 +119,12 @@ func platform(e *gin.Engine, d Deps) {
 	ready := func(g *gin.Context) {
 		ready, state, waiting := d.Platform.Ready()
 		if ready {
+			if d.Platform.Phase != nil {
+				if phase := d.Platform.Phase(); phase != "" { // ready in recovery mode: routable (P1.22)
+					g.JSON(http.StatusOK, map[string]string{"state": "recovery_ready", "phase": phase})
+					return
+				}
+			}
 			g.String(http.StatusOK, "ok")
 			return
 		}
@@ -193,6 +204,9 @@ func serve(g *gin.Context, d Deps, r Route, template string, duration *prometheu
 	log := d.Logger.With("request_id", rid, "trace_id", traceID)
 
 	err := func() error {
+		if d.Phase != "" { // a full recovery: nothing on the user surface (P1.23)
+			return errs.New(errs.ReasonMaintenance, "the deployment is in a full recovery").With("phase", d.Phase)
+		}
 		limit := r.deadline()
 		if h := req.Header.Get(HeaderTimeoutMs); h != "" {
 			ms, perr := strconv.ParseInt(h, 10, 64)

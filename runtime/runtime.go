@@ -66,6 +66,15 @@ func New(p Parts) *Runtime {
 		Events: p.Events, Work: p.Work, Audit: p.Audit, Evidence: p.Evidence, addresses: p.Addresses, calls: p.Outbound}
 }
 
+// RecoveryPhase is the full recovery's phase the member started in (be-protocol P1.22, P1.23); empty: running. A
+// module with background of its own may hold more of it back in a phase than the SDK does.
+func (r *Runtime) RecoveryPhase() string {
+	if r.Config == nil {
+		return ""
+	}
+	return r.Config.String("RECOVERY_PHASE")
+}
+
 // HTTP returns the client for a dependency's user surface (protocol chapter 04: deadline, retries, breaker and limit
 // per dependency). ok=false: the dependency is absent.
 func (r *Runtime) HTTP(componentID string) (*calls.HTTP, bool) {

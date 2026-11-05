@@ -39,6 +39,7 @@ const (
 	ReasonAuthorizationUnprovable  = "AUTHORIZATION_UNPROVABLE"
 	ReasonAuthorizationViewExpired = "AUTHORIZATION_VIEW_EXPIRED"
 	ReasonRecoveryInProgress       = "RECOVERY_IN_PROGRESS"
+	ReasonMaintenance              = "MAINTENANCE"
 	ReasonMemberSwitchInProgress   = "MEMBER_SWITCH_IN_PROGRESS"
 	ReasonDefinitionPending        = "DEFINITION_PENDING"
 	ReasonCapabilityUnsupported    = "CAPABILITY_UNSUPPORTED"
@@ -103,6 +104,7 @@ func init() {
 		{ReasonAuthorizationUnprovable, Unavailable, 0, RetryYes, "Authorization cannot be proven right now"},
 		{ReasonAuthorizationViewExpired, Unavailable, 0, RetryYes, "The authorization view has expired"},
 		{ReasonRecoveryInProgress, Unavailable, 0, RetryYes, "The deployment is being recovered"},
+		{ReasonMaintenance, Unavailable, 0, RetryYes, "The deployment is in a full recovery: try again once it reopens"},
 		{ReasonMemberSwitchInProgress, Unavailable, 0, RetryYes, "A provider switch is in progress"},
 		{ReasonDefinitionPending, Unavailable, 0, RetryYes, "A definition the change needs has not been accepted yet"},
 		{ReasonCapabilityUnsupported, Unimplemented, 0, RetryNo, "This capability is not supported"},

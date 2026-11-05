@@ -37,6 +37,14 @@ const (
 	Starting = "starting"
 	Ready    = "ready"
 	Stopping = "stopping"
+	// RecoveryReady is ready in recovery mode (P1.22): serving what the phase allows.
+	RecoveryReady = "recovery_ready"
+)
+
+// The recovery phases (P1.23): a deployment variable read at start; a phase change restarts.
+const (
+	PhaseFrozen       = "frozen"
+	PhaseRedelivering = "redelivering"
 )
 
 // Defaults of the SDK's own keys.
@@ -51,6 +59,7 @@ func SDKKeys() []config.Key {
 	return []config.Key{
 		{Name: "LOG_LEVEL", Type: config.Enum, Values: []string{"debug", "info", "warn", "error"}, Default: "info"},
 		{Name: "OTEL_URL", Type: config.String, Process: true},
+		{Name: "RECOVERY_PHASE", Type: config.Enum, Values: []string{PhaseFrozen, PhaseRedelivering}, Process: true},
 		{Name: "STOP_DRAIN_DELAY", Type: config.Duration, Default: DefaultDrainDelay},
 		{Name: "STOP_TIMEOUT", Type: config.Duration, Default: DefaultStopTimeout},
 	}
@@ -129,17 +138,26 @@ type Member struct {
 // State returns the member's lifecycle state.
 func (m *Member) State() string { return m.state.Load().(string) }
 
-// IsReady reports the member ready.
-func (m *Member) IsReady() bool { return m.State() == Ready }
+// IsReady reports the member ready, or ready in recovery mode (P1.22).
+func (m *Member) IsReady() bool { s := m.State(); return s == Ready || s == RecoveryReady }
+
+// Phase is the recovery phase the member started in; empty: normal running (P1.22).
+func (m *Member) Phase() string { return m.Values.String("RECOVERY_PHASE") }
 
 // SetState changes it (the launcher and the shell drive the transitions).
 func (m *Member) SetState(s string) { m.state.Store(s) }
 
 // MarkReady enters the ready state, writes the ready line (P1.12) and then calls then (may be nil).
 func (m *Member) MarkReady(started time.Time, then func()) {
-	m.SetState(Ready)
-	m.Logger.Info("ready", "event", "ready", "protocol", protocol.Version, "sdk", sdk.Version,
-		"startup_ms", time.Since(started).Milliseconds())
+	if phase := m.Phase(); phase != "" {
+		m.SetState(RecoveryReady)
+		m.Logger.Info("ready", "event", "ready", "protocol", protocol.Version, "sdk", sdk.Version,
+			"startup_ms", time.Since(started).Milliseconds(), "phase", phase)
+	} else {
+		m.SetState(Ready)
+		m.Logger.Info("ready", "event", "ready", "protocol", protocol.Version, "sdk", sdk.Version,
+			"startup_ms", time.Since(started).Milliseconds())
+	}
 	if then != nil {
 		then()
 	}
@@ -151,24 +169,34 @@ func (m *Member) Describe() map[string]any {
 	if caps == nil {
 		caps = []string{}
 	}
-	return map[string]any{"component_id": m.Def.ID, "version": m.Def.Version, "protocol": protocol.Version,
+	out := map[string]any{"component_id": m.Def.ID, "version": m.Def.Version, "protocol": protocol.Version,
 		"sdk": "be-sdk-go/" + sdk.Version, "capabilities": caps}
+	if phase := m.Phase(); phase != "" {
+		out["recovery_phase"] = phase
+	}
+	return out
 }
 
 // Start runs the module's background work (if any), the event forwarder and consumers, and the secret re-reading,
 // all bound to bg.
+//
+// In recovery mode only what the phase allows runs (P1.23): frozen runs no module background, forwarding,
+// subscription or job; redelivering runs the module's background (its projections), forwarding and subscriptions,
+// and no job. The system surface and the authorization view run in every phase.
 func (m *Member) Start(bg context.Context) error {
-	if s, ok := m.Module.(component.Starter); ok {
+	phase := m.Phase()
+	moving := phase == "" || phase == PhaseRedelivering // events and projections run
+	if s, ok := m.Module.(component.Starter); ok && moving {
 		if err := s.Start(bg); err != nil {
 			return err
 		}
 	}
-	if m.forwarder != nil {
+	if m.forwarder != nil && moving {
 		if err := m.forwarder.Start(bg); err != nil {
 			return err
 		}
 	}
-	if m.hasJobs {
+	if m.hasJobs && phase == "" {
 		if err := m.runner.Start(bg); err != nil {
 			return err
 		}
@@ -199,6 +227,9 @@ func (m *Member) Start(bg context.Context) error {
 		}
 	}
 	for _, c := range m.consumers {
+		if !moving {
+			break
+		}
 		if err := events.StartRun(bg, c.DB, c.Sub.Name); err != nil { // a run of this subscription (P6.36)
 			return fmt.Errorf("subscription %s: %w", c.Sub.Name, err)
 		}
@@ -208,7 +239,7 @@ func (m *Member) Start(bg context.Context) error {
 		}
 		m.subs = append(m.subs, sub)
 	}
-	if m.redeliver != nil {
+	if m.redeliver != nil && moving {
 		go m.redeliver.Run(bg)
 	}
 	go m.rereadSecrets(bg)

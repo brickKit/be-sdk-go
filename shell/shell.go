@@ -298,9 +298,22 @@ func ownSurface(self Identity, sv *config.Values, members []*host.Member) (http.
 				for _, m := range members {
 					ms = append(ms, m.Describe())
 				}
-				return map[string]any{"component_id": self.ID, "version": self.Version, "protocol": protocol.Version,
+				out := map[string]any{"component_id": self.ID, "version": self.Version, "protocol": protocol.Version,
 					"sdk": "be-sdk-go/" + sdk.Version, "capabilities": []string{}, "members": ms}
+				if phase := shellPhase(members); phase != "" {
+					out["recovery_phase"] = phase
+				}
+				return out
 			},
+			Phase:   func() string { return shellPhase(members) },
 			Metrics: promhttp.HandlerFor(gatherers, promhttp.HandlerOpts{}),
 		}}, &httpx.Routes{})
+}
+
+// shellPhase is the recovery phase of the shell's members: a process-level key, the same for every member (P2.11).
+func shellPhase(members []*host.Member) string {
+	if len(members) == 0 {
+		return ""
+	}
+	return members[0].Phase()
 }

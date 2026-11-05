@@ -265,12 +265,12 @@ func (m *Member) userSurface(member obs.Member, values *config.Values, sh Shared
 	}
 	var err error
 	m.Engine, err = httpx.NewEngine(httpx.Deps{Member: member, Logger: m.Logger, Registry: m.Registry, Tracer: rt.Tracer,
-		Guard: g, Platform: httpx.Platform{
+		Guard: g, Phase: m.Phase(), Platform: httpx.Platform{
 			Ready: func() (bool, string, []string) {
-				s := m.State()
-				return s == Ready, s, nil
+				return m.IsReady(), m.State(), nil
 			},
 			Describe: func() any { return m.Describe() },
+			Phase:    m.Phase,
 		}}, &routes)
 	if err != nil {
 		return fmt.Errorf("the user surface could not be built: %w", err)

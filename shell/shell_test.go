@@ -301,3 +301,31 @@ func TestAMemberWithoutTheSecurityKeysSharesTheShell(t *testing.T) { // P2.11
 	cancel()
 	assert.Equal(t, 0, <-done)
 }
+
+// A shell whose members start in a recovery phase (P1.22, P1.23): ready in recovery mode, its readiness and
+// self-description carry the phase, a member's user surface answers MAINTENANCE.
+func TestAShellInRecovery(t *testing.T) {
+	pa, pb, ps := freePort(t), freePort(t), freePort(t)
+	defs := []component.Definition{def("demo/alpha", "0.1.0"), def("demo/beta", "0.1.0")}
+	frozen := func(g string) map[string]string { return map[string]string{"GREETING": g, "RECOVERY_PHASE": "frozen"} }
+	js := served(t, secure(t, defs,
+		Served{ComponentID: "demo/alpha", Version: "0.1.0", HTTPPort: pa, Config: frozen("a")},
+		Served{ComponentID: "demo/beta", Version: "0.1.0", HTTPPort: pb, Config: frozen("b")})...)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() {
+		done <- Run(ctx, self, defs, Options{Env: shellEnv(ps, js), Stdout: io.Discard, Stderr: io.Discard,
+			BuildInfo: buildInfo(map[string]string{"demo/alpha": "v0.1.0", "demo/beta": "v0.1.0"}), ModuleOf: moduleByID})
+	}()
+	shellURL := "http://127.0.0.1:" + strconv.Itoa(ps)
+	require.Eventually(t, func() bool { c, _ := get(t, shellURL+"/readyz"); return c == 200 }, shellReady, 20*time.Millisecond)
+	_, ready := get(t, shellURL+"/readyz")
+	assert.JSONEq(t, `{"state":"recovery_ready","phase":"frozen"}`, ready)
+	_, desc := get(t, shellURL+"/.well-known/be-component")
+	assert.Contains(t, desc, `"recovery_phase":"frozen"`)
+	code, body := get(t, "http://127.0.0.1:"+strconv.Itoa(pa)+"/api/hello")
+	assert.Equal(t, 503, code)
+	assert.Contains(t, body, `"reason":"MAINTENANCE"`)
+	cancel()
+	assert.Equal(t, 0, <-done)
+}
