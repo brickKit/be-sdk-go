@@ -390,7 +390,8 @@
         "launcher.TestOthersSeeNothingAndFieldsFollowTheSegments",
         "authz.TestSegmentCheckVectors",
         "authz.TestMaskVectors",
-        "authz.TestSegmentsThatDoNotFitTheDefinitionsAreRefused"
+        "authz.TestSegmentsThatDoNotFitTheDefinitionsAreRefused",
+        "authz.TestASegmentOnANonPushdownableDimensionMakesTheListNotCompletable"
       ]
     },
     "audit": {

@@ -71,6 +71,10 @@ func likeEscape(s string) string {
 func (c *compiler) atom(dim string, a Atom) (string, error) {
 	d := c.r.Dimensions[dim]
 	col := c.col(d.Column)
+	if a.Kind != "all" && d.Pushdown == NotPushdownable { // the database cannot decide it: never drop the segment (P8.17)
+		return "", errs.New(errs.ReasonQueryNotCompletable, "a segment cannot be compiled into the query").
+			Wrap(fmt.Errorf("dimension %s is not pushdownable", dim))
+	}
 	switch a.Kind {
 	case "all":
 		return "", nil
