@@ -88,6 +88,7 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		m.db = sh.DB
 		m.runner = work.NewRunner(sh.DB, def.ID, m.Logger)
 		auditor = audit.New(sh.DB)
+		auditor.Restricted, auditor.Strict = auditPolicy(def.Authz)
 		if err := m.auditTransfer(auditor, values); err != nil {
 			return nil, err
 		}
@@ -130,6 +131,7 @@ func (m *Member) auditTransfer(a *audit.Auditor, values *config.Values) error {
 			return err
 		}
 		sender = &audit.GRPCSender{Conn: conn}
+		a.Sender = sender // a strict read's receipt (P8.19)
 	} else {
 		m.Logger.Warn("AUDIT_GRPC_URL is not set: audit records stay in the local table until it is")
 	}
@@ -138,6 +140,31 @@ func (m *Member) auditTransfer(a *audit.Auditor, values *config.Values) error {
 	}
 	m.hasJobs = true
 	return nil
+}
+
+// auditPolicy is what the auditor takes from the member's definitions: the restricted fields of each resource type
+// (their values become digests in a record's changes) and the operations of the strict tier (P8.19).
+func auditPolicy(defs *authz.Definitions) (map[string]map[string]bool, map[string]bool) {
+	restricted, strict := map[string]map[string]bool{}, map[string]bool{}
+	if defs == nil {
+		return restricted, strict
+	}
+	for _, r := range defs.Resources {
+		for name, f := range r.Fields {
+			if f.Class == authz.Restricted {
+				if restricted[r.Type] == nil {
+					restricted[r.Type] = map[string]bool{}
+				}
+				restricted[r.Type][name] = true
+			}
+		}
+	}
+	for _, o := range defs.Operations {
+		if o.StrictAudit {
+			strict[o.Key] = true
+		}
+	}
+	return restricted, strict
 }
 
 // evidenceWriter builds the member's evidence writer and registers be.evidence.transfer (P12.15): the evidence store

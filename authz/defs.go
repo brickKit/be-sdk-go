@@ -88,6 +88,9 @@ type Operation struct {
 	RiskClass    string // low, high
 	SideEffects  []string
 	Audit        bool // audit: required
+	// StrictAudit is audit: strict (a sensitive read or export released only with its audit receipt, P8.19); it
+	// implies Audit, and is for the read, special_read and export purposes only.
+	StrictAudit bool
 	// MinimumPath is default, strict_acceptance or strict_barrier; empty is default.
 	MinimumPath          string
 	RequiresAppointment  bool
@@ -181,6 +184,9 @@ func (d *Definitions) Validate() error {
 				problems = append(problems, fmt.Sprintf("%s: side effect %q", o.Key, e))
 			}
 		}
+		if o.StrictAudit && !slices.Contains([]string{"read", "special_read", "export"}, o.Purpose) {
+			problems = append(problems, o.Key+": the strict audit tier is a sensitive read's or an export's (purpose "+o.Purpose+")")
+		}
 		if o.ImpersonationAllowed && len(o.SideEffects) > 0 {
 			problems = append(problems, o.Key+": an operation with side effects is never allowed under impersonation")
 		}
@@ -257,7 +263,10 @@ func (r Resource) Digest() (string, error) {
 // Record renders an operation definition as its security record body (security 09a).
 func (o Operation) Record() map[string]any {
 	audit := "none"
-	if o.Audit {
+	switch {
+	case o.StrictAudit:
+		audit = "strict"
+	case o.Audit:
 		audit = "required"
 	}
 	m := map[string]any{"key": o.Key, "resource_type": o.ResourceType, "purpose": o.Purpose, "risk_class": o.RiskClass,

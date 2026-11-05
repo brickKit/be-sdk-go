@@ -106,7 +106,25 @@ func (a *Auditor) Transfer(ctx context.Context, s Sender) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("sending audit records: %w", err) // they stay pending and are sent again (idempotent by ID)
 	}
-	err = a.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	return len(receipts), a.settle(ctx, receipts)
+}
+
+// wire reads one numbered record as it travels.
+func (a *Auditor) wire(ctx context.Context, id string) (Wire, error) {
+	var w Wire
+	var g, t int64
+	err := a.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+		return tx.QueryRow(ctx, `SELECT id::text, seq, epoch_generation, epoch_timeline, digest, record FROM be_audit_log
+			WHERE id = $1 AND seq IS NOT NULL`, id).Scan(&w.ID, &w.Seq, &g, &t, &w.Digest, &w.Record)
+	})
+	w.Epoch = strconv.FormatInt(g, 10) + "." + strconv.FormatInt(t, 10)
+	return w, err
+}
+
+// settle stores the receipts (P8.21): received, or conflict for anything else (conflict, invalid, a status this
+// SDK does not know: never taken as received).
+func (a *Auditor) settle(ctx context.Context, receipts []Receipt) error {
+	return a.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
 		for _, r := range receipts {
 			state := "conflict" // conflict, invalid or a status this SDK does not know: never taken as received (P8.21)
 			if r.Status == "received" {
@@ -120,7 +138,6 @@ func (a *Auditor) Transfer(ctx context.Context, s Sender) (int, error) {
 		}
 		return nil
 	})
-	return len(receipts), err
 }
 
 // Backlog counts the rows not yet received and refreshes the capacity check (P8.23).

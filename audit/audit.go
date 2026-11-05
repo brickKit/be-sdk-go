@@ -7,7 +7,10 @@ package audit
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -60,7 +63,14 @@ type Record struct {
 type Auditor struct {
 	DB       *db.DB
 	Capacity int64 // the backlog above which required audited operations are refused
-	backlog  atomic.Int64
+	// Restricted are the restricted fields of each resource type (the member's resource definitions): in a record's
+	// changes they become digests of their values (P8.19).
+	Restricted map[string]map[string]bool
+	// Strict are the operations that declare audit: strict: their sensitive reads are released only with a receipt.
+	Strict map[string]bool
+	// Sender reaches the audit component for a strict read's receipt; nil: strict reads are refused.
+	Sender  Sender
+	backlog atomic.Int64
 }
 
 // New returns an auditor for a member's database.
@@ -134,6 +144,7 @@ func jsonOrNil(v any) any {
 }
 
 func (a *Auditor) insert(ctx context.Context, tx db.Tx, r Record) (string, error) {
+	r.Changes = a.mask(r)
 	id, at := ids.New().String(), time.Now().UTC()
 	b, err := body(r, id, at)
 	if err != nil {
@@ -164,6 +175,30 @@ func (a *Auditor) insert(ctx context.Context, tx db.Tx, r Record) (string, error
 	return id, err
 }
 
+// mask replaces the values of the target's restricted fields in the changes by their digests (P8.19): sha256 of the
+// value's canonical JSON, lowercase hexadecimal, never the value in clear.
+func (a *Auditor) mask(r Record) map[string]any {
+	typ, _ := r.Target["type"].(string)
+	restricted := a.Restricted[typ]
+	if len(restricted) == 0 || len(r.Changes) == 0 {
+		return r.Changes
+	}
+	out := make(map[string]any, len(r.Changes))
+	for k, v := range r.Changes {
+		out[k] = v
+		if !restricted[k] {
+			continue
+		}
+		b, err := canon.Encode(v)
+		if err != nil { // a value with no canonical form is not kept in clear either
+			b = []byte(fmt.Sprint(v))
+		}
+		sum := sha256.Sum256(b)
+		out[k] = "sha256:" + hex.EncodeToString(sum[:])
+	}
+	return out
+}
+
 func nilMap(m map[string]any) any {
 	if m == nil {
 		return nil
@@ -181,16 +216,57 @@ func (a *Auditor) Write(ctx context.Context, tx db.Tx, r Record) (string, error)
 }
 
 // Read records a sensitive read or export in its own short transaction; call it before releasing the data and
-// refuse the read when it fails (P8.19).
+// refuse the read when it fails (P8.19). An operation of the strict tier (audit: strict) is answered only once the
+// record has the audit component's receipt: out of reach, the read is refused (DEPENDENCY_UNAVAILABLE) and the record
+// stays local to be sent later.
 func (a *Auditor) Read(ctx context.Context, r Record) error {
 	if a.Capacity > 0 && a.backlog.Load() >= a.Capacity {
 		return ErrCapacity
 	}
 	r.Category = SensitiveRead
-	return a.DB.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
-		_, err := a.insert(ctx, tx, r)
+	var id string
+	err := a.DB.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+		var err error
+		id, err = a.insert(ctx, tx, r)
 		return err
 	})
+	if err != nil || !a.Strict[r.Operation] {
+		return err
+	}
+	return a.receipt(ctx, id)
+}
+
+// errNoReceipt is a strict read's refusal: the audit component did not give the record its receipt.
+func errNoReceipt(why string) error {
+	return errs.New(errs.ReasonDependencyUnavailable, "the audit record of a strict read has no receipt: "+why).
+		With("dependency", "infra/audit")
+}
+
+// receipt numbers the record and sends it alone, now, for its receipt (the strict tier).
+func (a *Auditor) receipt(ctx context.Context, id string) error {
+	if a.Sender == nil {
+		return errNoReceipt("no audit component is configured")
+	}
+	if _, err := a.Number(ctx); err != nil {
+		return errNoReceipt(err.Error())
+	}
+	w, err := a.wire(ctx, id)
+	if err != nil {
+		return err
+	}
+	sctx, cancel := context.WithTimeout(ctx, SendTimeout)
+	defer cancel()
+	receipts, err := a.Sender.Send(sctx, []Wire{w})
+	if err != nil {
+		return errNoReceipt(err.Error())
+	}
+	if err := a.settle(ctx, receipts); err != nil {
+		return err
+	}
+	if len(receipts) != 1 || receipts[0].ID != id || receipts[0].Status != "received" {
+		return errNoReceipt(fmt.Sprintf("answered %+v", receipts))
+	}
+	return nil
 }
 
 // Denial records a security denial within the per-minute budget; past it the window only counts, and Flush later
