@@ -10,6 +10,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/brickKit/be-sdk-go/v3/internal/evidencepb"
+	"google.golang.org/grpc"
 )
 
 // Replayed is an evidence record its owner re-executes during a full recovery (be-protocol P12.19-P12.21).
@@ -154,4 +155,21 @@ func reflect(ctx context.Context, tx db.Tx, id string, obj Object) error {
 	_, err = tx.Exec(ctx, `INSERT INTO be_change_history (evidence_id, object_type, object_id, version_before, epoch,
 		commit_seq) VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6)`, id, obj.Type, obj.ID, obj.Version, pos.epoch, pos.seq)
 	return err
+}
+
+// ReplayClient calls an owner's ReplayService: the recovery tool's side (P12.22), and the owners' tests. The
+// connection presents the recovery tool's service identity (ops/recover).
+type ReplayClient struct {
+	Conn grpc.ClientConnInterface
+}
+
+// Replay asks the owner to replay one record; it returns the outcome (Applied, AlreadyReflected, Dangling,
+// Unsupported) and its detail.
+func (c ReplayClient) Replay(ctx context.Context, record []byte, recovery string) (outcome, detail string, err error) {
+	out, err := evidencepb.NewReplayServiceClient(c.Conn).Replay(ctx, &evidencepb.ReplayRequest{Record: record,
+		Recovery: recovery})
+	if err != nil {
+		return "", "", err
+	}
+	return out.GetOutcome(), out.GetDetail(), nil
 }

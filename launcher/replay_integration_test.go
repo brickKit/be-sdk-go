@@ -66,7 +66,8 @@ func TestTheReplayIsTheRecoveryToolsOnly(t *testing.T) {
 		defer conn.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 5e9)
 		defer cancel()
-		return evidencepb.NewReplayServiceClient(conn).Replay(ctx, &evidencepb.ReplayRequest{Record: sealed.Record, Recovery: "r"})
+		outcome, _, err := evidence.ReplayClient{Conn: conn}.Replay(ctx, sealed.Record, "r") // the exported client
+		return &evidencepb.ReplayResponse{Outcome: outcome}, err
 	}
 	_, err = call("demo/other")
 	assert.Equal(t, codes.PermissionDenied, status.Code(err), "only the recovery tool: %v", err)
