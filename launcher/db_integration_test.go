@@ -51,8 +51,8 @@ func (n *notes) Routes(r *httpx.Routes) error {
 }
 
 func notesDefinition() component.Definition {
-	return component.Definition{ID: "demo/notes", Version: "3.0.0",
-		Authz:      sectest.Defs("demo/notes", "demo.notes", "demo.notes.read", "demo.notes.write"),
+	return component.Definition{ID: "demo/notes", Version: "3.0.0", Recovery: "demo.notes.recover", GRPCPort: portNow(),
+		Authz:      sectest.Defs("demo/notes", "demo.notes", "demo.notes.read", "demo.notes.write", "demo.notes.recover"),
 		Migrations: fstest.MapFS{"0001_notes.up.sql": {Data: []byte("CREATE TABLE notes (id uuid PRIMARY KEY);")}},
 		New:        func(rt *runtime.Runtime) (component.Module, error) { return &notes{db: rt.DB}, nil }}
 }

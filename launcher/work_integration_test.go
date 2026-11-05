@@ -58,8 +58,8 @@ func TestQueuedWorkRunsInTheComponent(t *testing.T) {
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "reports", "")
 	vars := pgtest.MemberEnv(host, port, "reports")
-	def := component.Definition{ID: "demo/reports", Version: "3.0.0",
-		Authz:      sectest.Defs("demo/reports", "demo.reports", "demo.reports.read", "demo.reports.create"),
+	def := component.Definition{ID: "demo/reports", Version: "3.0.0", Recovery: "demo.reports.recover", GRPCPort: portNow(),
+		Authz:      sectest.Defs("demo/reports", "demo.reports", "demo.reports.read", "demo.reports.create", "demo.reports.recover"),
 		Migrations: fstest.MapFS{"0001_reports.up.sql": {Data: []byte("CREATE TABLE reports (id text PRIMARY KEY);")}},
 		New:        func(rt *runtime.Runtime) (component.Module, error) { return &reports{rt: rt}, nil }}
 	var out syncBuffer
@@ -88,8 +88,8 @@ func TestPartitionsAreKeptAheadInTheComponent(t *testing.T) { // P5.24
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "ledgers", "")
 	vars := pgtest.MemberEnv(host, port, "ledgers")
-	def := component.Definition{ID: "demo/ledgers", Version: "3.0.0",
-		Authz: sectest.Defs("demo/ledgers", "demo.reports", "demo.reports.read", "demo.reports.create"),
+	def := component.Definition{ID: "demo/ledgers", Version: "3.0.0", Recovery: "demo.reports.recover", GRPCPort: portNow(),
+		Authz: sectest.Defs("demo/ledgers", "demo.reports", "demo.reports.read", "demo.reports.create", "demo.reports.recover"),
 		Migrations: fstest.MapFS{"0001_ledger.up.sql": {Data: []byte(`
 CREATE TABLE ledger (id uuid NOT NULL, posted_at timestamptz NOT NULL, PRIMARY KEY (id, posted_at)) PARTITION BY RANGE (posted_at);
 SELECT be_declare_monthly_partitions('ledger', 1);`)}},
@@ -127,8 +127,8 @@ func TestTheComponentKeepsItsTablesStatisticsFresh(t *testing.T) { // P5.33
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "statkeep", "")
 	vars := pgtest.MemberEnv(host, port, "statkeep")
-	def := component.Definition{ID: "demo/statkeep", Version: "3.0.0",
-		Authz:      sectest.Defs("demo/statkeep", "demo.reports", "demo.reports.read", "demo.reports.create"),
+	def := component.Definition{ID: "demo/statkeep", Version: "3.0.0", Recovery: "demo.reports.recover", GRPCPort: portNow(),
+		Authz:      sectest.Defs("demo/statkeep", "demo.reports", "demo.reports.read", "demo.reports.create", "demo.reports.recover"),
 		Migrations: fstest.MapFS{"0001_reports.up.sql": {Data: []byte("CREATE TABLE reports (id text PRIMARY KEY);")}},
 		New:        func(rt *runtime.Runtime) (component.Module, error) { return &reports{rt: rt}, nil }}
 	_, stop := runComponent(t, def, vars)

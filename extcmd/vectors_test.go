@@ -20,6 +20,7 @@ type vecCommand struct {
 	LastReached    *string `json:"last_reached_at"`
 	UnknownSince   *string `json:"unknown_since"`
 	AcceptedAt     *string `json:"accepted_at"`
+	Unrecorded     *string `json:"unrecorded_until"`
 }
 
 type vecCaps struct {
@@ -46,7 +47,7 @@ func (c vecCaps) caps() Capabilities {
 func (c vecCommand) facts(t *testing.T) Facts {
 	return Facts{State: c.State, ResendDeadline: at(t, c.ResendDeadline), ExpiresAt: at(t, c.ExpiresAt),
 		FirstReached: at(t, c.FirstReached), LastReached: at(t, c.LastReached), UnknownSince: at(t, c.UnknownSince),
-		AcceptedSince: at(t, c.AcceptedAt)}
+		AcceptedSince: at(t, c.AcceptedAt), UnrecordedUntil: at(t, c.Unrecorded)}
 }
 
 // The state table, the resend deadline and the request's digest against be-protocol's vectors (P13.2-P13.8).
@@ -99,6 +100,67 @@ func TestExternalCommandVectors(t *testing.T) {
 					assert.Nil(t, got)
 				} else if assert.NotNil(t, got) {
 					assert.Equal(t, *c.Expected.ResendDeadline, got.UTC().Format("2006-01-02T15:04:05.000000Z"))
+				}
+			}
+		})
+	}
+}
+
+// The step 7 matching against be-protocol's vectors (P13.12).
+func TestExternalReconcileVectors(t *testing.T) {
+	raw, err := fs.ReadFile(protocol.Vectors, "vectors/external-reconcile.json")
+	require.NoError(t, err)
+	type cmd struct {
+		vecCommand
+		Reference string  `json:"reference"`
+		SendingAt *string `json:"sending_at"`
+	}
+	var v struct {
+		Cases []struct {
+			ID    string
+			Input struct {
+				T, Now       string
+				FailedAt     *string `json:"failed_at"`
+				Commands     []cmd
+				External     map[string]string
+				Issued       []string
+				Capabilities vecCaps
+			}
+			Expected map[string]struct {
+				Conclusion     string
+				State          string
+				ResendDeadline *string `json:"resend_deadline"`
+				Reason         string
+			}
+		}
+	}
+	require.NoError(t, json.Unmarshal(raw, &v))
+	require.NotEmpty(t, v.Cases)
+	for _, c := range v.Cases {
+		t.Run(c.ID, func(t *testing.T) {
+			T, now := *at(t, &c.Input.T), *at(t, &c.Input.Now)
+			until := now
+			if c.Input.FailedAt != nil {
+				until = *at(t, c.Input.FailedAt)
+			}
+			var open []Open
+			for _, o := range c.Input.Commands {
+				open = append(open, Open{Reference: o.Reference, Facts: o.facts(t), SendingAt: at(t, o.SendingAt)})
+			}
+			caps := c.Input.Capabilities.caps()
+			got := Match(open, c.Input.External, map[string]bool{}, c.Input.Issued, func(string) Capabilities { return caps },
+				T, until, now)
+			require.Len(t, got, len(c.Expected))
+			for _, g := range got {
+				want, ok := c.Expected[g.Reference]
+				require.True(t, ok, g.Reference)
+				assert.Equal(t, want.Conclusion, g.Conclusion, g.Reference)
+				assert.Equal(t, want.State, g.State, g.Reference)
+				assert.Equal(t, want.Reason, g.Detail, g.Reference)
+				if want.ResendDeadline == nil {
+					assert.Nil(t, g.ResendDeadline, g.Reference)
+				} else if assert.NotNil(t, g.ResendDeadline, g.Reference) {
+					assert.Equal(t, *want.ResendDeadline, g.ResendDeadline.UTC().Format("2006-01-02T15:04:05.000000Z"), g.Reference)
 				}
 			}
 		})

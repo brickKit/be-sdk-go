@@ -35,6 +35,7 @@ var ledgerDefs = &authz.Definitions{Component: "demo/ledger",
 			"cost": {Class: authz.Restricted, ReadKey: "demo.entry.cost"}, "note": {Class: authz.Secret}}}},
 	Operations: []authz.Operation{
 		{Key: "demo.entry.read", ResourceType: "demo.entry", Purpose: "read", RiskClass: "low"},
+		{Key: "demo.entry.recover", ResourceType: "demo.entry", Purpose: "read", RiskClass: "low"},
 		{Key: "demo.entry.approve", ResourceType: "demo.entry", Purpose: "action", RiskClass: "high"}}}
 
 type ledger struct{ rt *runtime.Runtime }
@@ -158,7 +159,7 @@ func call(t *testing.T, method, url, bearer string) (int, string) {
 func TestOthersSeeNothingAndFieldsFollowTheSegments(t *testing.T) { // T2.8 acceptance, CK-AZ-05, P8.15-P8.16, CK-ID-05
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "ledger", "")
-	def := component.Definition{ID: "demo/ledger", Version: "3.0.0", Authz: ledgerDefs,
+	def := component.Definition{ID: "demo/ledger", Version: "3.0.0", Authz: ledgerDefs, Recovery: "demo.entry.recover", GRPCPort: portNow(),
 		Migrations: fstest.MapFS{"0001_entries.up.sql": {Data: []byte(`CREATE TABLE entries (id uuid PRIMARY KEY,
 			owner_id uuid NOT NULL, amount numeric NOT NULL, cost numeric NOT NULL, note text NOT NULL);`)}},
 		New: func(rt *runtime.Runtime) (component.Module, error) { return &ledger{rt: rt}, nil }}

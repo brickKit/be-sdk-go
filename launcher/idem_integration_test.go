@@ -40,6 +40,7 @@ var noteDefs = &authz.Definitions{Component: "demo/notes",
 			"cost": {Class: authz.Restricted, ReadKey: "demo.note.cost"}}}},
 	Operations: []authz.Operation{
 		{Key: "demo.note.read", ResourceType: "demo.note", Purpose: "read", RiskClass: "low"},
+		{Key: "demo.note.recover", ResourceType: "demo.note", Purpose: "read", RiskClass: "low"},
 		{Key: "demo.note.create", ResourceType: "demo.note", Purpose: "action", RiskClass: "high"},
 		{Key: "demo.note.import", ResourceType: "demo.note", Purpose: "action", RiskClass: "low"}}}
 
@@ -122,7 +123,7 @@ func TestIdempotentCommandsOnBothSurfaces(t *testing.T) { // CK-IDEM-01..03
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "notes", "")
 	grpcPort := freePort(t)
-	def := component.Definition{ID: "demo/notes", Version: "3.0.0", Authz: noteDefs, GRPCPort: grpcPort,
+	def := component.Definition{ID: "demo/notes", Version: "3.0.0", Authz: noteDefs, GRPCPort: grpcPort, Recovery: "demo.note.recover",
 		Migrations: fstest.MapFS{"0001_notes.up.sql": {Data: []byte(`CREATE TABLE notes (id uuid PRIMARY KEY,
 			owner_id uuid NOT NULL, text text NOT NULL, cost numeric NOT NULL);`)}},
 		New: func(rt *runtime.Runtime) (component.Module, error) { return &notesModule{rt: rt}, nil }}

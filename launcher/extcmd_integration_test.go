@@ -15,6 +15,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
+	"github.com/brickKit/be-sdk-go/v3/sectest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -45,7 +46,8 @@ func TestTheExternalCommandsAreTheSDKs(t *testing.T) {
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "payer", "")
 	built := make(chan *payer, 1)
-	def := component.Definition{ID: "demo/payer", Version: "3.0.0", ExternalCommands: true,
+	def := component.Definition{ID: "demo/payer", Version: "3.0.0", ExternalCommands: true, GRPCPort: freePort(t),
+		Recovery: "demo.payment.recover", Authz: sectest.Defs("demo/payer", "demo.payment", "demo.payment.recover"),
 		Migrations: noMigrations(),
 		New: func(rt *runtime.Runtime) (component.Module, error) {
 			p := &payer{rt: rt, sent: make(chan string, 4)}
@@ -87,4 +89,40 @@ func (quiet) Routes(*httpx.Routes) error { return nil }
 // noMigrations is a component's own migration set with one harmless table (its schema needs one).
 func noMigrations() fstest.MapFS {
 	return fstest.MapFS{"0001_payer.up.sql": {Data: []byte("CREATE TABLE IF NOT EXISTS payer_note (id int);")}}
+}
+
+// P1.23, P13.10: while verifying (and open read-only) the job runner does not run, but the SDK still queries the
+// external commands outside it, and sends nothing.
+func TestExternalCommandsOnlyQueryWhileVerifying(t *testing.T) {
+	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
+	pgtest.Member(t, "payerv", "")
+	built := make(chan *payer, 1)
+	def := component.Definition{ID: "demo/payerv", Version: "3.0.0", ExternalCommands: true, GRPCPort: freePort(t),
+		Recovery: "demo.payment.recover", Authz: sectest.Defs("demo/payerv", "demo.payment", "demo.payment.recover"),
+		Migrations: noMigrations(),
+		New: func(rt *runtime.Runtime) (component.Module, error) {
+			p := &payer{rt: rt, sent: make(chan string, 4)}
+			built <- p
+			return p, nil
+		}}
+	env := pgtest.MemberEnv(host, port, "payerv")
+	env["RECOVERY_PHASE"] = "verifying"
+	_, _, stop := runLogged(t, def, env)
+	defer stop()
+	p := <-built
+	admin := pgtest.Admin(t, pgtest.Database)
+	put := func(ref, state string) {
+		pgtest.Exec(t, admin, `INSERT INTO payerv.be_external_command (id, requester, reference, operation, params,
+			params_digest, irrevocable, state) VALUES (gen_random_uuid(), 'demo/sales', '`+ref+`', 'pay', '\x7b7d', 'd', false, '`+state+`')`)
+	}
+	put("v-prepared", "prepared")
+	put("v-unknown", "unknown")
+	stateOf := func(ref string) (s string) {
+		require.NoError(t, admin.QueryRow(context.Background(), "SELECT state FROM payerv.be_external_command WHERE reference = $1", ref).Scan(&s))
+		return s
+	}
+	require.Eventually(t, func() bool { return stateOf("v-unknown") == extcmd.Manual }, 15*time.Second, 100*time.Millisecond,
+		"queried: not found, no dedupe")
+	assert.Equal(t, extcmd.Prepared, stateOf("v-prepared"), "not sent")
+	assert.Empty(t, p.sent)
 }

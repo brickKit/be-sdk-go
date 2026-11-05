@@ -25,6 +25,7 @@ type fakeExternal struct {
 	classes   []string          // what each send answers, in turn (succeeded when the script is over)
 	held      map[string]string // reference -> state
 	sends     []string          // the references sent, in order
+	queries   []string          // the references queried, in order
 	queryDown bool
 }
 
@@ -48,6 +49,7 @@ func (f *fakeExternal) Send(_ context.Context, c Command) (Result, error) {
 func (f *fakeExternal) Query(_ context.Context, c Command) (Answer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.queries = append(f.queries, c.Reference)
 	if f.queryDown {
 		return Answer{}, errors.New("query endpoint down")
 	}
@@ -242,6 +244,15 @@ func TestQueryOnlySendsNothing(t *testing.T) {
 	pgtest.Exec(t, w.admin, "UPDATE be_external_command SET state = 'unknown' WHERE id = '"+d.ID+"'")
 	w.run()
 	assert.Equal(t, Succeeded, w.state(d.ID), "queried")
+
+	// "not found" where the table would send again (dedupe, before the deadline): query-only keeps it unknown
+	w.c.Ops = map[string]Capabilities{"pay": dedupe}
+	e, _, err := w.request("r3", amount)
+	require.NoError(t, err)
+	pgtest.Exec(t, w.admin, "UPDATE be_external_command SET state = 'unknown', first_reached_at = now() WHERE id = '"+e.ID+"'")
+	w.run()
+	assert.Equal(t, Unknown, w.state(e.ID), "not sent again in query-only")
+	assert.Empty(t, w.ext.sent())
 }
 
 type store struct {

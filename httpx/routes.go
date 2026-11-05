@@ -23,6 +23,9 @@ type Route struct {
 	Operation string
 	// Public marks a route that is deliberately open (no operation, no authorization). It has to be said explicitly.
 	Public bool
+	// ReadOnlyOpen marks a write that is served while the deployment is open read-only after a full recovery (P1.23):
+	// the identity member's one-time codes, password resets and second-factor enrolment. Reads always are.
+	ReadOnlyOpen bool
 	// Orchestration routes get the longer default deadline (15 s instead of 10 s, protocol P4.3).
 	Orchestration bool
 	// Timeout overrides the default deadline of this route.

@@ -204,7 +204,8 @@ func serve(g *gin.Context, d Deps, r Route, template string, duration *prometheu
 	log := d.Logger.With("request_id", rid, "trace_id", traceID)
 
 	err := func() error {
-		if d.Phase != "" { // a full recovery: nothing on the user surface (P1.23)
+		readOnly := d.Phase == "read_only" && (req.Method == http.MethodGet || req.Method == http.MethodHead || r.ReadOnlyOpen)
+		if d.Phase != "" && !readOnly { // a full recovery: nothing on the user surface, but reads once open read-only (P1.23)
 			return errs.New(errs.ReasonMaintenance, "the deployment is in a full recovery").With("phase", d.Phase)
 		}
 		limit := r.deadline()

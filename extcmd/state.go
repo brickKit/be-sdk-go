@@ -62,6 +62,8 @@ type Facts struct {
 	ResendDeadline, ExpiresAt   *time.Time
 	FirstReached, LastReached   *time.Time
 	UnknownSince, AcceptedSince *time.Time
+	// UnrecordedUntil: after a full recovery, sends may have gone on until this moment without a record (P13.12).
+	UnrecordedUntil *time.Time
 }
 
 // Event is one thing that happened to a command.
@@ -80,7 +82,7 @@ func Deadline(f Facts, c Capabilities) *time.Time {
 		return nil
 	}
 	base := f.FirstReached
-	if c.LastUse {
+	if c.LastUse && f.LastReached != nil {
 		base = f.LastReached
 	}
 	if base == nil {
@@ -99,7 +101,11 @@ func resendable(f Facts, c Capabilities, now time.Time) (bool, string) {
 	if f.ExpiresAt != nil && now.After(*f.ExpiresAt) {
 		return true, "the request's expiry has passed"
 	}
-	if c.MaxProcessing > 0 && f.LastReached != nil && now.Sub(*f.LastReached) > c.MaxProcessing {
+	latest := f.LastReached
+	if f.UnrecordedUntil != nil && (latest == nil || f.UnrecordedUntil.After(*latest)) {
+		latest = f.UnrecordedUntil
+	}
+	if c.MaxProcessing > 0 && latest != nil && now.Sub(*latest) > c.MaxProcessing {
 		return true, "the longest processing time has passed"
 	}
 	return false, "the earlier request may still land"

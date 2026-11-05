@@ -9,13 +9,17 @@ import (
 	"strconv"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/evidence"
+	"github.com/brickKit/be-sdk-go/v3/externalpb"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/internal/evidencepb"
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
+	"github.com/brickKit/be-sdk-go/v3/recovery"
+	"github.com/brickKit/be-sdk-go/v3/recoverypb"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/brickKit/be-sdk-go/v3/sectest"
 	"github.com/stretchr/testify/assert"
@@ -45,8 +49,8 @@ func TestTheReplayIsTheRecoveryToolsOnly(t *testing.T) {
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "rpowner", "")
 	grpcPort := freePort(t)
-	def := component.Definition{ID: "demo/rpowner", Version: "3.0.0", GRPCPort: grpcPort, Replay: "demo.rp.replay",
-		Authz:      sectest.Defs("demo/rpowner", "demo.rp", "demo.rp.replay"),
+	def := component.Definition{ID: "demo/rpowner", Version: "3.0.0", Recovery: "demo.rp.recover", GRPCPort: grpcPort, Replay: "demo.rp.replay",
+		Authz:      sectest.Defs("demo/rpowner", "demo.rp", "demo.rp.replay", "demo.rp.recover"),
 		Migrations: fstest.MapFS{"0001_replayed.up.sql": {Data: []byte("CREATE TABLE replayed (id uuid PRIMARY KEY);")}},
 		New:        func(rt *runtime.Runtime) (component.Module, error) { return &replayer{rt: rt}, nil }}
 	_, _, stop := runLogged(t, def, pgtest.MemberEnv(host, port, "rpowner"))
@@ -91,4 +95,54 @@ func withIdentity(vars map[string]string, def component.Definition) map[string]s
 	out := maps.Clone(vars)
 	maps.Copy(out, map[string]string{"COMPONENT_ID": def.ID, "COMPONENT_VERSION": def.Version, "PORT": "0", "STOP_DRAIN_DELAY": "50ms"})
 	return out
+}
+
+// Chapter 14, P13.11: every member with a database serves the recovery's checks, and a member that sends external
+// commands the reconciliation, under Definition.Recovery, callable by the recovery tool's identity only; a member
+// with a database that names no recovery operation does not start.
+func TestTheRecoveryChecksAreTheRecoveryToolsOnly(t *testing.T) {
+	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
+	pgtest.Member(t, "rchk", "")
+	grpcPort := freePort(t)
+	def := component.Definition{ID: "demo/rchk", Version: "3.0.0", GRPCPort: grpcPort, ExternalCommands: true,
+		Recovery: "demo.rchk.recover", Authz: sectest.Defs("demo/rchk", "demo.rchk", "demo.rchk.recover"),
+		Migrations: noMigrations(),
+		New:        func(rt *runtime.Runtime) (component.Module, error) { return &payer{rt: rt}, nil }}
+	_, _, stop := runLogged(t, def, pgtest.MemberEnv(host, port, "rchk"))
+	defer stop()
+
+	w := worldOf(t)
+	conn := func(as string) *grpc.ClientConn {
+		c, err := grpc.NewClient("127.0.0.1:"+strconv.Itoa(grpcPort),
+			grpc.WithTransportCredentials(credentials.NewTLS(w.TLS(t, as).ClientConfig("demo/rchk"))))
+		require.NoError(t, err)
+		t.Cleanup(func() { c.Close() })
+		return c
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := recoverypb.NewCheckServiceClient(conn("demo/other")).Check(ctx, &recoverypb.CheckRequest{Recovery: "r"})
+	assert.Equal(t, codes.PermissionDenied, status.Code(err), "only the recovery tool: %v", err)
+	_, err = externalpb.NewReconcileServiceClient(conn("demo/other")).Reconcile(ctx, &externalpb.ReconcileRequest{Recovery: "r", T: "2026-11-05T10:00:00Z"})
+	assert.Equal(t, codes.PermissionDenied, status.Code(err), "only the recovery tool: %v", err)
+
+	checks, err := recoverypb.NewCheckServiceClient(conn("ops/recover")).Check(ctx, &recoverypb.CheckRequest{Recovery: "r"})
+	require.NoError(t, err)
+	var names []string
+	for _, r := range checks.GetResults() {
+		names = append(names, r.GetCheck())
+	}
+	assert.Equal(t, []string{recovery.CheckProjections, recovery.CheckAuditBacklog}, names, "the SDK's own; no subscription")
+	got, err := externalpb.NewReconcileServiceClient(conn("ops/recover")).Reconcile(ctx, &externalpb.ReconcileRequest{Recovery: "r",
+		T: "2026-11-05T10:00:00Z", Issued: []string{"lost"}})
+	require.NoError(t, err)
+	require.Len(t, got.GetConclusions(), 1)
+	assert.Equal(t, "possibly_executed", got.GetConclusions()[0].GetConclusion(), "the payer's query finds nothing")
+
+	noOp := def
+	noOp.Recovery = ""
+	var logs bytes.Buffer
+	assert.NotEqual(t, ExitOK, Run(context.Background(), noOp, Options{Env: env(secured(t, noOp, withIdentity(pgtest.MemberEnv(host, port, "rchk"), noOp))),
+		Stdout: &logs, Stderr: &logs}), "a member with a database names the recovery operation")
+	assert.Contains(t, logs.String(), "Definition.Recovery")
 }

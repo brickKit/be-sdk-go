@@ -20,6 +20,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/events/pgqueue"
+	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
@@ -29,8 +30,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// rcProducer is rdProducer with a job of its own that leaves a row each run.
+// rcProducer is rdProducer with a job of its own that leaves a row each run, a read, and a write served while open
+// read-only.
 type rcProducer struct{ rdProducer }
+
+func (p *rcProducer) Routes(r *httpx.Routes) error {
+	if err := p.rdProducer.Routes(r); err != nil {
+		return err
+	}
+	r.GET("/api/ticks", "demo.redeliv.create", func(c *httpx.Context) error { return c.JSON(200, map[string]int{}) })
+	r.Add(httpx.Route{Method: "POST", Path: "/api/code", Operation: "demo.redeliv.create", ReadOnlyOpen: true,
+		Handle: func(c *httpx.Context) error { return c.JSON(200, map[string]int{}) }})
+	return nil
+}
 
 func (p *rcProducer) Jobs(j *work.Jobs) error {
 	j.Add(work.Job{Name: "demo.tick", Kind: work.Every, Effect: work.Local, Interval: 100 * time.Millisecond,
@@ -77,13 +89,13 @@ func TestRecoveryPhases(t *testing.T) {
 	prodEnv["BUS_URL"], prodEnv["IMPLEMENTATION_INSTANCE"] = busURL, ids.New().String()
 	consEnv := pgtest.MemberEnv(host, port, "rccons")
 	consEnv["BUS_URL"] = busURL
-	prodDef := component.Definition{ID: "demo/rcprod", Version: "3.0.0", Streams: []events.Stream{redeliv},
+	prodDef := component.Definition{ID: "demo/rcprod", Version: "3.0.0", Recovery: "demo.redeliv.recover", Streams: []events.Stream{redeliv},
 		Resend: "demo.redeliv.resend", GRPCPort: freePort(t),
-		Authz:      sectest.Defs("demo/rcprod", "demo.redeliv", "demo.redeliv.create", "demo.redeliv.resend"),
+		Authz:      sectest.Defs("demo/rcprod", "demo.redeliv", "demo.redeliv.create", "demo.redeliv.resend", "demo.redeliv.recover"),
 		Migrations: fstest.MapFS{"0001_ticks.up.sql": {Data: []byte("CREATE TABLE ticks (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY);")}},
 		New:        func(rt *runtime.Runtime) (component.Module, error) { return &rcProducer{rdProducer{rt: rt}}, nil }}
-	consDef := component.Definition{ID: "demo/rccons", Version: "3.0.0", Subscribes: true,
-		Authz: sectest.Defs("demo/rccons", "demo.rseen", "demo.rseen.read"),
+	consDef := component.Definition{ID: "demo/rccons", Version: "3.0.0", Recovery: "demo.rseen.recover", GRPCPort: portNow(), Subscribes: true,
+		Authz: sectest.Defs("demo/rccons", "demo.rseen", "demo.rseen.read", "demo.rseen.recover"),
 		Migrations: fstest.MapFS{"0001_rseen.up.sql": {Data: []byte(`CREATE TABLE rseen (event_id uuid PRIMARY KEY);
 			CREATE TABLE repaired (source text NOT NULL, partition int NOT NULL);`)}},
 		New: func(rt *runtime.Runtime) (component.Module, error) { return &rdConsumer{rt: rt}, nil }}
@@ -166,6 +178,38 @@ func TestRecoveryPhases(t *testing.T) {
 	stopCons()
 	stopProd()
 
+	// verifying (steps 7-9): forwarding and subscriptions run; nothing on the user surface, not even reads; no job
+	pgtest.Exec(t, pgtest.Admin(t, pgtest.Database), `INSERT INTO rcprod.be_outbox (event_id, stream, partition, type,
+		occurred_at, record_id, version, projection, hops, payload, digest) SELECT gen_random_uuid(), stream, partition, type,
+		occurred_at, gen_random_uuid()::text, version, projection, hops, payload, digest FROM rcprod.be_outbox LIMIT 1`)
+	prodURL, _, stopProd = runLogged(t, prodDef, phased(prodEnv, "verifying"))
+	consURL, _, stopCons = runLogged(t, consDef, phased(consEnv, "verifying"))
+	_, ready = readiness(prodURL)
+	assert.Equal(t, "verifying", ready["phase"])
+	require.Eventually(t, func() bool { return count("SELECT count(*) FROM rccons.rseen") == 5 }, 25*time.Second,
+		50*time.Millisecond, "forwarded and received while verifying")
+	code, _ = get(t, prodURL+"/api/ticks")
+	assert.Equal(t, 503, code, "no reads while verifying")
+	code, _ = postBody(t, prodURL+"/api/code")
+	assert.Equal(t, 503, code)
+	time.Sleep(500 * time.Millisecond)
+	assert.Equal(t, ticks, count("SELECT count(*) FROM rcprod.ticks"), "no job while verifying")
+	stopCons()
+	stopProd()
+
+	// read_only (the read-only opening): reads and the writes a route declares open; other writes MAINTENANCE; no job
+	prodURL, _, stopProd = runLogged(t, prodDef, phased(prodEnv, "read_only"))
+	code, _ = get(t, prodURL+"/api/ticks")
+	assert.Equal(t, 200, code, "a read")
+	code, _ = postBody(t, prodURL+"/api/code")
+	assert.Equal(t, 200, code, "a write declared ReadOnlyOpen")
+	code, body = postBody(t, prodURL+"/api/r")
+	assert.Equal(t, 503, code)
+	assert.Contains(t, body, `"phase":"read_only"`)
+	time.Sleep(500 * time.Millisecond)
+	assert.Equal(t, ticks, count("SELECT count(*) FROM rcprod.ticks"), "no job while open read-only")
+	stopProd()
+
 	// running again: everything
 	prodURL, _, stopProd = runLogged(t, prodDef, phased(prodEnv, ""))
 	defer stopProd()
@@ -178,7 +222,7 @@ func TestRecoveryPhases(t *testing.T) {
 
 	// a phase this version does not know: a configuration error before any port opens (P1.9, P2.6)
 	var out syncBuffer
-	bad := phased(prodEnv, "verifying")
+	bad := phased(prodEnv, "thawing")
 	maps.Copy(bad, map[string]string{"COMPONENT_ID": prodDef.ID, "COMPONENT_VERSION": prodDef.Version,
 		"PORT": strconv.Itoa(freePort(t))})
 	assert.Equal(t, ExitConfiguration, Run(context.Background(), prodDef, Options{Env: env(secured(t, prodDef, bad)),

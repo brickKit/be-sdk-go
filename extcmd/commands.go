@@ -28,6 +28,8 @@ const (
 	SendLease = 2 * time.Minute
 	// SendTimeout bounds one call to the external system (the adapter's read timeout lies within it).
 	SendTimeout = 30 * time.Second
+	// ListTimeout bounds the listing of the external records in a full recovery's reconciliation (P13.11).
+	ListTimeout = 2 * time.Minute
 	// RunEvery is how often the job looks for due commands; Batch how many it takes a run.
 	RunEvery = 2 * time.Second
 	Batch    = 50
@@ -197,11 +199,11 @@ func (c *Commands) load(ctx context.Context, tx db.Tx, id string) (*row, error) 
 	var raw []byte
 	var external *string
 	err := tx.QueryRow(ctx, `SELECT id::text, requester, reference, operation, params, state, external_id, expires_at,
-			resend_deadline, first_reached_at, last_reached_at, unknown_since, accepted_since,
+			resend_deadline, first_reached_at, last_reached_at, unknown_since, accepted_since, unrecorded_until,
 			(SELECT count(*) FROM be_external_attempt a WHERE a.command = c.id), now()
 		FROM be_external_command c WHERE id = $1 AND next_at <= now() FOR UPDATE SKIP LOCKED`, id).Scan(
 		&r.ID, &r.Requester, &r.Reference, &r.Operation, &raw, &r.State, &external, &r.Facts.ExpiresAt, &r.ResendDeadline,
-		&r.FirstReached, &r.LastReached, &r.UnknownSince, &r.AcceptedSince, &r.attempts, &r.now)
+		&r.FirstReached, &r.LastReached, &r.UnknownSince, &r.AcceptedSince, &r.UnrecordedUntil, &r.attempts, &r.now)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errNotDue
 	}
@@ -443,6 +445,9 @@ func (c *Commands) query(ctx context.Context, r *row) error {
 			}
 		}
 		next, why := Step(r.Facts, e, r.caps, r.now)
+		if next == Sending && c.QueryOnly { // P13.10: the table would send it again; query-only does not
+			next, why = Unknown, "query-only: not sent again ("+why+")"
+		}
 		if next == Sending {
 			resend = true
 			return c.set(ctx, tx, r, Sending, why, r.now.Add(SendLease))

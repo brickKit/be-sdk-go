@@ -39,7 +39,8 @@ func TestMembersShareOnePoolAndNeverEachOthersSchema(t *testing.T) { // P5.1, CK
 		served := maps.Clone(cfg)
 		delete(served, "PG_OWNER_PASSWORD") // the shell's members never see the owner's password
 		served["PG_POOL_FOREGROUND"], served["PG_POOL_BACKGROUND"] = "1", "1"
-		members = append(members, Served{ComponentID: defs[i].ID, Version: "0.1.0", HTTPPort: freePort(t), Config: served})
+		members = append(members, Served{ComponentID: defs[i].ID, Version: "0.1.0", HTTPPort: freePort(t),
+			ExtraPorts: []Port{{Name: "grpc", Port: freePort(t)}}, Config: served}) // the recovery's checks (chapter 14)
 	}
 
 	ps := freePort(t)

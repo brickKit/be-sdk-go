@@ -19,6 +19,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/evidence"
 	"github.com/brickKit/be-sdk-go/v3/extcmd"
+	"github.com/brickKit/be-sdk-go/v3/externalpb"
 	"github.com/brickKit/be-sdk-go/v3/grpcx"
 	"github.com/brickKit/be-sdk-go/v3/guard"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
@@ -27,6 +28,8 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/internal/evidencepb"
 	"github.com/brickKit/be-sdk-go/v3/internal/sourcepb"
 	"github.com/brickKit/be-sdk-go/v3/obs"
+	"github.com/brickKit/be-sdk-go/v3/recovery"
+	"github.com/brickKit/be-sdk-go/v3/recoverypb"
 	"github.com/brickKit/be-sdk-go/v3/runprofile"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/brickKit/be-sdk-go/v3/work"
@@ -112,6 +115,7 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		}
 		external = &extcmd.Commands{DB: sh.DB, Component: def.ID, Evidence: writer,
 			QueryOnly: values.Bool(extcmd.QueryOnlyKey), Log: m.Logger}
+		m.external = external
 	}
 	rt := runtime.New(runtime.Parts{Member: member, Config: values, Logger: m.Logger, Metrics: m.Registry,
 		Tracer: tp.Tracer(def.ID), Addresses: sh.Addresses, DB: sh.DB, Outbound: m.Outbound, Events: producer,
@@ -357,6 +361,33 @@ func (m *Member) guard(values *config.Values, sh Shared, ops []string) (httpx.Gu
 			Keys: sh.Keys}}, nil
 }
 
+// reconcileTimeout bounds the external reconciliation: a listing, or one query per open command.
+const reconcileTimeout = 10 * time.Minute
+
+// recoveryChecks registers a full recovery's checks (chapter 14) for a member with a database: the SDK's own and the
+// module's; their operation, Definition.Recovery, also guards the external reconciliation.
+func (m *Member) recoveryChecks(services *grpcx.Services) error {
+	if m.db == nil {
+		if _, ok := m.Module.(recovery.Checker); ok {
+			return errors.New("a module that registers recovery checks has a database (Migrations)")
+		}
+		return nil
+	}
+	if m.Def.Recovery == "" {
+		return errors.New("a component with a database declares the operation of a full recovery's checks (Definition.Recovery, P14.1)")
+	}
+	reg := &recovery.Checks{}
+	if c, ok := m.Module.(recovery.Checker); ok {
+		if err := c.RecoveryChecks(reg); err != nil {
+			return fmt.Errorf("the module's recovery checks could not be registered: %w", err)
+		}
+	}
+	method := grpcx.Method{Operation: m.Def.Recovery, Callers: []string{RecoveryTool}, Timeout: reconcileTimeout}
+	services.Register(&recoverypb.CheckService_ServiceDesc, recovery.NewServer(m.db, m.Def.Subscribes, reg),
+		map[string]grpcx.Method{"Check": method, "Present": method, "Numbers": method, "AdvanceNumbers": method})
+	return nil
+}
+
 // hostPort accepts an address as BrickKit derives it (http://service:port) or a bare host:port.
 func hostPort(addr string) string {
 	if u, err := url.Parse(addr); err == nil && u.Host != "" {
@@ -442,6 +473,13 @@ func (m *Member) systemSurface(member obs.Member, rt *runtime.Runtime) error {
 		services.Register(&evidencepb.ReplayService_ServiceDesc, &evidence.ReplayServer{DB: m.db, Component: m.Def.ID,
 			Replays: &replays, Log: m.Logger}, map[string]grpcx.Method{"Replay": {Operation: m.Def.Replay,
 			Callers: []string{RecoveryTool}}})
+	}
+	if err := m.recoveryChecks(&services); err != nil {
+		return err
+	}
+	if m.external != nil { // the external reconciliation of a full recovery's step 7 (P13.11)
+		services.Register(&externalpb.ReconcileService_ServiceDesc, &extcmd.ReconcileServer{Commands: m.external},
+			map[string]grpcx.Method{"Reconcile": {Operation: m.Def.Recovery, Callers: []string{RecoveryTool}, Timeout: reconcileTimeout}})
 	}
 	if m.resender != nil { // the redelivery of the member's streams (P6.38)
 		if m.Def.Resend == "" {

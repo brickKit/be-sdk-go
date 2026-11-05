@@ -31,6 +31,9 @@
 | `runprofile/` | 运行档案与告警渠道：对象锁的桶、签名的记录、恢复代次的读取与推进、告警的两份（`internal/s3sig` 是 SDK 自己的 SigV4，事件的大载荷也用） | 第 12 章 |
 | `sectest/` | 测试用的安全部署：令牌、信任根、授权与审计的替身、账号的安全变更（只给测试） | — |
 | `sessionpb/` | `be.session.v1` 的生成代码（`make gen`），身份成员实现 `SessionService` 时用 | P8.28 |
+| `extcmd/` | 对外命令：命令的写入与幂等、状态表（`state.go`，纯函数）、发送与查询的作业（`commands.go`）、整套恢复的外部对账（`reconcile.go` 的匹配是纯函数，`reconcileserver.go` 是 `ReconcileService`） | 第 13 章 |
+| `recovery/` | 整套恢复的核对 `CheckService`：组件的登记（`checks.go`）、SDK 自带的检查（`builtin.go`）、服务（`server.go`）；单号的读取与提升在 `db/docno.go` | 第 14 章 |
+| `externalpb/`、`recoverypb/` | `be.external.v1`、`be.recovery.v1` 的生成代码（`make gen`），恢复工具调用时用 | 第 13、14 章 |
 | `seed/` | 组件种子命令共用的部分：授予、管理单元、按自然键找回 | 种子与测试数据 |
 | `internal/` | 只给 SDK 自己：`host/`（启动器与外壳共用的组装）、`pgtest/`、`dbtest/`、`s3test/`、`echotest/` | — |
 | `features.json` | 每项能力的实现状态与证据 | 协议 18 |

@@ -51,7 +51,12 @@ const (
 	PhaseFrozen       = "frozen"
 	PhaseRedelivering = "redelivering"
 	PhaseReplaying    = "replaying"
+	PhaseVerifying    = "verifying" // steps 7-9: external commands query only; the checks over the system surface
+	PhaseReadOnly     = "read_only" // the read-only opening: reads, and the routes that declare ReadOnlyOpen
 )
+
+// running are the phases events and projections run in (P1.23): all but frozen.
+func running(phase string) bool { return phase != PhaseFrozen }
 
 // Defaults of the SDK's own keys.
 const (
@@ -65,7 +70,8 @@ func SDKKeys() []config.Key {
 	return []config.Key{
 		{Name: "LOG_LEVEL", Type: config.Enum, Values: []string{"debug", "info", "warn", "error"}, Default: "info"},
 		{Name: "OTEL_URL", Type: config.String, Process: true},
-		{Name: "RECOVERY_PHASE", Type: config.Enum, Values: []string{PhaseFrozen, PhaseRedelivering, PhaseReplaying}, Process: true},
+		{Name: "RECOVERY_PHASE", Type: config.Enum, Values: []string{PhaseFrozen, PhaseRedelivering, PhaseReplaying,
+			PhaseVerifying, PhaseReadOnly}, Process: true},
 		{Name: "STOP_DRAIN_DELAY", Type: config.Duration, Default: DefaultDrainDelay},
 		{Name: "STOP_TIMEOUT", Type: config.Duration, Default: DefaultStopTimeout},
 	}
@@ -130,6 +136,9 @@ type Member struct {
 	transport events.Transport
 	runner    *work.Runner
 	hasJobs   bool
+	// external are the member's external commands; in verifying and read_only they only query (P13.10, P1.23).
+	external *extcmd.Commands
+	querying chan struct{}
 	// db keeps the statistics of the SDK's tables fresh between Start and Stop (P5.33); nil without a database.
 	db         *db.DB
 	statistics chan struct{}
@@ -191,10 +200,11 @@ func (m *Member) Describe() map[string]any {
 //
 // In recovery mode only what the phase allows runs (P1.23): frozen runs no module background, forwarding,
 // subscription or job; redelivering runs the module's background (its projections), forwarding and subscriptions,
-// and no job. The system surface and the authorization view run in every phase.
+// and no job; replaying adds the owners' replay; verifying and read_only run the external commands query only, outside
+// the job runner (P13.10). The system surface and the authorization view run in every phase.
 func (m *Member) Start(bg context.Context) error {
 	phase := m.Phase()
-	moving := phase == "" || phase == PhaseRedelivering || phase == PhaseReplaying // events and projections run
+	moving := running(phase) // events and projections run
 	if s, ok := m.Module.(component.Starter); ok && moving {
 		if err := s.Start(bg); err != nil {
 			return err
@@ -209,6 +219,11 @@ func (m *Member) Start(bg context.Context) error {
 		if err := m.runner.Start(bg); err != nil {
 			return err
 		}
+	}
+	if m.external != nil && (phase == PhaseVerifying || phase == PhaseReadOnly) {
+		m.external.QueryOnly = true // what is unknown is asked, nothing is sent (P13.10)
+		m.querying = make(chan struct{})
+		go func() { defer close(m.querying); m.queryExternal(bg) }()
 	}
 	if m.db != nil {
 		m.statistics = make(chan struct{})
@@ -311,10 +326,28 @@ func (m *Member) Stop(ctx context.Context) error {
 	if m.statistics != nil {
 		<-m.statistics // ends with the background context
 	}
+	if m.querying != nil {
+		<-m.querying // ends with the background context
+	}
 	if s, ok := m.Module.(component.Stopper); ok {
 		return s.Stop(ctx)
 	}
 	return nil
+}
+
+// queryExternal runs the external commands outside the job runner, which does not run in recovery: every RunEvery,
+// the due commands, query only.
+func (m *Member) queryExternal(bg context.Context) {
+	for {
+		if _, err := m.external.Run(bg); err != nil && bg.Err() == nil {
+			m.Logger.Warn("the external commands could not be queried; trying again", "error", err.Error())
+		}
+		select {
+		case <-bg.Done():
+			return
+		case <-time.After(extcmd.RunEvery):
+		}
+	}
 }
 
 func (m *Member) rereadSecrets(ctx context.Context) {

@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.84",
+  "protocol": "3.0.0-alpha.86",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -30,7 +30,8 @@
       "status": "verified",
       "evidence": [
         "launcher.TestRecoveryPhases",
-        "shell.TestAShellInRecovery"
+        "shell.TestAShellInRecovery",
+        "launcher.TestExternalCommandsOnlyQueryWhileVerifying"
       ]
     },
     "observability": {
@@ -573,7 +574,21 @@
         "extcmd.TestPastTheDeadlineNothingIsSent",
         "extcmd.TestQueryOnlySendsNothing",
         "extcmd.TestAnIrrevocableCommandNeedsItsIssueRecord",
-        "launcher.TestTheExternalCommandsAreTheSDKs"
+        "launcher.TestTheExternalCommandsAreTheSDKs",
+        "extcmd.TestExternalReconcileVectors",
+        "extcmd.TestReconcileByQueries",
+        "extcmd.TestReconcileByListing",
+        "launcher.TestExternalCommandsOnlyQueryWhileVerifying",
+        "launcher.TestTheRecoveryChecksAreTheRecoveryToolsOnly"
+      ]
+    },
+    "recovery-checks": {
+      "status": "verified",
+      "evidence": [
+        "recovery.TestChecks",
+        "recovery.TestPresent",
+        "recovery.TestNumbers",
+        "launcher.TestTheRecoveryChecksAreTheRecoveryToolsOnly"
       ]
     }
   }

@@ -47,13 +47,31 @@ func main() { launcher.Main(sales.Definition) }
 
 补发（P6.36–P6.40）：有流的组件在定义里写 `Resend`（补发方法 `be.source.v1.ResendService` 的操作，惯例是 `<前缀>.system.resend`，登记在本组件的 `system` 资源下），SDK 挂上这个系统方法，部署内任何组件可以调用；没写时启动失败。消费者的收件表记下每个事件在来源的位置，订阅每次启动记一行；库回退过（恢复代次推进或时间线变了）的消费者启动时按进度向它见过的生产者要补发，生产者的地址取依赖的 `grpc` 端口（`<依赖>_GRPC_ENDPOINT`），没有地址的记错误日志。补发覆盖不了的分区（之后的行已清掉）记进 `be_resend_gap`；读模型的订阅在 `Sub.Repair` 里给出修复（通常是投影的 `Align`）。
 
-恢复模式（P1.22–P1.24）：部署级配置键 `RECOVERY_PHASE`（`frozen`、`redelivering`、`replaying`）有值时成员进入“恢复就绪”：`/readyz` 答 200 并带阶段，用户面全部答 `MAINTENANCE`；`frozen` 不跑模块的 `Start`、发件转发、订阅与作业，`redelivering` 跑模块的 `Start`、转发与订阅（补发与投影），不跑作业；系统面一直照常。阶段只在启动时读，换阶段就重启（整套恢复的工具改共用变量再 `brickkit up`）。模块有自己的后台要在某个阶段再收住时，读 `rt.RecoveryPhase()`。
-
-证据的重放（P12.19–P12.22）：写证据的模块实现 `evidence.Replayer`，按类别注册重新执行的函数（`ReplayFunc`：在给定的事务里按记录的 `change` 重新施加，不重做业务前置校验，被引用的对象不在时返回 `evidence.ErrDangling`），定义里写 `Replay`（操作，惯例 `<前缀>.system.replay`）。SDK 挂上 `be.evidence.v1.ReplayService`，只许恢复工具（`ops/recover`）调用，按记录身份判“已体现”，重新执行与变更历史在一个事务里。整套恢复的第 6 步在阶段 `replaying` 下做（与 `redelivering` 一样运行转发与订阅）。
-
 ### 后台工作
 
 有后台工作的模块实现 `Jobs`，每个作业声明种类（queue、cron、singleton、every）与副作用种类；queue 作业在业务事务内用 `rt.Work.Enqueue` 排入。处理函数拿到 `*work.Run`：`local` 作业用 `Complete` 把效果与完成标记一起提交；非幂等外部调用先 `BeforeCall` 再发出；singleton 用 `Checkpoint` 分段提交进度。返回 `work.Permanent`、`work.NotEffective`、`work.Wait` 区分失败，其余错误按退避重试；每次运行有截止时间（`Job.Timeout`，缺省 5 分钟），出站调用靠它。
+
+### 对外命令
+
+向外部系统（银行、税局、承运商）发命令的模块实现 `extcmd.Provider`：给出适配器（`Send` 发出并把结果分成未到达、可能到达、受理、成功、失败、拒绝；`Query` 按业务参考号查询）与每个操作的能力（去重保留期与计期起点、能否查询、过期、最长处理时间、终结时限、是否不可撤回），定义里写 `ExternalCommands`。业务事务里用 `rt.External.Request` 写命令（按请求方与业务参考号幂等），提交之后 SDK 的作业发出：结果不知道的先查询再决定是否重发，重发沿用同一个参考号并守重发截止时刻，不可撤回的命令发出前先把发出记录交给证据存储（定义还要写 `Evidence`），转人工的由人用 `Register` 登记结果。部署级 `EXTERNAL_COMMANDS_QUERY_ONLY` 只查询不发送（第 13 章）。适配器另外实现 `extcmd.Lister`（按时间窗列出外部记录）时，整套恢复的对账用一次列出代替逐条查询。
+
+### 整套恢复
+
+整套恢复（装配项目协议 15）由恢复工具 `ops/recover` 驱动，组件要准备的是：
+
+- **阶段**（P1.22–P1.24）：部署级配置键 `RECOVERY_PHASE` 有值时成员进入“恢复就绪”：`/readyz` 答 200 并带阶段；系统面一直照常。阶段只在启动时读，换阶段就重启（恢复工具改共用变量再 `brickkit up`）。模块有自己的后台要在某个阶段收住时，读 `rt.RecoveryPhase()`。
+
+  | 阶段 | 用户面 | 模块的 `Start`、转发、订阅 | 后台作业 |
+  | --- | --- | --- | --- |
+  | `frozen` | 全部 `MAINTENANCE` | 不跑 | 不跑 |
+  | `redelivering`、`replaying` | 全部 `MAINTENANCE` | 跑（补发、投影） | 不跑 |
+  | `verifying` | 全部 `MAINTENANCE` | 跑 | 只有对外命令，只查询不发送 |
+  | `read_only` | 放行 `GET`、`HEAD` 与声明了 `httpx.Route.ReadOnlyOpen` 的写入（身份成员的一次性码、重设密码、登记第二因素），其余 `MAINTENANCE` | 跑 | 同 `verifying` |
+
+- **恢复操作**：有数据库的组件在定义里写 `Recovery`（操作，惯例 `<前缀>.system.recover`，登记在本组件的 `system` 资源下），没写时启动失败。下面的系统方法都用它，只许恢复工具调用。
+- **证据的重放**（P12.19–P12.22）：写证据的模块实现 `evidence.Replayer`，按类别注册重新执行的函数（`ReplayFunc`：在给定的事务里按记录的 `change` 重新施加，不重做业务前置校验，被引用的对象不在时返回 `evidence.ErrDangling`），定义里写 `Replay`（操作，惯例 `<前缀>.system.replay`）。SDK 挂上 `be.evidence.v1.ReplayService`，按记录身份判“已体现”，重新执行与变更历史在一个事务里。在阶段 `replaying` 下做。
+- **外部对账**（P13.11–P13.13）：发对外命令的成员自动挂上 `be.external.v1.ReconcileService`：对上外部记录的按外部推进，没对上的写重发截止、转 `unknown` 或 `manual`，并记下最早一次可能的发送与故障时刻供开放之后判断；结论按恢复留存，重做时回答同样的结论。
+- **核对**（第 14 章）：每个有数据库的成员自动挂上 `be.recovery.v1.CheckService`。SDK 自带三项检查（投影已对齐且没有被隔离的主体、消费者在当前纪元记下了进度且补发没有留下空缺、本地审计积压）；模块实现 `recovery.Checker`，用 `Checks.Add` 加自己负责的业务检查（只读，在回滚的事务里跑），用 `Checks.Presence` 为每个审计业务变更或敏感读取的对象类型登记“还在不在、版本多少”的查询（损失范围），有连续单号序列的用 `Checks.Void` 登记怎样作废提升跨过的空号。
 
 ### 列表与投影
 
@@ -112,6 +130,10 @@ func main() { launcher.Main(sales.Definition) }
 | `list` | 列表：游标分页（排序键加身份、不透明游标、筛选摘要与计划摘要）、页大小、声明的筛选与排序字段、受限字段的可查询性、关键字搜索；与授权谓词拼成一条 SQL | 第 9 章 P9.1–P9.8 |
 | `search` | 规范化搜索列（版本 1）：折叠、全拼与首字母（`be-protocol` 的拼音表），查询折叠与子串匹配 | 第 9 章 P9.6–P9.8 |
 | `projection` | 投影：按协议 02 的状态表接收完整、部分与删除；全量重新取回（对齐代次、快照直接覆盖、对齐期间写入的行按版本比较、快照之外的行按身份读取）；补全不完整的行 | 第 9 章 P9.10–P9.12 |
+| `evidence` | 证据的记录者一侧（收紧两段写、一般记录、变更历史）与属主的重放 | 第 12 章 |
+| `runprofile` | 运行档案与告警渠道、恢复代次的读取与推进 | 第 12 章 |
+| `extcmd` | 对外命令：命令与尝试、状态表、发送与查询的作业、只查询模式、整套恢复的外部对账 | 第 13 章 |
+| `recovery` | 整套恢复的核对：SDK 自带的检查与组件的检查、对象是否还在、连续单号的已用最大值与提升 | 第 14 章 |
 | `seed` | 组件种子命令用的工具（只在开发与测试环境）：调用组件用户面的客户端、经身份成员的开发换取登录测试账号、等授予到达组件；在授权成员的生效点建角色、授予、撤销与管理单元，变更键带组件与被链接的主体，重跑不重复 | 本项目的种子与测试数据约定 |
 
 ## 功能矩阵

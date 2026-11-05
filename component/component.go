@@ -38,6 +38,10 @@ type Definition struct {
 	// definition; only the recovery tool (ops/recover) calls it. Required when the module implements
 	// evidence.Replayer.
 	Replay string
+	// Recovery is the operation of a full recovery's checks (be.recovery.v1.CheckService, be-protocol chapter 14) and,
+	// with ExternalCommands, of the external reconciliation (be.external.v1.ReconcileService, P13.11), declared in the
+	// resource definition; only the recovery tool (ops/recover) calls them. Required with Migrations.
+	Recovery string
 	// Subscribes says the module implements events.Subscriber; it needs Migrations (the inbox).
 	Subscribes bool
 	// Evidence says the component writes tightening intents or irreversible commands' records (be-protocol P12.16):

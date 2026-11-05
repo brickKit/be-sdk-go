@@ -79,6 +79,24 @@ func freePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
+// portNow is a free port, for a definition built where no test is at hand (every member with a database serves its
+// system surface: the recovery's checks). The definition is built long before the member listens, so the port is
+// taken below the kernel's ephemeral range: a listener on port 0 in between (freePort, a proxy) never gets it.
+func portNow() int {
+	for {
+		p := 20000 + int(portSeq.Add(1)%10000)
+		if ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p)); err == nil {
+			ln.Close()
+			return p
+		}
+	}
+}
+
+// portSeq starts at a random point so that two test binaries running at once rarely pick the same ports.
+var portSeq atomic.Int64
+
+func init() { portSeq.Store(int64(os.Getpid()) * 37 % 10000) }
+
 func TestUnknownEntry(t *testing.T) {
 	var stderr bytes.Buffer
 	code := Run(context.Background(), definition(&demo{}), Options{Args: []string{"dance"}, Env: env(nil), Stderr: &stderr, Stdout: io.Discard})
