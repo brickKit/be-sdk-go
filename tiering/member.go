@@ -51,7 +51,8 @@ func NewCatalog(ctx context.Context, d *db.DB, classes []Class, values *config.V
 	if err != nil {
 		return nil, err
 	}
-	c := &Catalog{DB: d, Classes: map[string]Class{}, Registry: NewRegistry(), Residence: map[string]int{}, Store: store}
+	c := &Catalog{DB: d, Classes: map[string]Class{}, Registry: NewRegistry(), Residence: map[string]int{}, Store: store,
+		N: time.Duration(n) * 24 * time.Hour, Grace: values.Duration(KeyGrace)}
 	locked := false
 	if store != nil {
 		if locked, err = store.Locked(ctx); err != nil {

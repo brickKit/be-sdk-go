@@ -9,7 +9,8 @@ import (
 
 // The write barrier (be-protocol P15.13): every insert, update or delete of a class's root or child row checks, in
 // the writer's own transaction, whether the row's aggregate is a member of a unit that is no longer open, and fails
-// with SQLSTATE BE001 (RECORD_SEALED) if so. It is a trigger, so it holds whichever entry the write comes from. A
+// with SQLSTATE BE001 (RECORD_SEALED) if so, unless the transaction is the SDK's own work on that unit (it sets
+// be.tier_unit to the unit, transaction-local). It is a trigger, so it holds whichever entry the write comes from. A
 // child's trigger first takes FOR SHARE on its root row: a seal holds FOR UPDATE on the roots it seals, so the two
 // serialize (a write that commits first is seen by the seal under its lock; one that comes after is refused).
 
@@ -25,6 +26,7 @@ DECLARE
   col text := TG_ARGV[5];
   rid text;
   st text;
+  uid text;
 BEGIN
   FOREACH rid IN ARRAY ARRAY[
       CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) ->> col END,
@@ -33,9 +35,10 @@ BEGIN
     IF kind = 'child' THEN
       EXECUTE format('SELECT 1 FROM %I WHERE %I = CAST($1 AS ' || key_type || ') FOR SHARE', root_table, root_key) USING rid;
     END IF;
-    SELECT u.state INTO st FROM be_tier_member m JOIN be_tier_unit u ON u.id = m.unit
+    SELECT u.state, u.id::text INTO st, uid FROM be_tier_member m JOIN be_tier_unit u ON u.id = m.unit
       WHERE m.class = cls AND m.root_id = rid;
-    IF st IS NOT NULL AND st <> 'open' THEN
+    -- the SDK's own work on this unit (release, destruction, erasure) names it in the transaction
+    IF st IS NOT NULL AND st <> 'open' AND coalesce(current_setting('be.tier_unit', true), '') <> uid THEN
       RAISE EXCEPTION USING ERRCODE = 'BE001', MESSAGE = 'the record belongs to a sealed archive unit',
         DETAIL = cls || '/' || rid;
     END IF;

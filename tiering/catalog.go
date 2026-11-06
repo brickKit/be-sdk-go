@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/canon"
 	"github.com/brickKit/be-sdk-go/v3/db"
@@ -53,6 +54,12 @@ type Catalog struct {
 	Residence  map[string]int // the configured residence per class (TIERING_RESIDENCE_<class>), Never for never
 	MaxMembers int
 	Store      *Store // the cold route's bucket; nil without TIERING_STORE_URL
+	// N is the lists' default range and Grace the wait after a publish (TIERING_LIST_DAYS, TIERING_GRACE).
+	N, Grace time.Duration
+	// Backups tells when the deployment's latest backup finished; nil: never released (no run profile).
+	Backups BackupSource
+	// Batch bounds the rows a release deletes per table and transaction (default ReleaseBatch).
+	Batch int
 }
 
 // Grouping is one grouping of a class: its canonical key, the group columns' values (text) and the period.

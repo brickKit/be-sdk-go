@@ -41,6 +41,8 @@ const (
 	KindAuthzGeneration      = "generation.authz"
 	KindAlert                = "alert"
 	KindRecoveryStep         = "recovery.step"
+	// KindBackup is the backup tool's record of each successful backup ({"finished_at": ...}, be-protocol P15.21).
+	KindBackup = "backup"
 )
 
 // Retention is each kind's starting retention (P12.3): a deployment may lengthen it, never shorten it.

@@ -32,6 +32,8 @@ var inRecovery = map[string]recoveryRule{
 		"the next window once open"},
 	"be.tiering.transfer": {why: "not run: a publish changes the member's catalog, which goes back; the sealed units " +
 		"wait for the opening"},
+	"be.tiering.release": {why: "not run: deleting online rows of the member's own database, which goes back; " +
+		"once open"},
 }
 
 // checkRecoveryRule refuses one of the SDK's jobs that does not say how it behaves in a recovery.

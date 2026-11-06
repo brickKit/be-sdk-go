@@ -364,11 +364,12 @@ func (c *Catalog) Publish(ctx context.Context, claim Claim, m Manifest) error {
 			"VALUES ($1, $2, $3, $4, $5, $6)", claim.Unit, m.Version, m.Route, claim.Generation, raw, m.Digest); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, "UPDATE be_tier_unit SET route = $2, manifest_version = $3, state = 'published', "+
-			"published_at = now() WHERE id = $1", claim.Unit, m.Route, m.Version); err != nil {
+		var catalog int64
+		if err := tx.QueryRow(ctx, "UPDATE be_tier_catalog SET version = version + 1 RETURNING version").Scan(&catalog); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, "UPDATE be_tier_catalog SET version = version + 1")
+		_, err = tx.Exec(ctx, "UPDATE be_tier_unit SET route = $2, manifest_version = $3, state = 'published', "+
+			"published_at = now(), route_version = $4 WHERE id = $1", claim.Unit, m.Route, m.Version, catalog)
 		return err
 	})
 }
@@ -442,9 +443,20 @@ func (c *Catalog) CleanOrphans(ctx context.Context, unit, class string, window t
 	err = c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
 		// a warm row is an orphan when no manifest names its version and it is not the version a transfer may be
 		// writing now (the next one)
-		tag, err := tx.Exec(ctx, "DELETE FROM be_tier_row r WHERE r.unit = $1 AND NOT (r.version = ANY($2)) "+
+		tag, err := tx.Exec(ctx, "DELETE FROM be_tier_row r WHERE r.unit = $1 AND NOT (r.version = ANY($2)) AND r.version >= 0 "+
 			"AND r.version <> (SELECT manifest_version + 1 FROM be_tier_unit WHERE id = $1)", unit, versions)
+		if err != nil {
+			return err
+		}
 		removed += int(tag.RowsAffected())
+		// a thawed copy (version -1) goes when its time is up (P15.27)
+		tag, err = tx.Exec(ctx, "DELETE FROM be_tier_row WHERE unit = $1 AND version = -1 AND EXISTS (SELECT 1 FROM be_tier_thaw "+
+			"WHERE unit = $1 AND expires_at <= now())", unit)
+		if err != nil {
+			return err
+		}
+		removed += int(tag.RowsAffected())
+		_, err = tx.Exec(ctx, "DELETE FROM be_tier_thaw WHERE unit = $1 AND expires_at <= now()", unit)
 		return err
 	})
 	return removed, err

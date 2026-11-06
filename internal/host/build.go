@@ -127,8 +127,19 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		if catalog, err = tiering.NewCatalog(ctx, sh.DB, def.Tiering, values, strings.ReplaceAll(def.ID, "/", "-")); err != nil {
 			return nil, err
 		}
+		if values.String("RUN_PROFILE_URL") != "" && m.tls != nil { // when the latest backup finished (P15.21)
+			rp, err := runprofile.New(runprofile.Options{Endpoint: values.String("RUN_PROFILE_URL"),
+				Region: values.String("RUN_PROFILE_REGION"), Bucket: values.String("RUN_PROFILE_BUCKET"),
+				AccessKey: values.String("RUN_PROFILE_ACCESS_KEY"), Secret: func() string { return values.String("RUN_PROFILE_SECRET_KEY") },
+				Deployment: values.String("DEPLOYMENT_ID"), Writer: runprofile.Writer{Component: def.ID, Instance: def.ID},
+				Identity: m.tls})
+			if err != nil {
+				return nil, err
+			}
+			catalog.Backups = tiering.BackupsFrom(rp)
+		}
 		for _, j := range []work.Job{catalog.CandidatesJob(values.String(tiering.KeyWindow), m.Logger),
-			catalog.TransferJob(m.Logger)} {
+			catalog.TransferJob(m.Logger), catalog.ReleaseJob(m.Logger)} {
 			if err := m.addSDKJob(j); err != nil {
 				return nil, err
 			}

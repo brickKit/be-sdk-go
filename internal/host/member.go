@@ -114,6 +114,9 @@ func Keys(def component.Definition) []config.Key {
 	}
 	if len(def.Tiering) > 0 {
 		keys = append(keys, tiering.Keys(def.Tiering)...)
+		if !def.Evidence { // the release reads the backup records (P15.21)
+			keys = append(keys, runprofile.Keys()...)
+		}
 	}
 	return keys
 }
