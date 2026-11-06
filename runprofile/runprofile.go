@@ -11,7 +11,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/md5"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -87,6 +86,8 @@ type Record struct {
 type Identity interface {
 	SigningKey() (crypto.Signer, [][]byte, error)
 	VerifySigner(chain [][]byte) (string, error)
+	// Roots are the configured trust root's CA certificates: where the trust history starts (P12.25).
+	Roots() ([]*x509.Certificate, error)
 }
 
 // Options build a Store.
@@ -172,6 +173,12 @@ func SignedBytes(r Record) ([]byte, error) {
 // Append signs and writes one record of a kind: a conditional create with the kind's retention under compliance-mode
 // object lock; done when the store answers success (P12.1-P12.3).
 func (s *Store) Append(ctx context.Context, kind string, body any) (Record, error) {
+	return s.AppendWith(ctx, kind, body, nil, nil)
+}
+
+// AppendWith is Append signed with the given key and chain instead of the writer's service credential: the trust
+// material's issuer signs its records with a CA's own key (P12.24). A nil key: the service credential.
+func (s *Store) AppendWith(ctx context.Context, kind string, body any, key crypto.Signer, chain [][]byte) (Record, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
 		return Record{}, err
@@ -182,7 +189,12 @@ func (s *Store) Append(ctx context.Context, kind string, body any) (Record, erro
 	}
 	r := Record{RecordType: RecordType, Schema: "1.0", Deployment: s.o.Deployment, Kind: kind, ID: id,
 		WrittenAt: canon.Time(s.o.Now()), Writer: s.o.Writer, Body: b}
-	if r.Signature, err = s.sign(r); err != nil {
+	if key != nil {
+		r.Signature, err = signWith(r, key, chain)
+	} else {
+		r.Signature, err = s.sign(r)
+	}
+	if err != nil {
 		return Record{}, err
 	}
 	data, err := json.Marshal(r)
@@ -206,31 +218,21 @@ func (s *Store) sign(r Record) (*Signature, error) {
 	if err != nil {
 		return nil, err
 	}
+	return signWith(r, key, chain)
+}
+
+// signWith signs a record with a key and names its chain (DER, leaf first; P12.2).
+func signWith(r Record, key crypto.Signer, chain [][]byte) (*Signature, error) {
 	msg, err := SignedBytes(r)
 	if err != nil {
 		return nil, err
 	}
-	var sig []byte
-	var alg string
-	switch key.Public().(type) {
-	case *ecdsa.PublicKey: // ASN.1 DER over SHA-256
-		d := sha256.Sum256(msg)
-		alg = "ES256"
-		sig, err = key.Sign(rand.Reader, d[:], crypto.SHA256)
-	case ed25519.PublicKey:
-		alg = "EdDSA"
-		sig, err = key.Sign(rand.Reader, msg, crypto.Hash(0))
-	default:
-		return nil, fmt.Errorf("run profile: a %T key cannot sign records", key.Public())
-	}
+	sig, err := signBytes(msg, key)
 	if err != nil {
 		return nil, err
 	}
-	var pemChain bytes.Buffer
-	for _, c := range chain {
-		_ = pem.Encode(&pemChain, &pem.Block{Type: "CERTIFICATE", Bytes: c})
-	}
-	return &Signature{Alg: alg, Value: base64.StdEncoding.EncodeToString(sig), CertChain: pemChain.String()}, nil
+	sig.CertChain = pemChain(chain)
+	return sig, nil
 }
 
 // do sends one signed request; any answer but 2xx is an error.
@@ -290,15 +292,17 @@ func (s *Store) List(ctx context.Context, kind string) (recs []Record, problems 
 // signature does not hold, P12.4), with the record as read when there was one. The recovery tool reviews a record
 // whose signature does not hold and closes the subjects it names (assembly protocol 15, 6.2): it needs the content.
 type Listed struct {
-	Key    string
-	Record Record
-	Read   bool // the record was read and decoded (whatever its signature)
-	Err    error
+	Key      string
+	Record   Record
+	Received time.Time // when the store took it (its LastModified; P12.7)
+	Read     bool      // the record was read and decoded (whatever its signature)
+	Err      error
 }
 
 // ListAll is every record of a kind, each with its verification (P12.4).
 func (s *Store) ListAll(ctx context.Context, kind string) ([]Listed, error) {
 	var keys []string
+	received := map[string]time.Time{}
 	token := ""
 	for {
 		q := "list-type=2&prefix=" + s3sig.Escape(s.o.Deployment+"/"+kind+"/", false)
@@ -310,24 +314,35 @@ func (s *Store) ListAll(ctx context.Context, kind string) ([]Listed, error) {
 			return nil, err
 		}
 		var page struct {
-			Contents []struct{ Key string } `xml:"Contents"`
-			Next     string                 `xml:"NextContinuationToken"`
-			More     bool                   `xml:"IsTruncated"`
+			Contents []struct {
+				Key          string
+				LastModified string
+			} `xml:"Contents"`
+			Next string `xml:"NextContinuationToken"`
+			More bool   `xml:"IsTruncated"`
 		}
 		if err := xml.Unmarshal(raw, &page); err != nil {
 			return nil, err
 		}
 		for _, c := range page.Contents {
 			keys = append(keys, c.Key)
+			received[c.Key], _ = time.Parse(time.RFC3339Nano, c.LastModified)
 		}
 		if !page.More {
 			break
 		}
 		token = page.Next
 	}
+	var trust *TrustHistory
+	if kind != KindTrustCA && kind != KindTrustCredential { // the trust kinds are read against the roots (Trust)
+		var err error
+		if trust, err = s.Trust(ctx); err != nil {
+			return nil, err
+		}
+	}
 	out := make([]Listed, 0, len(keys))
 	for _, k := range keys {
-		l := Listed{Key: k}
+		l := Listed{Key: k, Received: received[k]}
 		raw, err := s.do(ctx, http.MethodGet, k, "", nil, nil, unsigned)
 		switch {
 		case err != nil:
@@ -336,7 +351,7 @@ func (s *Store) ListAll(ctx context.Context, kind string) ([]Listed, error) {
 			l.Err = fmt.Errorf("run profile: %s: not a record", k)
 		default:
 			l.Read = true
-			if err := s.Verify(l.Record); err != nil {
+			if err := s.verifyRecord(l.Record, trust, l.Received); err != nil {
 				l.Err = fmt.Errorf("run profile: %s: %w", k, err)
 			}
 		}
@@ -464,4 +479,46 @@ func (s *Store) Alert(ctx context.Context, body any) bool {
 		return false
 	}
 	return true
+}
+
+// verifyRecord checks a record's signature, and its signer against the trust history at the time the store received
+// it (P12.4, P12.26); without a history (the trust kinds themselves), against the current trust root.
+func (s *Store) verifyRecord(r Record, trust *TrustHistory, received time.Time) error {
+	if trust == nil {
+		return s.Verify(r)
+	}
+	chain, err := chainOf(r)
+	if err != nil {
+		return err
+	}
+	if err := trust.Holds(chain, received); err != nil {
+		return fmt.Errorf("the signer's chain does not hold at the receipt: %w", err)
+	}
+	leaf, err := x509.ParseCertificate(chain[0])
+	if err != nil {
+		return err
+	}
+	return verifySignature(r, leaf)
+}
+
+// Trust reads the trust material's history (P12.24-P12.26): both trust kinds, against the configured roots. A trust
+// record is used only when it holds on the chain from the roots; the others are in the history's Problems.
+func (s *Store) Trust(ctx context.Context) (*TrustHistory, error) {
+	roots, err := s.o.Identity.Roots()
+	if err != nil {
+		return nil, err
+	}
+	var recs []TrustRecord
+	for _, kind := range []string{KindTrustCA, KindTrustCredential} {
+		listed, err := s.ListAll(ctx, kind)
+		if err != nil {
+			return nil, err
+		}
+		for _, l := range listed {
+			if l.Read {
+				recs = append(recs, TrustRecord{Record: l.Record, Received: l.Received})
+			}
+		}
+	}
+	return BuildTrust(roots, recs, DefaultSkew), nil
 }

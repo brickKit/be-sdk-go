@@ -137,6 +137,10 @@ func (w *World) trustRoot(t testing.TB) {
 	write(t, w.caFile, "CERTIFICATE", der)
 }
 
+// CA is this test deployment's trust root and its key: a test of the trust material's history signs rotations and
+// revocations with it (be-protocol P12.24).
+func (w *World) CA() (*x509.Certificate, *ecdsa.PrivateKey) { return w.caCert, w.caKey }
+
 func write(t testing.TB, path, kind string, der []byte) {
 	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: kind, Bytes: der}), 0o600); err != nil {
 		t.Fatal(err)

@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/url"
@@ -37,9 +38,10 @@ type ServiceTLS struct {
 	caFile     string
 	read       func(string) ([]byte, error)
 
-	mu   sync.RWMutex
-	cert *tls.Certificate
-	pool *x509.CertPool
+	mu    sync.RWMutex
+	cert  *tls.Certificate
+	pool  *x509.CertPool
+	roots []*x509.Certificate
 }
 
 // LoadServiceTLS reads the certificate, key and trust root; the certificate must carry this member's identity.
@@ -73,6 +75,16 @@ func (s *ServiceTLS) Reload() error {
 	if !pool.AppendCertsFromPEM(caPEM) {
 		return errors.New("service trust root: no certificate")
 	}
+	var roots []*x509.Certificate
+	for rest := caPEM; ; {
+		var b *pem.Block
+		if b, rest = pem.Decode(rest); b == nil {
+			break
+		}
+		if c, err := x509.ParseCertificate(b.Bytes); err == nil {
+			roots = append(roots, c)
+		}
+	}
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])
 	if err != nil {
 		return err
@@ -84,7 +96,7 @@ func (s *ServiceTLS) Reload() error {
 		return fmt.Errorf("service certificate: no DNS name %q (P8.5)", want)
 	}
 	s.mu.Lock()
-	s.cert, s.pool = &cert, pool
+	s.cert, s.pool, s.roots = &cert, pool, roots
 	s.mu.Unlock()
 	return nil
 }
@@ -160,6 +172,17 @@ func (s *ServiceTLS) SigningKey() (crypto.Signer, [][]byte, error) {
 		return nil, nil, errors.New("the service credential's key cannot sign")
 	}
 	return k, c.Certificate, nil
+}
+
+// Roots are the CA certificates the configured trust root holds: where the trust material's history starts (be-
+// protocol P12.25).
+func (s *ServiceTLS) Roots() ([]*x509.Certificate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.roots) == 0 {
+		return nil, errors.New("no trust root")
+	}
+	return append([]*x509.Certificate(nil), s.roots...), nil
 }
 
 // VerifySigner checks a record signer's chain (DER, leaf first) against the current trust root and returns its

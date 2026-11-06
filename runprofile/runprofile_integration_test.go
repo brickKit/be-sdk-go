@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -213,4 +214,70 @@ func closedPort(t *testing.T) string {
 	addr := ln.Addr().String()
 	require.NoError(t, ln.Close())
 	return "http://" + addr
+}
+
+// The trust material's history in the store (P12.24-P12.26, protocol 15's 6.2; RC81, RC71, RC80): the trust root
+// rotated from A to B (both signatures) keeps a record signed under A valid for a reader that has only B configured;
+// without the rotation it is foreign. A credential B revoked no longer vouches for what the store received from it
+// after the revocation; what it received before still holds. Received times are the store's (one-second precision),
+// so the events are seconds apart.
+func TestTheTrustHistoryInTheStore(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	old := e.store(t, "infra/authz") // under A
+	gen, err := old.Append(ctx, KindAuthzGeneration, map[string]int64{"value": 4})
+	require.NoError(t, err)
+	before, err := old.Append(ctx, KindAlert, map[string]string{"what": "before the revocation"})
+	require.NoError(t, err)
+
+	b := sectest.New(t)       // the new trust root B
+	reader := func() *Store { // a reader with only B configured
+		s, err := New(Options{Endpoint: e.url, Bucket: lockBucket, AccessKey: e.access, Secret: func() string { return e.secret },
+			Deployment: e.deployment, Writer: Writer{Component: "ops/recover", Instance: "r-1"}, Identity: b.TLS(t, "ops/recover"),
+			retention: func(string) time.Duration { return 2 * time.Minute }})
+		require.NoError(t, err)
+		return s
+	}
+	recs, problems, err := reader().List(ctx, KindAuthzGeneration)
+	require.NoError(t, err)
+	assert.Empty(t, recs, "no rotation recorded: A's record is foreign to B")
+	assert.Len(t, problems, 1)
+
+	caA, keyA := e.w.CA()
+	caB, keyB := b.CA()
+	rot, err := Accept(TrustBody{Event: EventRotation, Previous: Fingerprint(caA.Raw), Next: Fingerprint(caB.Raw),
+		CA: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caB.Raw}))}, keyB)
+	require.NoError(t, err)
+	issuer := reader()
+	_, err = issuer.AppendWith(ctx, KindTrustCA, rot, keyA, [][]byte{caA.Raw})
+	require.NoError(t, err)
+	recs, _, err = reader().List(ctx, KindAuthzGeneration)
+	require.NoError(t, err)
+	require.Len(t, recs, 1, "rotated: A's record holds under B")
+	assert.Equal(t, gen.ID, recs[0].ID)
+
+	// B revokes the credential A issued to infra/authz; what the store receives from it after that does not hold
+	_, oldChain, err := oldSigner(old)
+	require.NoError(t, err)
+	time.Sleep(3 * time.Second)
+	_, err = issuer.AppendWith(ctx, KindTrustCredential, TrustBody{Event: EventRevoke, Fingerprint: Fingerprint(oldChain[0])},
+		keyB, [][]byte{caB.Raw})
+	require.NoError(t, err)
+	time.Sleep(3 * time.Second)
+	after, err := old.Append(ctx, KindAlert, map[string]string{"what": "after the revocation"})
+	require.NoError(t, err)
+	all, err := reader().ListAll(ctx, KindAlert)
+	require.NoError(t, err)
+	holds := map[string]bool{}
+	for _, l := range all {
+		holds[l.Record.ID] = l.Err == nil
+		assert.False(t, l.Received.IsZero(), "the store's receipt time")
+	}
+	assert.Equal(t, map[string]bool{before.ID: true, after.ID: false}, holds)
+}
+
+// oldSigner is the chain a store signs with.
+func oldSigner(s *Store) (any, [][]byte, error) {
+	k, chain, err := s.o.Identity.SigningKey()
+	return k, chain, err
 }
