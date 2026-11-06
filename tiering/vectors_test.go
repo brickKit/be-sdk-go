@@ -36,8 +36,8 @@ func decode(t *testing.T, raw json.RawMessage, v any) {
 	require.NoError(t, d.Decode(v))
 }
 
-// goValue is a vector's JSON value as a driver gives it for the column's type: bytea arrives as hex in the vectors.
-func goValue(t *testing.T, typ string, v any) any {
+// vectorValue is a vector's JSON value as a driver gives it for the column's type: bytea arrives as hex in the vectors.
+func vectorValue(t *testing.T, typ string, v any) any {
 	t.Helper()
 	switch x := v.(type) {
 	case nil:
@@ -57,7 +57,7 @@ func goValue(t *testing.T, typ string, v any) any {
 func values(t *testing.T, types map[string]string, row map[string]any) map[string]any {
 	out := map[string]any{}
 	for k, v := range row {
-		out[k] = goValue(t, types[k], v)
+		out[k] = vectorValue(t, types[k], v)
 	}
 	return out
 }

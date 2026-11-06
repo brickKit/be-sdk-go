@@ -30,6 +30,8 @@ var inRecovery = map[string]recoveryRule{
 	"be.partitions.maintain": {why: "not run: the partitions ahead were made before T; hourly once open"},
 	"be.tiering.candidates": {why: "not run: sealing reads and writes the member's own database, which goes back; " +
 		"the next window once open"},
+	"be.tiering.transfer": {why: "not run: a publish changes the member's catalog, which goes back; the sealed units " +
+		"wait for the opening"},
 }
 
 // checkRecoveryRule refuses one of the SDK's jobs that does not say how it behaves in a recovery.

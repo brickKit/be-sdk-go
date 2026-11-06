@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -38,14 +39,25 @@ func Keys(classes []Class) []config.Key {
 			keys = append(keys, config.Key{Name: ResidenceKey(c.Name), Type: config.String})
 		}
 	}
-	return keys
+	return append(keys, StoreKeys()...)
 }
 
 // NewCatalog checks the classes (P15.1-P15.5; the SDK's own tables, be_*, are never a class's) and the configured
-// residences against N, and builds the member's catalog.
-func NewCatalog(d *db.DB, classes []Class, values *config.Values) (*Catalog, error) {
+// residences against N, and builds the member's catalog with its cold store (prefix: the component's in the bucket).
+// A class whose route is the object store needs one; an erasable class may not go to a locked bucket (P15.32).
+func NewCatalog(ctx context.Context, d *db.DB, classes []Class, values *config.Values, prefix string) (*Catalog, error) {
 	n := int(values.Int(KeyListDays))
-	c := &Catalog{DB: d, Classes: map[string]Class{}, Registry: NewRegistry(), Residence: map[string]int{}}
+	store, err := StoreFrom(values, prefix)
+	if err != nil {
+		return nil, err
+	}
+	c := &Catalog{DB: d, Classes: map[string]Class{}, Registry: NewRegistry(), Residence: map[string]int{}, Store: store}
+	locked := false
+	if store != nil {
+		if locked, err = store.Locked(ctx); err != nil {
+			return nil, err
+		}
+	}
 	for _, cl := range classes {
 		var own []string
 		for _, t := range cl.Tables() {
@@ -62,6 +74,15 @@ func NewCatalog(d *db.DB, classes []Class, values *config.Values) (*Catalog, err
 		c.Classes[cl.Name] = cl
 		if !cl.Tierable() {
 			continue
+		}
+		if slices.Contains(cl.Routes, RouteObject) {
+			switch {
+			case store == nil && cl.Routes[0] == RouteObject:
+				return nil, fmt.Errorf("%s: its route is the object store but %s is not set", cl.Name, KeyStoreURL)
+			case locked && len(cl.Erasable) > 0:
+				return nil, fmt.Errorf("%s: erasable columns may not go to the object-locked bucket %s (P15.32)",
+					cl.Name, store.Bucket)
+			}
 		}
 		raw := values.String(ResidenceKey(cl.Name))
 		switch {

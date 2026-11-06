@@ -30,7 +30,7 @@ func tierClass() tiering.Class {
 		Children: []tiering.Child{{Table: tiering.Table{Name: "note_lines", PK: "id", Columns: map[string]string{
 			"id": tiering.TypeUUID, "note_id": tiering.TypeUUID}}, FK: "note_id"}},
 		Anchor: "closed_at", Created: "created_at", Terminal: "r.closed_at IS NOT NULL", ResidenceDays: 365,
-		Retention: tiering.Retention{MinDays: 365, MaxDays: 3650, Basis: "test"}, Routes: []string{tiering.RouteObject},
+		Retention: tiering.Retention{MinDays: 365, MaxDays: 3650, Basis: "test"}, Routes: []string{tiering.RoutePostgres},
 		SchemaVersion: "1"}
 }
 

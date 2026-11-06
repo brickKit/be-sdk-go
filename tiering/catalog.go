@@ -52,6 +52,7 @@ type Catalog struct {
 	Registry   *Registry
 	Residence  map[string]int // the configured residence per class (TIERING_RESIDENCE_<class>), Never for never
 	MaxMembers int
+	Store      *Store // the cold route's bucket; nil without TIERING_STORE_URL
 }
 
 // Grouping is one grouping of a class: its canonical key, the group columns' values (text) and the period.

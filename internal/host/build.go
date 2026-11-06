@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/audit"
@@ -123,11 +124,14 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		if sh.DB == nil {
 			return nil, errors.New("the definition declares tiering classes but the component has no database (Migrations)")
 		}
-		if catalog, err = tiering.NewCatalog(sh.DB, def.Tiering, values); err != nil {
+		if catalog, err = tiering.NewCatalog(ctx, sh.DB, def.Tiering, values, strings.ReplaceAll(def.ID, "/", "-")); err != nil {
 			return nil, err
 		}
-		if err := m.addSDKJob(catalog.CandidatesJob(values.String(tiering.KeyWindow), m.Logger)); err != nil {
-			return nil, err
+		for _, j := range []work.Job{catalog.CandidatesJob(values.String(tiering.KeyWindow), m.Logger),
+			catalog.TransferJob(m.Logger)} {
+			if err := m.addSDKJob(j); err != nil {
+				return nil, err
+			}
 		}
 		m.hasJobs = true
 	}

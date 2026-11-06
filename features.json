@@ -610,36 +610,17 @@
         "tiering.TestASealWaitsForAChildWrite",
         "tiering.TestABlockedGroupingStaysOpen",
         "tiering.TestTheCandidatesJobSealsAndAlerts",
-        "launcher.TestTheMigrateEntryInstallsTheBarrier"
+        "launcher.TestTheMigrateEntryInstallsTheBarrier",
+        "tiering.TestEveryColumnTypeRoundTrips",
+        "tiering.TestATransferPublishesAVerifiedCopy",
+        "tiering.TestOnlyTheCurrentClaimPublishes",
+        "tiering.TestATamperedCopyDoesNotVerify",
+        "tiering.TestALockedBucketRefusesErasableData"
       ],
       "pending": [
         {
-          "rule": "P15.14",
-          "reason": "未实现：装配项目底层先行第 5 项的 T5"
-        },
-        {
-          "rule": "P15.15",
-          "reason": "未实现：装配项目底层先行第 5 项的 T5"
-        },
-        {
-          "rule": "P15.16",
-          "reason": "未实现：装配项目底层先行第 5 项的 T5"
-        },
-        {
-          "rule": "P15.17",
-          "reason": "未实现：装配项目底层先行第 5 项的 T5"
-        },
-        {
-          "rule": "P15.18",
-          "reason": "未实现：装配项目底层先行第 5 项的 T5"
-        },
-        {
           "rule": "P15.19",
           "reason": "未实现：装配项目底层先行第 5 项的 T6"
-        },
-        {
-          "rule": "P15.20",
-          "reason": "未实现：装配项目底层先行第 5 项的 T5"
         },
         {
           "rule": "P15.21",
@@ -684,10 +665,6 @@
         {
           "rule": "P15.31",
           "reason": "未实现：装配项目底层先行第 5 项的 T7"
-        },
-        {
-          "rule": "P15.32",
-          "reason": "未实现：装配项目底层先行第 5 项的 T5"
         },
         {
           "rule": "P15.33",
