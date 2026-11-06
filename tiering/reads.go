@@ -100,6 +100,16 @@ func (c *Catalog) unavailable(u unitRoute, cause error) error {
 func (c *Catalog) readUnitRoute(ctx context.Context, u unitRoute, root string) ([]Aggregate, error) {
 	cl := c.Classes[u.class]
 	tables := map[string][]map[string]any{}
+	var m Manifest // the version's manifest: its structure version, and an object route's objects
+	var raw []byte
+	if err := c.DB.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+		return tx.QueryRow(ctx, "SELECT manifest FROM be_tier_manifest WHERE unit = $1 AND version = $2", u.id, u.version).Scan(&raw)
+	}); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
 	route, version := u.route, u.version
 	if u.thawVersion != 0 {
 		route, version = RoutePostgres, u.thawVersion
@@ -136,19 +146,9 @@ func (c *Catalog) readUnitRoute(ctx context.Context, u unitRoute, root string) (
 		if c.Store == nil {
 			return nil, c.unavailable(u, errors.New("no object store configured"))
 		}
-		var raw []byte
-		if err := c.DB.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
-			return tx.QueryRow(ctx, "SELECT manifest FROM be_tier_manifest WHERE unit = $1 AND version = $2", u.id, version).Scan(&raw)
-		}); err != nil {
-			return nil, err
-		}
-		var m Manifest
-		if err := json.Unmarshal(raw, &m); err != nil {
-			return nil, err
-		}
 		for _, mt := range m.Tables {
-			t, _, ok := tableOf(cl, mt.Name)
-			if !ok {
+			t := manifestTable(mt) // the structure the objects were written in
+			if _, _, ok := tableOf(cl, mt.Name); !ok && m.SchemaVersion == cl.SchemaVersion {
 				return nil, c.unavailable(u, fmt.Errorf("the manifest names %s", mt.Name))
 			}
 			for _, o := range mt.Objects {
@@ -178,6 +178,12 @@ func (c *Catalog) readUnitRoute(ctx context.Context, u unitRoute, root string) (
 		}
 	default:
 		return nil, fmt.Errorf("tiering: unit %s has no route to read", u.id)
+	}
+	if m.SchemaVersion != cl.SchemaVersion { // an older structure: through the component's converter (P15.33)
+		var err error
+		if tables, err = c.convert(cl, m.SchemaVersion, tables); err != nil {
+			return nil, err
+		}
 	}
 	return assemble(cl, tables, u, root)
 }

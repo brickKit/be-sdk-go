@@ -79,10 +79,11 @@ type Catalog struct {
 	// Subject is a principal's authorization now (the member's view), for the exports; nil or a nil answer: none.
 	Subject func(principal string) *authz.Subject
 
-	mu        sync.Mutex
-	readers   map[string]Reader
-	slotsOnce sync.Once
-	slots     chan struct{}
+	mu         sync.Mutex
+	readers    map[string]Reader
+	converters map[string]Converter // "<class>@<structure version>"
+	slotsOnce  sync.Once
+	slots      chan struct{}
 }
 
 // Grouping is one grouping of a class: its canonical key, the group columns' values (text) and the period.

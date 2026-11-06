@@ -191,82 +191,28 @@ func (c *Catalog) eraseSealed(ctx context.Context, tx db.Tx, cl Class, unit, roo
 // eraseAgain writes a published or released unit again with the aggregate erased, as a new manifest version on its
 // route (the publish rule, P15.15-P15.18); the online rows a published unit still has are erased in the publish.
 func (c *Catalog) eraseAgain(ctx context.Context, cl Class, unit, root string, conclude func(context.Context, db.Tx) error) error {
-	claim, err := c.claim(ctx, unit, StatePublished, StateReleased)
-	if err != nil {
-		return err
-	}
-	var u unitRoute
-	if err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) (err error) {
-		u, err = c.routeOf(ctx, tx, unit)
-		return err
-	}); err != nil {
-		return err
-	}
-	u.thawVersion = 0 // the route's own copy, not a thawed one
-	aggs, err := c.readUnitRoute(ctx, u, "")
-	if err != nil {
-		return err
-	}
 	erasable := map[string]bool{}
 	for _, col := range cl.Erasable {
 		erasable[col] = true
 	}
-	tables := map[string][]map[string]any{}
-	var sums []TableSum
-	add := func(t Table, row map[string]any, erase bool) error {
-		if erase {
-			for col := range row {
-				if erasable[col] {
-					delete(row, col) // null: absent from the canonical row
-				}
-			}
-		}
-		d, err := FromCanonical(t, row)
-		if err != nil {
-			return err
-		}
-		tables[t.Name] = append(tables[t.Name], d)
-		return nil
-	}
-	for _, a := range aggs {
-		mine := fmt.Sprint(a.Root[cl.Root.PK]) == root
-		if err := add(cl.Root, a.Root, mine); err != nil {
-			return err
-		}
-		for _, ch := range cl.Children {
-			for _, r := range a.Children[ch.Name] {
-				if err := add(ch.Table, r, mine); err != nil {
-					return err
-				}
+	null := func(row map[string]any) {
+		for col := range row {
+			if erasable[col] {
+				delete(row, col) // null: absent from the canonical row
 			}
 		}
 	}
-	for _, t := range cl.Tables() {
-		var h TableHash
-		for _, r := range tables[t.Name] {
-			k, err := PK(t.Columns, []string{t.PK}, r)
-			if err != nil {
-				return err
-			}
-			b, err := Row(t.Columns, r)
-			if err != nil {
-				return err
-			}
-			h.Add(k, b)
+	_, err := c.rewrite(ctx, unit, "", func(a *Aggregate) {
+		if fmt.Sprint(a.Root[cl.Root.PK]) != root {
+			return
 		}
-		sums = append(sums, TableSum{Name: t.Name, Rows: h.Len(), SHA256: h.Sum()})
-	}
-	if claim.Digest, err = UnitDigest(cl.Name, cl.SchemaVersion, sums); err != nil {
-		return err
-	}
-	m, err := c.copyTables(ctx, claim, u.route, tables)
-	if err != nil {
-		return err
-	}
-	if err := c.Verify(ctx, m); err != nil {
-		return err
-	}
-	return c.publish(ctx, claim, m, func(ctx context.Context, tx db.Tx) error {
+		null(a.Root)
+		for _, rows := range a.Children {
+			for _, r := range rows {
+				null(r)
+			}
+		}
+	}, func(ctx context.Context, tx db.Tx, claim Claim) error {
 		if _, err := tx.Exec(ctx, "DELETE FROM be_tier_row WHERE unit::text = $1 AND version = -1", unit); err != nil {
 			return err
 		}
@@ -280,6 +226,7 @@ func (c *Catalog) eraseAgain(ctx context.Context, cl Class, unit, root string, c
 		}
 		return conclude(ctx, tx)
 	})
+	return err
 }
 
 // EraseJobOf is the queue job that redoes an erasure replayed in a full recovery (P15.30) once the member is open.

@@ -516,6 +516,20 @@ func (c *Catalog) TransferJob(log *slog.Logger) work.Job {
 				log.Info("an archive unit is published", "event", "tiering_published", "unit", u, "route", m.Route,
 					"version", m.Version)
 			}
+			due, err := c.rerouteDue(ctx) // a class's first route changed: its units move there (P15.35)
+			if err != nil {
+				return err
+			}
+			for u, route := range due {
+				m, err := c.Reroute(ctx, u, route)
+				if err != nil {
+					log.Error("an archive unit's route change failed; it stays on its route", "event", "tiering_reroute_failed",
+						"unit", u, "route", route, "error", err.Error())
+					continue
+				}
+				log.Info("an archive unit moved to another route", "event", "tiering_rerouted", "unit", u, "route", m.Route,
+					"version", m.Version)
+			}
 			return run.Complete(ctx, func(context.Context, db.Tx) error { return nil })
 		}}
 }

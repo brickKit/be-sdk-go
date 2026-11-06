@@ -179,6 +179,20 @@ func (c *Catalog) ReleaseJob(log *slog.Logger) work.Job {
 	return work.Job{Name: "be.tiering.release", Kind: work.Singleton, Effect: work.Local, Interval: time.Hour,
 		MaxAttempts: work.Unlimited, Timeout: time.Hour,
 		Handle: func(ctx context.Context, run *work.Run) error {
+			olds, err := c.oldVersions(ctx) // the data of versions a newer one replaced (P15.39)
+			if err != nil {
+				return err
+			}
+			for _, u := range olds {
+				why, err := c.ReleaseOld(ctx, u)
+				switch {
+				case err != nil:
+					log.Error("an archive unit's old version could not be released", "event", "tiering_release_old_failed",
+						"unit", u, "error", err.Error())
+				case len(why) == 0:
+					log.Info("an archive unit's old version is released", "event", "tiering_released_old", "unit", u)
+				}
+			}
 			units, err := c.unitsIn(ctx, StatePublished)
 			if err != nil {
 				return err
