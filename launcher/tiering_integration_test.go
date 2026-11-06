@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
@@ -15,6 +16,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/brickKit/be-sdk-go/v3/sectest"
 	"github.com/brickKit/be-sdk-go/v3/tiering"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +33,7 @@ func tierClass() tiering.Class {
 			"id": tiering.TypeUUID, "note_id": tiering.TypeUUID}}, FK: "note_id"}},
 		Anchor: "closed_at", Created: "created_at", Terminal: "r.closed_at IS NOT NULL", ResidenceDays: 365,
 		Retention: tiering.Retention{MinDays: 365, MaxDays: 3650, Basis: "test"}, Routes: []string{tiering.RoutePostgres},
-		SchemaVersion: "1"}
+		SchemaVersion: "1", HoldOperation: "demo.tierl.hold", ApproveOperation: "demo.tierl.approve"}
 }
 
 // P15.13: the migrate entry installs the write barrier on the class's tables, again on every run (idempotent).
@@ -40,7 +42,7 @@ func TestTheMigrateEntryInstallsTheBarrier(t *testing.T) {
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "tierl", "")
 	def := component.Definition{ID: "demo/tierl", Version: "3.0.0", GRPCPort: portNow(), Recovery: "demo.tierl.recover",
-		Authz: sectest.Defs("demo/tierl", "demo.tierl", "demo.tierl.recover"),
+		Authz: sectest.Defs("demo/tierl", "demo.tierl", "demo.tierl.recover", "demo.tierl.hold", "demo.tierl.approve"),
 		Migrations: fstest.MapFS{"0001_notes.up.sql": {Data: []byte("CREATE TABLE notes (id uuid PRIMARY KEY, " +
 			"closed_at timestamptz, created_at timestamptz NOT NULL); CREATE TABLE note_lines (id uuid PRIMARY KEY, " +
 			"note_id uuid NOT NULL REFERENCES notes (id));")}},
@@ -76,4 +78,34 @@ func TestTheMigrateEntryInstallsTheBarrier(t *testing.T) {
 	code := Run(context.Background(), def, Options{Env: env(short), Stdout: &logs, Stderr: &logs})
 	assert.NotEqual(t, ExitOK, code)
 	assert.True(t, strings.Contains(logs.String(), "TIERING_RESIDENCE_DEMO_NOTES"), logs.String())
+}
+
+// P15.1, P15.29, P15.30: a component with a class it can destroy starts (its hold and approval operations declared,
+// the destructions' replay registered under its replay operation) and runs the SDK's tiering jobs.
+func TestAComponentWithClassesServes(t *testing.T) {
+	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
+	pgtest.Member(t, "tiers", "")
+	def := component.Definition{ID: "demo/tiers", Version: "3.0.0", GRPCPort: portNow(), Recovery: "demo.tierl.recover",
+		Replay: "demo.tierl.replay",
+		Authz: sectest.Defs("demo/tiers", "demo.tierl", "demo.tierl.recover", "demo.tierl.replay", "demo.tierl.hold",
+			"demo.tierl.approve"),
+		Migrations: fstest.MapFS{"0001_notes.up.sql": {Data: []byte("CREATE TABLE notes (id uuid PRIMARY KEY, " +
+			"closed_at timestamptz, created_at timestamptz NOT NULL); CREATE TABLE note_lines (id uuid PRIMARY KEY, " +
+			"note_id uuid NOT NULL REFERENCES notes (id));")}},
+		Tiering: []tiering.Class{tierClass()},
+		New:     func(rt *runtime.Runtime) (component.Module, error) { return noRoutes{}, nil }}
+	_, logs, stop := runLogged(t, def, withIdentity(pgtest.MemberEnv(host, port, "tiers"), def))
+	admin := pgtest.Admin(t, pgtest.Database)
+	var jobs []string
+	require.Eventually(t, func() bool {
+		rows, err := admin.Query(context.Background(), "SELECT job FROM tiers.be_work_item WHERE job LIKE 'be.tiering.%' ORDER BY job")
+		if err != nil {
+			return false
+		}
+		jobs, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		return err == nil && len(jobs) >= 4
+	}, 10*time.Second, 50*time.Millisecond, logs.String())
+	assert.Equal(t, []string{"be.tiering.destroy", "be.tiering.export.cleanup", "be.tiering.release", "be.tiering.transfer"},
+		jobs, "the singletons (the candidates are a cron job, the export a queue)")
+	stop()
 }

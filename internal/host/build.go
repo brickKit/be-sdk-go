@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -127,6 +128,9 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		if catalog, err = tiering.NewCatalog(ctx, sh.DB, def.Tiering, values, strings.ReplaceAll(def.ID, "/", "-")); err != nil {
 			return nil, err
 		}
+		if err := tieringOperations(def); err != nil {
+			return nil, err
+		}
 		if values.String("RUN_PROFILE_URL") != "" && m.tls != nil { // when the latest backup finished (P15.21)
 			rp, err := runprofile.New(runprofile.Options{Endpoint: values.String("RUN_PROFILE_URL"),
 				Region: values.String("RUN_PROFILE_REGION"), Bucket: values.String("RUN_PROFILE_BUCKET"),
@@ -138,6 +142,7 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 			}
 			catalog.Backups = tiering.BackupsFrom(rp)
 		}
+		catalog.Evidence = writer          // the destructions' evidence (P15.29); their replay is registered with the module's
 		catalog.Enqueue = m.runner.Enqueue // the history exports (P15.38), under the requester's authorization then
 		catalog.Subject = func(principal string) *authz.Subject {
 			if m.holder == nil {
@@ -147,7 +152,7 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		}
 		for _, j := range []work.Job{catalog.CandidatesJob(values.String(tiering.KeyWindow), m.Logger),
 			catalog.TransferJob(m.Logger), catalog.ReleaseJob(m.Logger), catalog.ExportJobOf(m.Logger),
-			catalog.ExportCleanupJob(m.Logger)} {
+			catalog.ExportCleanupJob(m.Logger), catalog.DestroyJob(m.Logger)} {
 			if err := m.addSDKJob(j); err != nil {
 				return nil, err
 			}
@@ -219,6 +224,24 @@ func auditPolicy(defs *authz.Definitions) (map[string]map[string]bool, map[strin
 		}
 	}
 	return restricted, strict
+}
+
+// tieringOperations checks that a class's hold and approval operations are the component's (P15.1, P15.28, P15.29).
+func tieringOperations(def component.Definition) error {
+	for _, cl := range def.Tiering {
+		for _, op := range []string{cl.HoldOperation, cl.ApproveOperation} {
+			if op == "" {
+				continue
+			}
+			if def.Authz == nil {
+				return fmt.Errorf("%s: the operation %s needs the component's authorization definitions (Definition.Authz)", cl.Name, op)
+			}
+			if !slices.ContainsFunc(def.Authz.Operations, func(o authz.Operation) bool { return o.Key == op }) {
+				return fmt.Errorf("%s: the operation %s is not declared in the component's authorization definitions", cl.Name, op)
+			}
+		}
+	}
+	return nil
 }
 
 // evidenceWriter builds the member's evidence writer and registers be.evidence.transfer (P12.15): the evidence store
@@ -520,10 +543,17 @@ func (m *Member) systemSurface(member obs.Member, rt *runtime.Runtime) error {
 			services.Register(&sourcepb.WatermarkService_ServiceDesc, m.watermark, map[string]grpcx.Method{"Pull": method})
 		}
 	}
-	if rp, ok := m.Module.(evidence.Replayer); ok { // the owner's replay of its evidence (P12.19)
+	rp, replayer := m.Module.(evidence.Replayer)
+	destroys := rt.Tiering != nil && rt.Tiering.Destroys()
+	if replayer || destroys { // the owner's replay of its evidence (P12.19), the tiering's destructions with it
 		var replays evidence.Replays
-		if err := rp.Replays(&replays); err != nil {
-			return fmt.Errorf("the module's replays could not be registered: %w", err)
+		if replayer {
+			if err := rp.Replays(&replays); err != nil {
+				return fmt.Errorf("the module's replays could not be registered: %w", err)
+			}
+		}
+		if destroys {
+			rt.Tiering.Replays(&replays)
 		}
 		if err := replays.Err(); err != nil {
 			return err

@@ -114,7 +114,23 @@ func (c *Catalog) Release(ctx context.Context, unit string) ([]string, error) {
 	if err != nil || len(why) > 0 {
 		return why, err
 	}
-	cl := c.Classes[u.class]
+	err = c.deleteOnline(ctx, unit, c.Classes[u.class], func(ctx context.Context, tx db.Tx) error {
+		if _, err := tx.Exec(ctx, "UPDATE be_tier_unit SET state = 'released', released_at = now() WHERE id = $1 "+
+			"AND state = 'published'", unit); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, "UPDATE be_tier_catalog SET version = version + 1")
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+// deleteOnline deletes a unit's online rows in batches, the children first, each transaction naming the unit for the
+// write barrier (be.tier_unit); last runs in the transaction that finds none left (nil: nothing more).
+func (c *Catalog) deleteOnline(ctx context.Context, unit string, cl Class, last func(context.Context, db.Tx) error) error {
 	batch := c.Batch
 	if batch <= 0 {
 		batch = ReleaseBatch
@@ -146,18 +162,16 @@ func (c *Catalog) Release(ctx context.Context, unit string) ([]string, error) {
 				return nil
 			}
 			done = true
-			if _, err := tx.Exec(ctx, "UPDATE be_tier_unit SET state = 'released', released_at = now() WHERE id = $1 "+
-				"AND state = 'published'", unit); err != nil {
-				return err
+			if last == nil {
+				return nil
 			}
-			_, err = tx.Exec(ctx, "UPDATE be_tier_catalog SET version = version + 1")
-			return err
+			return last(ctx, tx)
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 // ReleaseJob is the SDK's job that releases the published units whose conditions hold (P15.19).

@@ -14,6 +14,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/authz"
 	"github.com/brickKit/be-sdk-go/v3/canon"
 	"github.com/brickKit/be-sdk-go/v3/db"
+	"github.com/brickKit/be-sdk-go/v3/evidence"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/jackc/pgx/v5"
 )
@@ -70,6 +71,8 @@ type Catalog struct {
 	ColdConcurrency int
 	// Enqueue queues a job's work item in the transaction (the member's runner); nil: no exports.
 	Enqueue func(ctx context.Context, tx db.Tx, job string, args any) (string, error)
+	// Evidence writes the destructions' and erasures' evidence (P15.29-P15.31); nil: neither is done.
+	Evidence *evidence.Writer
 	// Subject is a principal's authorization now (the member's view), for the exports; nil or a nil answer: none.
 	Subject func(principal string) *authz.Subject
 

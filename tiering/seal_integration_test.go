@@ -42,7 +42,8 @@ func class() tiering.Class {
 		Group: []string{"legal_entity"}, Anchor: "closed_at", Created: "created_at",
 		Terminal: "r.status = 'closed'", ResidenceDays: 365,
 		Retention: tiering.Retention{MinDays: 3650, MaxDays: 3650, Basis: "test"},
-		Locate:    []string{"legal_entity"}, Routes: []string{tiering.RouteObject}, SchemaVersion: "1"}
+		Locate:    []string{"legal_entity"}, Routes: []string{tiering.RouteObject}, SchemaVersion: "1",
+		HoldOperation: "sales.order.hold", ApproveOperation: "sales.order.approve_destruction"}
 }
 
 type env struct {

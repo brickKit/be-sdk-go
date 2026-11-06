@@ -46,6 +46,8 @@ github.com/brickKit/be-protocol/v3 v3.0.0-alpha.100 h1:LlKJXamxE5RXL4dSKbQ+6OCO2
 github.com/brickKit/be-protocol/v3 v3.0.0-alpha.100/go.mod h1:eqJQ6fzJYtWspmJADXfVuXlY4++EQbAyrZWeABZH7SA=
 github.com/brickKit/be-protocol/v3 v3.0.0-alpha.101 h1:HegFv4jszYruks+N0KFk0UneenzmWDIVDmQQciA5J/U=
 github.com/brickKit/be-protocol/v3 v3.0.0-alpha.101/go.mod h1:eqJQ6fzJYtWspmJADXfVuXlY4++EQbAyrZWeABZH7SA=
+github.com/brickKit/be-protocol/v3 v3.0.0-alpha.102 h1:AV55GWf5UajYoUxOKgBSdE1MG46nS4wayMhr3uqMs34=
+github.com/brickKit/be-protocol/v3 v3.0.0-alpha.102/go.mod h1:eqJQ6fzJYtWspmJADXfVuXlY4++EQbAyrZWeABZH7SA=
 github.com/brickKit/contract-infra-authz/v3 v3.0.0-alpha.3 h1:Gdt8TtKoPEovg7lZ6kgXqhWZjuCLHYjMu8dfw3abI8s=
 github.com/brickKit/contract-infra-authz/v3 v3.0.0-alpha.3/go.mod h1:21N0lZKoL1STxtsx5Yi9Wh8cJ32gtsQuVF52oxMWaps=
 github.com/brickKit/infra-audit/contract/v3 v3.0.0-alpha.2 h1:0snoszyg1imd9WGsK7I2H0lGNM6CKDOoE06D2jn/4G4=

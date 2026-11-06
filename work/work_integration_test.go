@@ -384,8 +384,9 @@ func TestAnItemRunsNoEarlierThanItsRunAt(t *testing.T) { // P7.24, P7.5
 	case <-time.After(3 * time.Second):
 		t.Fatal("an item due in the past did not run")
 	}
-	st, _, _, _ := state(t, admin, past)
-	require.Equal(t, "done", st)
+	// the handler signals before its Complete commits: the item is done once that commit lands, not at the signal
+	require.Eventually(t, func() bool { st, _, _, _ := state(t, admin, past); return st == "done" }, 3*time.Second,
+		10*time.Millisecond, "the item due in the past finishes")
 
 	select { // the future one waits: 30 ms polls find nothing to claim until its run_at
 	case a := <-ran:

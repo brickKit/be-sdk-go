@@ -78,6 +78,10 @@ type Class struct {
 	Routes   []string
 	// SchemaVersion is the version of the class's tables' structure, written in each manifest (P15.33).
 	SchemaVersion string
+	// HoldOperation and ApproveOperation are the component's operations that set or lift a hold and give or withdraw
+	// a destruction approval (P15.28, P15.29): the hold one when the class can be destroyed or erased, the approval
+	// one when it can be destroyed (its retention is not pending).
+	HoldOperation, ApproveOperation string
 }
 
 var plainIdent = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
@@ -130,6 +134,12 @@ func (c Class) Check(n int, registries []string) error {
 	}
 	if c.SchemaVersion == "" {
 		bad("a class needs its schema version")
+	}
+	if c.HoldOperation == "" && (!c.Retention.Pending || len(c.Erasable) > 0) {
+		bad("a class that can be destroyed or erased declares its hold operation (P15.28)")
+	}
+	if c.ApproveOperation == "" && !c.Retention.Pending {
+		bad("a class that can be destroyed declares its destruction-approval operation (P15.29)")
 	}
 	for _, t := range c.Tables() {
 		if slices.Contains(registries, t.Name) {
