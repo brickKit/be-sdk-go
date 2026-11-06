@@ -203,6 +203,14 @@ func (c *Catalog) DestroyJob(log *slog.Logger) work.Job {
 			}); err != nil {
 				return err
 			}
+			continued, err := c.continueReleases(ctx) // released units with online rows left (the recovery check)
+			if err != nil {
+				log.Error("a released unit's online rows could not be deleted", "event", "tiering_release_continue_failed",
+					"error", err.Error())
+			}
+			for _, u := range continued {
+				log.Warn("a released unit still had online rows: deleted", "event", "tiering_release_continued", "unit", u)
+			}
 			for _, u := range units {
 				why, err := c.Destroy(ctx, u)
 				switch {

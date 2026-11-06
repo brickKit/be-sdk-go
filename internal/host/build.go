@@ -443,7 +443,7 @@ const reconcileTimeout = 10 * time.Minute
 
 // recoveryChecks registers a full recovery's checks (chapter 14) for a member with a database: the SDK's own and the
 // module's; their operation, Definition.Recovery, also guards the external reconciliation.
-func (m *Member) recoveryChecks(services *grpcx.Services) error {
+func (m *Member) recoveryChecks(services *grpcx.Services, catalog *tiering.Catalog) error {
 	if m.db == nil {
 		if _, ok := m.Module.(recovery.Checker); ok {
 			return errors.New("a module that registers recovery checks has a database (Migrations)")
@@ -454,6 +454,11 @@ func (m *Member) recoveryChecks(services *grpcx.Services) error {
 		return errors.New("a component with a database declares the operation of a full recovery's checks (Definition.Recovery, P14.1)")
 	}
 	reg := &recovery.Checks{}
+	if catalog != nil { // the SDK's tiering check, before the component's own (P15.36)
+		if err := reg.Add(catalog.RecoveryCheck()); err != nil {
+			return err
+		}
+	}
 	if c, ok := m.Module.(recovery.Checker); ok {
 		if err := c.RecoveryChecks(reg); err != nil {
 			return fmt.Errorf("the module's recovery checks could not be registered: %w", err)
@@ -569,7 +574,7 @@ func (m *Member) systemSurface(member obs.Member, rt *runtime.Runtime) error {
 			Replays: &replays, Log: m.Logger}, map[string]grpcx.Method{"Replay": {Operation: m.Def.Replay,
 			Callers: []string{RecoveryTool}}})
 	}
-	if err := m.recoveryChecks(&services); err != nil {
+	if err := m.recoveryChecks(&services, rt.Tiering); err != nil {
 		return err
 	}
 	if m.external != nil { // the external reconciliation of a full recovery's step 7 (P13.11)
