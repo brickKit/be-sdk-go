@@ -39,7 +39,7 @@ func Keys(classes []Class) []config.Key {
 			keys = append(keys, config.Key{Name: ResidenceKey(c.Name), Type: config.String})
 		}
 	}
-	return append(keys, StoreKeys()...)
+	return append(append(keys, ColdKeys()...), StoreKeys()...)
 }
 
 // NewCatalog checks the classes (P15.1-P15.5; the SDK's own tables, be_*, are never a class's) and the configured
@@ -52,12 +52,14 @@ func NewCatalog(ctx context.Context, d *db.DB, classes []Class, values *config.V
 		return nil, err
 	}
 	c := &Catalog{DB: d, Classes: map[string]Class{}, Registry: NewRegistry(), Residence: map[string]int{}, Store: store,
-		N: time.Duration(n) * 24 * time.Hour, Grace: values.Duration(KeyGrace)}
+		N: time.Duration(n) * 24 * time.Hour, Grace: values.Duration(KeyGrace), ColdSyncLimit: values.Duration(KeyColdSyncLimit),
+		ColdConcurrency: int(values.Int(KeyColdConcurrency))}
 	locked := false
 	if store != nil {
 		if locked, err = store.Locked(ctx); err != nil {
 			return nil, err
 		}
+		c.StoreLocked = locked
 	}
 	for _, cl := range classes {
 		var own []string

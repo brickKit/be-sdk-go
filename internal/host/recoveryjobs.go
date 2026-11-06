@@ -34,6 +34,9 @@ var inRecovery = map[string]recoveryRule{
 		"wait for the opening"},
 	"be.tiering.release": {why: "not run: deleting online rows of the member's own database, which goes back; " +
 		"once open"},
+	"be.tiering.export": {why: "not run: an export reads the member's own database, which goes back, and the " +
+		"authorization being recovered; the queued exports run once open"},
+	"be.tiering.export.cleanup": {why: "not run: housekeeping of the member's own database, which goes back; once open"},
 }
 
 // checkRecoveryRule refuses one of the SDK's jobs that does not say how it behaves in a recovery.

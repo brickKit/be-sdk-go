@@ -8,8 +8,10 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/brickKit/be-sdk-go/v3/authz"
 	"github.com/brickKit/be-sdk-go/v3/canon"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/ids"
@@ -60,6 +62,21 @@ type Catalog struct {
 	Backups BackupSource
 	// Batch bounds the rows a release deletes per table and transaction (default ReleaseBatch).
 	Batch int
+	// StoreLocked: the store has object lock (no erasable class, no exports).
+	StoreLocked bool
+	// ColdSyncLimit bounds a synchronous history read and ColdConcurrency the member's cold reads at once
+	// (TIERING_COLD_SYNC_LIMIT, TIERING_COLD_CONCURRENCY; 10 s and 4 when zero).
+	ColdSyncLimit   time.Duration
+	ColdConcurrency int
+	// Enqueue queues a job's work item in the transaction (the member's runner); nil: no exports.
+	Enqueue func(ctx context.Context, tx db.Tx, job string, args any) (string, error)
+	// Subject is a principal's authorization now (the member's view), for the exports; nil or a nil answer: none.
+	Subject func(principal string) *authz.Subject
+
+	mu        sync.Mutex
+	readers   map[string]Reader
+	slotsOnce sync.Once
+	slots     chan struct{}
 }
 
 // Grouping is one grouping of a class: its canonical key, the group columns' values (text) and the period.

@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.99",
+  "protocol": "3.0.0-alpha.101",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -621,16 +621,16 @@
         "tiering.TestReadsByKeyFromEveryRoute",
         "tiering.TestAMissingObjectIsUnavailableNotAbsent",
         "tiering.TestAListUnderASnapshotReadsEachOrderOnce",
-        "tiering.TestAThawedUnitReadsFromItsCopy"
+        "tiering.TestAThawedUnitReadsFromItsCopy",
+        "tiering.TestAHistoryReadIsCompleteUnderTheCurrentAuthorization",
+        "tiering.TestAHistoryPastTheLimitBecomesAnExport",
+        "tiering.TestAHistoryThatCannotBeExportedIsNotCompletable",
+        "tiering.TestColdReadsAreBoundedPerMember"
       ],
       "pending": [
         {
           "rule": "P15.23",
           "reason": "列表的默认范围由组件的列表实现，随装配项目底层先行第 5 项的 T10"
-        },
-        {
-          "rule": "P15.26",
-          "reason": "冷读按当前授权过滤与掩码已实现（`ReadUnit` 的 Visible）；并发上限、同步时限与异步导出随第 5 项的 T6c"
         },
         {
           "rule": "P15.28",

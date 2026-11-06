@@ -66,6 +66,16 @@ func (s *Subject) Check(ctx context.Context, op string, facts Facts) (context.Co
 	return ctx, d, d.Err()
 }
 
+// Decider takes the subject's grant for an operation once and answers a function deciding each record of many by
+// its facts (P8.15): for records read outside SQL, as the cold rows of an archive (be-protocol P15.26).
+func (s *Subject) Decider(ctx context.Context, op string) (context.Context, func(Facts) Decision, error) {
+	ctx, o, r, g, err := s.grant(ctx, op)
+	if err != nil {
+		return ctx, nil, err
+	}
+	return ctx, func(f Facts) Decision { return Evaluate(r, g.Segments, o.Key, f, s.Principal, s.At) }, nil
+}
+
 // Err is the answer for a decision (P8.15, P8.16): not visible NOT_FOUND; the operation definitely not allowed
 // PERMISSION_DENIED, even when visibility is unknown (a known mismatch is denied by the operation's rule, security
 // 01); otherwise unknown AUTHORIZATION_UNPROVABLE; nil when allowed.

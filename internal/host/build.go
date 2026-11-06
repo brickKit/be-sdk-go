@@ -138,8 +138,16 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 			}
 			catalog.Backups = tiering.BackupsFrom(rp)
 		}
+		catalog.Enqueue = m.runner.Enqueue // the history exports (P15.38), under the requester's authorization then
+		catalog.Subject = func(principal string) *authz.Subject {
+			if m.holder == nil {
+				return nil
+			}
+			return &authz.Subject{Principal: principal, Defs: m.Def.Authz, Holder: m.holder, At: time.Now()}
+		}
 		for _, j := range []work.Job{catalog.CandidatesJob(values.String(tiering.KeyWindow), m.Logger),
-			catalog.TransferJob(m.Logger), catalog.ReleaseJob(m.Logger)} {
+			catalog.TransferJob(m.Logger), catalog.ReleaseJob(m.Logger), catalog.ExportJobOf(m.Logger),
+			catalog.ExportCleanupJob(m.Logger)} {
 			if err := m.addSDKJob(j); err != nil {
 				return nil, err
 			}

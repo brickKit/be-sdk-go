@@ -145,6 +145,11 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	return out, nil
 }
 
+// PresignGet is an address that reads one object for expires without credentials (the reader's credential signs it).
+func (s *Store) PresignGet(key string, expires time.Duration) string {
+	return s.read.signer.PresignGet(s.read.secret(), s.Bucket, key, expires, s.now())
+}
+
 // Delete removes an object (the deleter's credential); a missing object is not an error.
 func (s *Store) Delete(ctx context.Context, key string) error {
 	resp, out, err := s.do(ctx, s.erase, http.MethodDelete, key, "", nil, nil)

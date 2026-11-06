@@ -22,7 +22,7 @@ func TestEverySDKJobSaysWhatItDoesInARecovery(t *testing.T) {
 	jobs := []work.Job{partitionJob(nil), idem.Job(nil), events.PurgeJob(nil), work.PurgeJob(nil),
 		(&audit.Auditor{}).Job(nil, nil), evidence.Job(nil, nil, nil), (&extcmd.Commands{}).Job(),
 		(&tiering.Catalog{}).CandidatesJob("0 2 * * *", nil), (&tiering.Catalog{}).TransferJob(nil),
-		(&tiering.Catalog{}).ReleaseJob(nil)}
+		(&tiering.Catalog{}).ReleaseJob(nil), (&tiering.Catalog{}).ExportJobOf(nil), (&tiering.Catalog{}).ExportCleanupJob(nil)}
 	var names []string
 	for _, j := range jobs {
 		names = append(names, j.Name)
