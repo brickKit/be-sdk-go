@@ -118,7 +118,7 @@ func (c *Catalog) readUnit(ctx context.Context, cl Class, unit string) (map[stri
 			return err
 		}
 		for _, ch := range cl.Children {
-			if err := read(ch.Table, "t."+ident(ch.FK)+"::text IN "+members); err != nil {
+			if err := read(ch.Table, cl.rootExpr(ch, "t")+" IN "+members); err != nil {
 				return err
 			}
 		}
@@ -226,14 +226,15 @@ func (c *Catalog) copyRows(ctx context.Context, claim Claim, t Table, rows []map
 func (c *Catalog) Verify(ctx context.Context, m Manifest) error {
 	cl := c.Classes[m.Class]
 	var sums []TableSum
-	roots := map[string]bool{}
-	children := map[string][]any{} // child table -> its rows' root keys
+	keys := map[string]map[string]bool{} // table -> its rows' keys (canonical)
+	children := map[string][]any{}       // child table -> its rows' parent keys
 	for _, mt := range m.Tables {
 		t, fk, ok := tableOf(cl, mt.Name)
 		if !ok {
 			return fmt.Errorf("%w: table %s is not the class's", ErrVerification, mt.Name)
 		}
 		var h TableHash
+		keys[t.Name] = map[string]bool{}
 		add := func(r map[string]any) error {
 			k, err := PK(t.Columns, []string{t.PK}, r)
 			if err != nil {
@@ -244,10 +245,9 @@ func (c *Catalog) Verify(ctx context.Context, m Manifest) error {
 				return err
 			}
 			h.Add(k, b)
-			if t.Name == cl.Root.Name {
-				v, _ := Value(t.Columns[t.PK], r[t.PK])
-				roots[fmt.Sprint(v)] = true
-			} else {
+			v, _ := Value(t.Columns[t.PK], r[t.PK])
+			keys[t.Name][fmt.Sprint(v)] = true
+			if t.Name != cl.Root.Name {
 				children[t.Name] = append(children[t.Name], r[fk])
 			}
 			return nil
@@ -291,9 +291,8 @@ func (c *Catalog) Verify(ctx context.Context, m Manifest) error {
 					if err := json.Unmarshal(raw, &obj); err != nil {
 						return err
 					}
-					if t.Name == cl.Root.Name {
-						roots[fmt.Sprint(obj[t.PK])] = true
-					} else {
+					keys[t.Name][fmt.Sprint(obj[t.PK])] = true
+					if t.Name != cl.Root.Name {
 						children[t.Name] = append(children[t.Name], obj[fk])
 					}
 				}
@@ -307,12 +306,13 @@ func (c *Catalog) Verify(ctx context.Context, m Manifest) error {
 		}
 		sums = append(sums, TableSum{Name: mt.Name, Rows: h.Len(), SHA256: h.Sum()})
 	}
-	for name, keys := range children { // every child's root is in the unit (主子完整性)
-		ch, _, _ := tableOf(cl, name)
-		for _, k := range keys {
-			v, err := Value(ch.Columns[childFK(cl, name)], k)
-			if err != nil || !roots[fmt.Sprint(v)] {
-				return fmt.Errorf("%w: a row of %s whose root is not in the unit", ErrVerification, name)
+	for name, refs := range children { // every child's parent is in the unit (主子完整性), level by level
+		ch, _ := cl.child(name)
+		parent, _ := cl.parent(ch)
+		for _, k := range refs {
+			v, err := Value(ch.Columns[ch.FK], k)
+			if err != nil || !keys[parent.Name][fmt.Sprint(v)] {
+				return fmt.Errorf("%w: a row of %s whose parent is not in the unit", ErrVerification, name)
 			}
 		}
 	}
@@ -341,11 +341,6 @@ func tableOf(cl Class, name string) (Table, string, bool) {
 		}
 	}
 	return Table{}, "", false
-}
-
-func childFK(cl Class, name string) string {
-	_, fk, _ := tableOf(cl, name)
-	return fk
 }
 
 // Publish makes a verified copy the unit's authority in one local transaction (P15.18): the unit still in the state

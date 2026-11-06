@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 )
 
@@ -44,10 +45,12 @@ type Table struct {
 	Columns map[string]string
 }
 
-// Child is a table whose rows belong to a root: FK is its column holding the root's primary key.
+// Child is a table whose rows belong to a root: FK is its column holding its parent's primary key, the parent being
+// the root (Parent empty) or another child (its name): an aggregate may have several levels (P15.1).
 type Child struct {
 	Table
-	FK string
+	FK     string
+	Parent string
 }
 
 // Retention is a class's retention (P15.4): the shortest and longest, in days from the unit's latest anchor, and
@@ -88,6 +91,68 @@ var plainIdent = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 
 // Tierable says whether the class may leave the online tables.
 func (c Class) Tierable() bool { return c.Category == CategoryCompleted || c.Category == CategoryAudit }
+
+// parent is a child's parent table: the root, or the child it names.
+func (c Class) parent(ch Child) (Table, bool) {
+	if ch.Parent == "" || ch.Parent == c.Root.Name {
+		return c.Root, true
+	}
+	for _, o := range c.Children {
+		if o.Name == ch.Parent && o.Name != ch.Name {
+			return o.Table, true
+		}
+	}
+	return Table{}, false
+}
+
+// child is a child by its table's name.
+func (c Class) child(name string) (Child, bool) {
+	for _, ch := range c.Children {
+		if ch.Name == name {
+			return ch, true
+		}
+	}
+	return Child{}, false
+}
+
+// depth is a child's level: 1 under the root; -1 for a parent chain that does not end at the root.
+func (c Class) depth(ch Child) int {
+	for d := 1; d <= len(c.Children); d++ {
+		if ch.Parent == "" || ch.Parent == c.Root.Name {
+			return d
+		}
+		next, ok := c.child(ch.Parent)
+		if !ok {
+			return -1
+		}
+		ch = next
+	}
+	return -1
+}
+
+// byDepth are the children, the shallowest first (reads and copies) or the deepest first (deletes).
+func (c Class) byDepth(deepestFirst bool) []Child {
+	out := append([]Child(nil), c.Children...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if deepestFirst {
+			return c.depth(out[i]) > c.depth(out[j])
+		}
+		return c.depth(out[i]) < c.depth(out[j])
+	})
+	return out
+}
+
+// rootExpr is the SQL expression (text) of the root key of a child's row under alias: its key column under the root,
+// a lookup up the parent chain below it.
+func (c Class) rootExpr(ch Child, alias string) string {
+	if ch.Parent == "" || ch.Parent == c.Root.Name {
+		return alias + "." + ident(ch.FK) + "::text"
+	}
+	parent, _ := c.child(ch.Parent)
+	p := alias + "p"
+	return fmt.Sprintf("(SELECT %s FROM %s %s WHERE %s.%s = %s.%s)", c.rootExpr(parent, p), ident(parent.Name), p, p,
+		ident(parent.PK), alias, ident(ch.FK))
+}
 
 // Tables are the root and the children.
 func (c Class) Tables() []Table {
@@ -159,7 +224,12 @@ func (c Class) Check(n int, registries []string) error {
 	}
 	for _, ch := range c.Children {
 		if _, ok := ch.Columns[ch.FK]; !ok {
-			bad("child %s: its key to the root %s has no type", ch.Name, ch.FK)
+			bad("child %s: its key to its parent %s has no type", ch.Name, ch.FK)
+		}
+		if _, ok := c.parent(ch); !ok {
+			bad("child %s: its parent %q is not the root or another child", ch.Name, ch.Parent)
+		} else if c.depth(ch) < 0 {
+			bad("child %s: its parents go round in a cycle", ch.Name)
 		}
 	}
 	root := c.Root.Columns

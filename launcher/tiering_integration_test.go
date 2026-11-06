@@ -4,6 +4,9 @@ package launcher
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"testing"
@@ -94,7 +97,7 @@ func TestAComponentWithClassesServes(t *testing.T) {
 			"note_id uuid NOT NULL REFERENCES notes (id));")}},
 		Tiering: []tiering.Class{tierClass()},
 		New:     func(rt *runtime.Runtime) (component.Module, error) { return noRoutes{}, nil }}
-	_, logs, stop := runLogged(t, def, withIdentity(pgtest.MemberEnv(host, port, "tiers"), def))
+	base, logs, stop := runLogged(t, def, withIdentity(pgtest.MemberEnv(host, port, "tiers"), def))
 	admin := pgtest.Admin(t, pgtest.Database)
 	var jobs []string
 	require.Eventually(t, func() bool {
@@ -107,5 +110,38 @@ func TestAComponentWithClassesServes(t *testing.T) {
 	}, 10*time.Second, 50*time.Millisecond, logs.String())
 	assert.Equal(t, []string{"be.tiering.destroy", "be.tiering.export.cleanup", "be.tiering.release", "be.tiering.transfer"},
 		jobs, "the singletons (the candidates are a cron job, the export a queue)")
+
+	// P15.40: the holds and approvals of the class on the user surface, under its declared operations
+	w := worldOf(t)
+	send := func(path, bearer, body string) (int, string) {
+		req, _ := http.NewRequest(http.MethodPost, base+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Requested-With", "test")
+		req.Header.Set("Authorization", bearer)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	hold := `{"scope_kind": "class", "scope": "demo.notes", "source": "legal", "reason": "a court order"}`
+	code, body := send("/be/tiering/demo.notes/holds", w.Bearer(sectest.Bob), hold)
+	assert.True(t, code == http.StatusForbidden || code == http.StatusNotFound, "bob holds no hold operation: %d %s", code, body)
+	code, body = send("/be/tiering/demo.notes/holds", w.Bearer(sectest.Alice), hold)
+	require.Equal(t, http.StatusCreated, code, body)
+	var created struct{ ID string }
+	require.NoError(t, json.Unmarshal([]byte(body), &created))
+	var held int
+	require.NoError(t, admin.QueryRow(context.Background(), "SELECT count(*) FROM tiers.be_tier_hold WHERE id = $1 "+
+		"AND authorized_by = $2 AND released_at IS NULL", created.ID, sectest.Alice).Scan(&held))
+	assert.Equal(t, 1, held)
+	code, body = send("/be/tiering/demo.notes/holds/"+created.ID+"/lift", w.Bearer(sectest.Alice), "")
+	assert.Equal(t, http.StatusNoContent, code, body)
+	code, body = send("/be/tiering/demo.notes/approvals", w.Bearer(sectest.Alice),
+		`{"scope_kind": "class", "scope": "demo.notes", "reason": "the retention has run"}`)
+	require.Equal(t, http.StatusCreated, code, body)
+	require.NoError(t, json.Unmarshal([]byte(body), &created))
+	code, body = send("/be/tiering/demo.notes/approvals/"+created.ID+"/withdraw", w.Bearer(sectest.Alice), "")
+	assert.Equal(t, http.StatusNoContent, code, body)
 	stop()
 }

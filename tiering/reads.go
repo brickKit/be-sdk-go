@@ -215,12 +215,24 @@ func assemble(cl Class, tables map[string][]map[string]any, u unitRoute, root st
 		index[k] = len(out)
 		out = append(out, Aggregate{Root: r, Children: map[string][]map[string]any{}, Unit: u.id, Route: u.route})
 	}
-	for _, ch := range cl.Children {
+	rootOf := map[string]map[string]string{} // a child table's rows: their key -> their root's key
+	for _, ch := range cl.byDepth(false) {   // a parent's rows are mapped before its children's
+		rootOf[ch.Name] = map[string]string{}
 		for _, r := range tables[ch.Name] {
 			k, err := key(ch.Table, ch.FK, r)
 			if err != nil {
 				return nil, err
 			}
+			if parent, ok := cl.child(ch.Parent); ok {
+				if k, ok = rootOf[parent.Name][k]; !ok {
+					continue // its parent is not in the unit (another root's when one root was asked)
+				}
+			}
+			own, err := key(ch.Table, ch.PK, r)
+			if err != nil {
+				return nil, err
+			}
+			rootOf[ch.Name][own] = k
 			if i, ok := index[k]; ok {
 				out[i].Children[ch.Name] = append(out[i].Children[ch.Name], r)
 			}

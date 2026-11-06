@@ -367,7 +367,7 @@ func (c *Catalog) digest(ctx context.Context, tx db.Tx, cl Class, roots []string
 		return "", err
 	}
 	for _, ch := range cl.Children {
-		if err := add(ch.Table, "t."+ident(ch.FK)+"::text = ANY($1)"); err != nil {
+		if err := add(ch.Table, cl.rootExpr(ch, "t")+" = ANY($1)"); err != nil {
 			return "", err
 		}
 	}

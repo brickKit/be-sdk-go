@@ -146,12 +146,12 @@ func nullOnline(ctx context.Context, tx db.Tx, cl Class, unit, root string) erro
 		if len(set) == 0 {
 			continue
 		}
-		key := cl.Root.PK
-		if t.Name != cl.Root.Name {
-			key = childFK(cl, t.Name)
+		key := "t." + ident(cl.Root.PK) + "::text"
+		if ch, ok := cl.child(t.Name); ok {
+			key = cl.rootExpr(ch, "t")
 		}
-		if _, err := tx.Exec(ctx, fmt.Sprintf("UPDATE %s SET %s WHERE %s::text = $1", ident(t.Name), strings.Join(set, ", "),
-			ident(key)), root); err != nil {
+		if _, err := tx.Exec(ctx, fmt.Sprintf("UPDATE %s AS t SET %s WHERE %s = $1", ident(t.Name), strings.Join(set, ", "),
+			key), root); err != nil {
 			return err
 		}
 	}

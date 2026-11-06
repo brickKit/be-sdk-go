@@ -43,6 +43,15 @@ func TestAClassDeclaration(t *testing.T) {
 		"no schema version":                          func(c *Class) { c.SchemaVersion = "" },
 		"no hold operation (P15.28)":                 func(c *Class) { c.HoldOperation = "" },
 		"no approval operation (P15.29)":             func(c *Class) { c.ApproveOperation = "" },
+		"a child under an unknown parent": func(c *Class) {
+			c.Children = append(c.Children, Child{Table: Table{Name: "notes", PK: "id", Columns: map[string]string{
+				"id": TypeUUID, "line_id": TypeUUID}}, FK: "line_id", Parent: "lines"})
+		},
+		"children in a cycle": func(c *Class) {
+			c.Children = []Child{
+				{Table: Table{Name: "a", PK: "id", Columns: map[string]string{"id": TypeUUID, "b_id": TypeUUID}}, FK: "b_id", Parent: "b"},
+				{Table: Table{Name: "b", PK: "id", Columns: map[string]string{"id": TypeUUID, "a_id": TypeUUID}}, FK: "a_id", Parent: "a"}}
+		},
 		"pending but erasable, no hold operation": func(c *Class) {
 			c.Retention, c.HoldOperation, c.ApproveOperation = Retention{Pending: true}, "", ""
 		},
@@ -57,6 +66,14 @@ func TestAClassDeclaration(t *testing.T) {
 		})
 	}
 
+	unknown := orders()
+	unknown.Children = append(unknown.Children, Child{Table: Table{Name: "notes", PK: "id", Columns: map[string]string{
+		"id": TypeUUID, "line_id": TypeUUID}}, FK: "line_id", Parent: "lines"})
+	assert.ErrorContains(t, unknown.Check(90, nil), `its parent "lines" is not the root or another child`)
+	nested := orders()
+	nested.Children = append(nested.Children, Child{Table: Table{Name: "line_notes", PK: "id", Columns: map[string]string{
+		"id": TypeUUID, "line_id": TypeUUID}}, FK: "line_id", Parent: "order_lines"})
+	assert.NoError(t, nested.Check(90, nil), "a child under a child (P15.1)")
 	never := orders()
 	never.ResidenceDays = Never
 	assert.NoError(t, never.Check(90, nil), "a class may stay online")

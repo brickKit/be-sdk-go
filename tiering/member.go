@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,40 @@ func ResidenceKey(class string) string {
 	return "TIERING_RESIDENCE_" + strings.ToUpper(strings.NewReplacer(".", "_", "-", "_").Replace(class))
 }
 
+// RetentionKey is a class's retention given at deployment ("<shortest days>/<longest days>/<basis>", P15.4): the
+// retention depends on the class, the legal entity's region and the customer, set at go-live.
+func RetentionKey(class string) string {
+	return "TIERING_RETENTION_" + strings.ToUpper(strings.NewReplacer(".", "_", "-", "_").Replace(class))
+}
+
+// retentionOf parses a retention given at deployment.
+func retentionOf(raw string) (Retention, error) {
+	parts := strings.SplitN(raw, "/", 3)
+	if len(parts) != 3 {
+		return Retention{}, fmt.Errorf("%q is not <shortest days>/<longest days>/<basis>", raw)
+	}
+	lo, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+	hi, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+	basis := strings.TrimSpace(parts[2])
+	if err1 != nil || err2 != nil || lo <= 0 || hi < lo || basis == "" {
+		return Retention{}, fmt.Errorf("%q: the shortest days above 0, the longest not below it, and a basis", raw)
+	}
+	return Retention{MinDays: lo, MaxDays: hi, Basis: basis}, nil
+}
+
+// PendingRetentions are the tierable classes whose retention is pending, neither declared nor given at deployment:
+// never destroyed, and listed at go-live for the customer to set (P15.4, TR24).
+func (c *Catalog) PendingRetentions() []string {
+	var out []string
+	for name, cl := range c.Classes {
+		if cl.Tierable() && cl.Retention.Pending {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Keys are the keys of a member that declares classes.
 func Keys(classes []Class) []config.Key {
 	one := int64(1)
@@ -36,7 +71,8 @@ func Keys(classes []Class) []config.Key {
 		{Name: KeyGrace, Type: config.Duration, Default: 7 * 24 * time.Hour}}
 	for _, c := range classes {
 		if c.Tierable() {
-			keys = append(keys, config.Key{Name: ResidenceKey(c.Name), Type: config.String})
+			keys = append(keys, config.Key{Name: ResidenceKey(c.Name), Type: config.String},
+				config.Key{Name: RetentionKey(c.Name), Type: config.String})
 		}
 	}
 	return append(append(keys, ColdKeys()...), StoreKeys()...)
@@ -62,6 +98,13 @@ func NewCatalog(ctx context.Context, d *db.DB, classes []Class, values *config.V
 		c.StoreLocked = locked
 	}
 	for _, cl := range classes {
+		if raw := values.String(RetentionKey(cl.Name)); raw != "" && cl.Tierable() { // the deployment's retention (P15.4)
+			r, err := retentionOf(raw)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", RetentionKey(cl.Name), err)
+			}
+			cl.Retention = r
+		}
 		var own []string
 		for _, t := range cl.Tables() {
 			if strings.HasPrefix(t.Name, "be_") {

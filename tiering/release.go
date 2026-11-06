@@ -141,17 +141,15 @@ func (c *Catalog) deleteOnline(ctx context.Context, unit string, cl Class, last 
 			if _, err := tx.Exec(ctx, "SELECT set_config('be.tier_unit', $1, true)", unit); err != nil {
 				return err
 			}
-			left := int64(0)
-			for _, ch := range cl.Children {
-				tag, err := tx.Exec(ctx, fmt.Sprintf("DELETE FROM %[1]s WHERE ctid IN (SELECT ctid FROM %[1]s WHERE %[2]s::text "+
-					"IN %[3]s LIMIT %[4]d)", ident(ch.Name), ident(ch.FK), members, batch), unit)
+			for _, ch := range cl.byDepth(true) { // the deepest table with rows left first: a parent goes after its children
+				tag, err := tx.Exec(ctx, fmt.Sprintf("DELETE FROM %[1]s WHERE ctid IN (SELECT t.ctid FROM %[1]s t WHERE %[2]s "+
+					"IN %[3]s LIMIT %[4]d)", ident(ch.Name), cl.rootExpr(ch, "t"), members, batch), unit)
 				if err != nil {
 					return err
 				}
-				left += tag.RowsAffected()
-			}
-			if left > 0 { // children first: the roots go once no child of the unit is left
-				return nil
+				if tag.RowsAffected() > 0 {
+					return nil
+				}
 			}
 			tag, err := tx.Exec(ctx, fmt.Sprintf("DELETE FROM %[1]s WHERE ctid IN (SELECT ctid FROM %[1]s WHERE %[2]s::text "+
 				"IN %[3]s LIMIT %[4]d)", ident(cl.Root.Name), ident(cl.Root.PK), members, batch), unit)

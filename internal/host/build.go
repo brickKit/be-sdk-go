@@ -131,6 +131,10 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		if err := tieringOperations(def); err != nil {
 			return nil, err
 		}
+		for _, name := range catalog.PendingRetentions() { // never destroyed until the customer sets it (P15.4, TR24)
+			m.Logger.Warn("a data class has no retention: never destroyed; set it at go-live", "event",
+				"tiering_retention_pending", "class", name, "key", tiering.RetentionKey(name))
+		}
 		if values.String("RUN_PROFILE_URL") != "" && m.tls != nil { // when the latest backup finished (P15.21)
 			rp, err := runprofile.New(runprofile.Options{Endpoint: values.String("RUN_PROFILE_URL"),
 				Region: values.String("RUN_PROFILE_REGION"), Bucket: values.String("RUN_PROFILE_BUCKET"),
@@ -367,6 +371,9 @@ func (m *Member) userSurface(member obs.Member, values *config.Values, sh Shared
 	var routes httpx.Routes
 	if err := m.Module.Routes(&routes); err != nil {
 		return fmt.Errorf("the module's routes could not be registered: %w", err)
+	}
+	if rt.Tiering != nil { // holds, approvals and export status of the classes (P15.40)
+		rt.Tiering.Routes(&routes)
 	}
 	var ops []string
 	for _, r := range routes.List() {
