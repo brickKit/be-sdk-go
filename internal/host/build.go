@@ -32,6 +32,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/recoverypb"
 	"github.com/brickKit/be-sdk-go/v3/runprofile"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
+	"github.com/brickKit/be-sdk-go/v3/tiering"
 	"github.com/brickKit/be-sdk-go/v3/work"
 	authzv3 "github.com/brickKit/contract-infra-authz/v3/gen/go/be/authz/v3"
 )
@@ -117,9 +118,22 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 			QueryOnly: values.Bool(extcmd.QueryOnlyKey), Log: m.Logger}
 		m.external = external
 	}
+	var catalog *tiering.Catalog
+	if len(def.Tiering) > 0 { // the data classes (be-protocol chapter 15): checked at start (P15.1-P15.5)
+		if sh.DB == nil {
+			return nil, errors.New("the definition declares tiering classes but the component has no database (Migrations)")
+		}
+		if catalog, err = tiering.NewCatalog(sh.DB, def.Tiering, values); err != nil {
+			return nil, err
+		}
+		if err := m.addSDKJob(catalog.CandidatesJob(values.String(tiering.KeyWindow), m.Logger)); err != nil {
+			return nil, err
+		}
+		m.hasJobs = true
+	}
 	rt := runtime.New(runtime.Parts{Member: member, Config: values, Logger: m.Logger, Metrics: m.Registry,
 		Tracer: tp.Tracer(def.ID), Addresses: sh.Addresses, DB: sh.DB, Outbound: m.Outbound, Events: producer,
-		Work: m.runner, Audit: auditor, Evidence: writer, External: external})
+		Work: m.runner, Audit: auditor, Evidence: writer, External: external, Tiering: catalog})
 	if m.Module, err = newModule(def, rt); err != nil {
 		return nil, fmt.Errorf("the module could not be built: %w", err)
 	}
@@ -425,6 +439,14 @@ func (m *Member) background(sh Shared, rt *runtime.Runtime) error {
 			return err
 		}
 		m.hasJobs = true
+	}
+	if p, ok := m.Module.(tiering.Participant); ok { // the module's blockers (P15.12)
+		if rt.Tiering == nil {
+			return errors.New("the module takes part in the tiering but the definition declares no classes (Definition.Tiering)")
+		}
+		if err := p.Tiering(rt.Tiering.Registry); err != nil {
+			return fmt.Errorf("the module's tiering could not be registered: %w", err)
+		}
 	}
 	if wk, ok := m.Module.(work.Worker); ok {
 		if m.runner == nil {

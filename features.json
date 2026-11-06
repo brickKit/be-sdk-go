@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.96",
+  "protocol": "3.0.0-alpha.98",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -596,6 +596,115 @@
         "recovery.TestPresent",
         "recovery.TestNumbers",
         "launcher.TestTheRecoveryChecksAreTheRecoveryToolsOnly"
+      ]
+    },
+    "tiering": {
+      "status": "implemented",
+      "evidence": [
+        "tiering.TestAClassDeclaration",
+        "tiering.TestTheDigestVectors",
+        "tiering.TestTheManifestVectors",
+        "tiering.TestThePlanVectors",
+        "tiering.TestSealingAndTheWriteBarrier",
+        "tiering.TestASealAndAWriteSerialize",
+        "tiering.TestASealWaitsForAChildWrite",
+        "tiering.TestABlockedGroupingStaysOpen",
+        "tiering.TestTheCandidatesJobSealsAndAlerts",
+        "launcher.TestTheMigrateEntryInstallsTheBarrier"
+      ],
+      "pending": [
+        {
+          "rule": "P15.14",
+          "reason": "未实现：装配项目底层先行第 5 项的 T5"
+        },
+        {
+          "rule": "P15.15",
+          "reason": "未实现：装配项目底层先行第 5 项的 T5"
+        },
+        {
+          "rule": "P15.16",
+          "reason": "未实现：装配项目底层先行第 5 项的 T5"
+        },
+        {
+          "rule": "P15.17",
+          "reason": "未实现：装配项目底层先行第 5 项的 T5"
+        },
+        {
+          "rule": "P15.18",
+          "reason": "未实现：装配项目底层先行第 5 项的 T5"
+        },
+        {
+          "rule": "P15.19",
+          "reason": "未实现：装配项目底层先行第 5 项的 T6"
+        },
+        {
+          "rule": "P15.20",
+          "reason": "未实现：装配项目底层先行第 5 项的 T5"
+        },
+        {
+          "rule": "P15.21",
+          "reason": "未实现：装配项目底层先行第 5 项的 T6"
+        },
+        {
+          "rule": "P15.22",
+          "reason": "未实现：装配项目底层先行第 5 项的 T6"
+        },
+        {
+          "rule": "P15.23",
+          "reason": "未实现：装配项目底层先行第 5 项的 T6"
+        },
+        {
+          "rule": "P15.24",
+          "reason": "未实现：装配项目底层先行第 5 项的 T6"
+        },
+        {
+          "rule": "P15.25",
+          "reason": "未实现：装配项目底层先行第 5 项的 T6"
+        },
+        {
+          "rule": "P15.26",
+          "reason": "未实现：装配项目底层先行第 5 项的 T6"
+        },
+        {
+          "rule": "P15.27",
+          "reason": "未实现：装配项目底层先行第 5 项的 T6"
+        },
+        {
+          "rule": "P15.28",
+          "reason": "未实现：装配项目底层先行第 5 项的 T7"
+        },
+        {
+          "rule": "P15.29",
+          "reason": "未实现：装配项目底层先行第 5 项的 T7"
+        },
+        {
+          "rule": "P15.30",
+          "reason": "未实现：装配项目底层先行第 5 项的 T7"
+        },
+        {
+          "rule": "P15.31",
+          "reason": "未实现：装配项目底层先行第 5 项的 T7"
+        },
+        {
+          "rule": "P15.32",
+          "reason": "未实现：装配项目底层先行第 5 项的 T5"
+        },
+        {
+          "rule": "P15.33",
+          "reason": "未实现：装配项目底层先行第 5 项的 T8"
+        },
+        {
+          "rule": "P15.34",
+          "reason": "未实现：装配项目底层先行第 5 项的 T8"
+        },
+        {
+          "rule": "P15.35",
+          "reason": "未实现：装配项目底层先行第 5 项的 T8"
+        },
+        {
+          "rule": "P15.36",
+          "reason": "未实现：装配项目底层先行第 5 项的 T9"
+        }
       ]
     }
   }

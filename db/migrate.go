@@ -372,3 +372,33 @@ func newestFile(src source.Driver) (uint, bool) {
 		v = next
 	}
 }
+
+// Exec runs statements as the owner role in the member's schema, in one transaction, after the migrations: what the
+// SDK derives from the component's definition rather than from files (the tiering write barrier's triggers,
+// be-protocol P15.13). Each statement must be idempotent: the entry runs on every deployment.
+func (c MigrateConfig) Exec(ctx context.Context, stmts []string) error {
+	cc, err := c.connConfig()
+	if err != nil {
+		return err
+	}
+	conn, err := pgx.ConnectConfig(ctx, cc)
+	if err != nil {
+		return fmt.Errorf("connecting to %s as %s: %w", c.Target, c.User, err)
+	}
+	defer conn.Close(context.WithoutCancel(ctx))
+	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		for _, s := range stmts {
+			if _, err := tx.Exec(ctx, s); err != nil {
+				return fmt.Errorf("%w: %s", err, firstLine(s))
+			}
+		}
+		return nil
+	})
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}

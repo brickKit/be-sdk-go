@@ -27,6 +27,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/obs"
 	"github.com/brickKit/be-sdk-go/v3/runprofile"
+	"github.com/brickKit/be-sdk-go/v3/tiering"
 	"github.com/brickKit/be-sdk-go/v3/work"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
@@ -110,6 +111,9 @@ func Keys(def component.Definition) []config.Key {
 	}
 	if def.ExternalCommands {
 		keys = append(keys, extcmd.Keys()...)
+	}
+	if len(def.Tiering) > 0 {
+		keys = append(keys, tiering.Keys(def.Tiering)...)
 	}
 	return keys
 }

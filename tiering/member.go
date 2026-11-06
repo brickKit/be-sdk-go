@@ -1,0 +1,141 @@
+package tiering
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/brickKit/be-sdk-go/v3/config"
+	"github.com/brickKit/be-sdk-go/v3/db"
+	"github.com/brickKit/be-sdk-go/v3/work"
+)
+
+// A member's tiering: its configuration keys, its catalog and the candidates job (be-protocol P15.3, P15.11).
+
+// Configuration keys.
+const (
+	KeyWindow   = "TIERING_WINDOW"    // the candidates job's cron schedule: the declared low-peak hours
+	KeyListDays = "TIERING_LIST_DAYS" // N, the lists' default range in days (protocol 11: 90)
+	KeyGrace    = "TIERING_GRACE"     // the grace after a publish before the online rows go (protocol 11: 7 days)
+)
+
+// ResidenceKey is the key that overrides a class's residence: days, or "never".
+func ResidenceKey(class string) string {
+	return "TIERING_RESIDENCE_" + strings.ToUpper(strings.NewReplacer(".", "_", "-", "_").Replace(class))
+}
+
+// Keys are the keys of a member that declares classes.
+func Keys(classes []Class) []config.Key {
+	one := int64(1)
+	keys := []config.Key{{Name: KeyWindow, Type: config.String, Default: "0 2 * * *"},
+		{Name: KeyListDays, Type: config.Integer, Default: int64(90), Min: &one},
+		{Name: KeyGrace, Type: config.Duration, Default: 7 * 24 * time.Hour}}
+	for _, c := range classes {
+		if c.Tierable() {
+			keys = append(keys, config.Key{Name: ResidenceKey(c.Name), Type: config.String})
+		}
+	}
+	return keys
+}
+
+// NewCatalog checks the classes (P15.1-P15.5; the SDK's own tables, be_*, are never a class's) and the configured
+// residences against N, and builds the member's catalog.
+func NewCatalog(d *db.DB, classes []Class, values *config.Values) (*Catalog, error) {
+	n := int(values.Int(KeyListDays))
+	c := &Catalog{DB: d, Classes: map[string]Class{}, Registry: NewRegistry(), Residence: map[string]int{}}
+	for _, cl := range classes {
+		var own []string
+		for _, t := range cl.Tables() {
+			if strings.HasPrefix(t.Name, "be_") {
+				own = append(own, t.Name)
+			}
+		}
+		if err := cl.Check(n, own); err != nil {
+			return nil, err
+		}
+		if _, dup := c.Classes[cl.Name]; dup {
+			return nil, fmt.Errorf("tiering: class %s declared twice", cl.Name)
+		}
+		c.Classes[cl.Name] = cl
+		if !cl.Tierable() {
+			continue
+		}
+		raw := values.String(ResidenceKey(cl.Name))
+		switch {
+		case raw == "":
+		case raw == "never":
+			c.Residence[cl.Name] = Never
+		default:
+			days, err := strconv.Atoi(raw)
+			if err != nil || days < n {
+				return nil, fmt.Errorf("%s: %q is not a residence of at least N = %d days or never (P15.3)",
+					ResidenceKey(cl.Name), raw, n)
+			}
+			c.Residence[cl.Name] = days
+		}
+	}
+	return c, nil
+}
+
+// CandidatesJob is the SDK's job that seals what has come due (P15.11): every tierable class's groupings, each sealed
+// in its own transaction; a unit blocked for 30 days past its residence is an error-level alert.
+func (c *Catalog) CandidatesJob(schedule string, log *slog.Logger) work.Job {
+	return work.Job{Name: "be.tiering.candidates", Kind: work.Cron, Cron: schedule, TimeZone: "UTC",
+		Effect: work.Local, MaxAttempts: work.Unlimited, Timeout: time.Hour,
+		Handle: func(ctx context.Context, run *work.Run) error {
+			if err := c.SealDue(ctx, log); err != nil {
+				return err
+			}
+			return run.Complete(ctx, func(context.Context, db.Tx) error { return nil })
+		}}
+}
+
+// SealDue seals every grouping that has come due, and alerts on the units blocked too long.
+func (c *Catalog) SealDue(ctx context.Context, log *slog.Logger) error {
+	for name, cl := range c.Classes {
+		if !cl.Tierable() {
+			continue
+		}
+		groups, err := c.Groupings(ctx, name)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		for _, g := range groups {
+			res, err := c.Seal(ctx, name, g)
+			if err != nil {
+				return fmt.Errorf("%s %s: %w", name, g.Key, err)
+			}
+			if len(res.Blocked) == 0 {
+				log.Info("an archive unit is sealed", "event", "tiering_sealed", "class", name, "unit", res.Unit,
+					"members", res.Members)
+			}
+		}
+	}
+	return c.alertBlocked(ctx, log)
+}
+
+// alertBlocked logs every open unit blocked for more than BlockedAlertAfter past its residence (protocol 11, TR30).
+func (c *Catalog) alertBlocked(ctx context.Context, log *slog.Logger) error {
+	return c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+		rows, err := tx.Query(ctx, "SELECT id::text, class, grouping, blocked::text, blocked_since FROM be_tier_unit "+
+			"WHERE state = 'open' AND blocked IS NOT NULL AND blocked_since <= now() - make_interval(days => $1)",
+			int(BlockedAlertAfter/(24*time.Hour)))
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id, class, grouping, blocked string
+			var since time.Time
+			if err := rows.Scan(&id, &class, &grouping, &blocked, &since); err != nil {
+				return err
+			}
+			log.Error("an archive unit is blocked past its residence", "event", "tiering_blocked", "class", class,
+				"unit", id, "grouping", grouping, "due_since", since, "blocked", blocked)
+		}
+		return rows.Err()
+	})
+}

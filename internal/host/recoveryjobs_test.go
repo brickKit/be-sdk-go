@@ -9,6 +9,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/evidence"
 	"github.com/brickKit/be-sdk-go/v3/extcmd"
 	"github.com/brickKit/be-sdk-go/v3/idem"
+	"github.com/brickKit/be-sdk-go/v3/tiering"
 	"github.com/brickKit/be-sdk-go/v3/work"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +20,8 @@ import (
 // SDK's jobs, and a job outside it is refused when it is registered.
 func TestEverySDKJobSaysWhatItDoesInARecovery(t *testing.T) {
 	jobs := []work.Job{partitionJob(nil), idem.Job(nil), events.PurgeJob(nil), work.PurgeJob(nil),
-		(&audit.Auditor{}).Job(nil, nil), evidence.Job(nil, nil, nil), (&extcmd.Commands{}).Job()}
+		(&audit.Auditor{}).Job(nil, nil), evidence.Job(nil, nil, nil), (&extcmd.Commands{}).Job(),
+		(&tiering.Catalog{}).CandidatesJob("0 2 * * *", nil)}
 	var names []string
 	for _, j := range jobs {
 		names = append(names, j.Name)

@@ -290,6 +290,8 @@ func mapError(ctx context.Context, err error) error {
 			return errs.New(errs.ReasonLockTimeout, "waiting for a lock took too long").Wrap(err)
 		case "57014":
 			return errs.New(errs.ReasonStatementTimeout, "the database took too long").Wrap(err)
+		case "BE001": // the tiering write barrier (be-protocol P15.13): the row belongs to a sealed unit
+			return errs.New(errs.ReasonRecordSealed, "the record belongs to a sealed archive unit").With("record", pg.Detail).Wrap(err)
 		case "53300", "57P01", "57P02", "57P03":
 			return errs.New(errs.ReasonDependencyUnavailable, "the database is unavailable").With("dependency", "db").Wrap(err)
 		}

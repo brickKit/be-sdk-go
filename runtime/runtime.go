@@ -16,6 +16,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/evidence"
 	"github.com/brickKit/be-sdk-go/v3/extcmd"
 	"github.com/brickKit/be-sdk-go/v3/obs"
+	"github.com/brickKit/be-sdk-go/v3/tiering"
 	"github.com/brickKit/be-sdk-go/v3/work"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/trace"
@@ -43,6 +44,9 @@ type Runtime struct {
 	// External requests the member's external commands (be-protocol chapter 13); nil unless the definition says
 	// ExternalCommands.
 	External *extcmd.Commands
+	// Tiering is the member's catalog of archive units (be-protocol chapter 15); nil unless the definition declares
+	// classes.
+	Tiering *tiering.Catalog
 
 	addresses config.Source // where the platform's *_ENDPOINT values are looked up
 	calls     *calls.Member
@@ -63,12 +67,14 @@ type Parts struct {
 	Audit     *audit.Auditor
 	Evidence  *evidence.Writer
 	External  *extcmd.Commands
+	Tiering   *tiering.Catalog
 }
 
 // New is used by the launcher and the shell.
 func New(p Parts) *Runtime {
 	return &Runtime{Member: p.Member, Config: p.Config, Logger: p.Logger, Metrics: p.Metrics, Tracer: p.Tracer, DB: p.DB,
-		Events: p.Events, Work: p.Work, Audit: p.Audit, Evidence: p.Evidence, External: p.External, addresses: p.Addresses, calls: p.Outbound}
+		Events: p.Events, Work: p.Work, Audit: p.Audit, Evidence: p.Evidence, External: p.External, Tiering: p.Tiering, addresses: p.Addresses,
+		calls: p.Outbound}
 }
 
 // RecoveryPhase is the full recovery's phase the member started in (be-protocol P1.22, P1.23); empty: running. A

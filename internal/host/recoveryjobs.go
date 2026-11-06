@@ -28,6 +28,8 @@ var inRecovery = map[string]recoveryRule{
 	"be.idempotency.cleanup": {why: "not run: housekeeping of the member's own database, which goes back; once open"},
 	"be.work.cleanup":        {why: "not run: housekeeping of the member's own database, which goes back; once open"},
 	"be.partitions.maintain": {why: "not run: the partitions ahead were made before T; hourly once open"},
+	"be.tiering.candidates": {why: "not run: sealing reads and writes the member's own database, which goes back; " +
+		"the next window once open"},
 }
 
 // checkRecoveryRule refuses one of the SDK's jobs that does not say how it behaves in a recovery.

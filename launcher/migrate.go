@@ -9,6 +9,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/internal/host"
 	"github.com/brickKit/be-sdk-go/v3/obs"
+	"github.com/brickKit/be-sdk-go/v3/tiering"
 )
 
 // migrate is the migrate entry (P1.1, P1.2): the SDK's tables, then the component's, as the owner role directly on the
@@ -35,6 +36,16 @@ func migrate(ctx context.Context, def component.Definition, o Options) int {
 		db.MigrationSet{Name: def.ID, Table: "schema_migrations", Files: def.Migrations}); err != nil {
 		log.Error("migrate failed", "error", err.Error()) // the last line names the failed migration (P1.2)
 		return ExitFailure
+	}
+	if len(def.Tiering) > 0 { // the write barrier's triggers, derived from the classes (be-protocol P15.13)
+		stmts, err := tiering.BarrierSQL(def.Tiering)
+		if err == nil {
+			err = cfg.Exec(ctx, stmts)
+		}
+		if err != nil {
+			log.Error("migrate failed: the tiering write barrier", "error", err.Error())
+			return ExitFailure
+		}
 	}
 	log.Info("migrate done")
 	return ExitOK

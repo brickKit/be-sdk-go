@@ -23,6 +23,7 @@ const (
 	ReasonChangeKeyConflict        = "CHANGE_KEY_CONFLICT"
 	ReasonChangeRevisionStale      = "CHANGE_REVISION_STALE"
 	ReasonLastAdminProtected       = "LAST_ADMIN_PROTECTED"
+	ReasonRecordSealed             = "RECORD_SEALED"
 	ReasonIdempotencyKeyReused     = "IDEMPOTENCY_KEY_REUSED"
 	ReasonIdempotencyInProgress    = "IDEMPOTENCY_IN_PROGRESS"
 	ReasonLockTimeout              = "LOCK_TIMEOUT"
@@ -88,6 +89,7 @@ func init() {
 		{ReasonChangeKeyConflict, AlreadyExists, 0, RetryNo, "The change key was used for different content"},
 		{ReasonChangeRevisionStale, Aborted, 0, RetryNo, "The target changed; preview again"},
 		{ReasonLastAdminProtected, FailedPrecondition, 409, RetryNo, "The last administrator is protected"},
+		{ReasonRecordSealed, FailedPrecondition, 409, RetryNo, "The record belongs to a sealed archive unit; write a correction"},
 		{ReasonIdempotencyKeyReused, InvalidArgument, 422, RetryNo, "The idempotency key was used for another request"},
 		{ReasonIdempotencyInProgress, Aborted, 0, RetryYes, "The first use of this idempotency key has not finished"},
 		{ReasonLockTimeout, Aborted, 0, RetryYes, "Waiting for a lock took too long"},

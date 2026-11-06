@@ -12,6 +12,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/grpcx"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
+	"github.com/brickKit/be-sdk-go/v3/tiering"
 )
 
 // Definition describes a component. Build it in the component's root package and pass it to launcher.Main (single
@@ -52,6 +53,10 @@ type Definition struct {
 	// commands through rt.External; it needs Migrations, and gets EXTERNAL_COMMANDS_QUERY_ONLY. An irrevocable
 	// operation also needs Evidence (its issue records).
 	ExternalCommands bool
+	// Tiering declares the component's data classes (be-protocol P15.1): their catalog, write barrier, candidates
+	// job and reads come from the SDK (rt.Tiering); a module with blockers implements tiering.Participant. Needs
+	// Migrations.
+	Tiering []tiering.Class
 	// Authz declares the resources, operations and fields the component owns (protocol P8.7). Every protected
 	// route and every system method uses one of its operations.
 	Authz *authz.Definitions
