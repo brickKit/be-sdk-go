@@ -5,6 +5,7 @@ package evidence
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -92,6 +93,23 @@ func TestTheOwnerReplaysItsEvidence(t *testing.T) {
 	got, err = ask(record("general", "security_widening", order, "demo/orders"))
 	require.NoError(t, err)
 	assert.Equal(t, Unsupported, got)
+
+	// what the re-execution depends on has not arrived (P12.20): deferred, rolled back, no history; asked again later
+	replays.Add("security_hold_release", func(ctx context.Context, tx db.Tx, r Replayed) error {
+		if _, err := tx.Exec(ctx, "INSERT INTO touched VALUES ($1)", r.ID); err != nil {
+			return err
+		}
+		return fmt.Errorf("the signal is not applied yet: %w", ErrDeferred)
+	})
+	got, err = ask(record("general", "security_hold_release", order, "demo/orders"))
+	require.NoError(t, err)
+	assert.Equal(t, Deferred, got)
+	require.NoError(t, admin.QueryRow(ctx, "SELECT count(*) FROM evreplay.be_change_history WHERE evidence_id = $1",
+		"0190f3a1-0000-7000-8000-00000000e003").Scan(&hist))
+	assert.Zero(t, hist, "a deferred replay leaves no history")
+	require.NoError(t, admin.QueryRow(ctx, "SELECT count(*) FROM evreplay.touched WHERE id = $1",
+		"0190f3a1-0000-7000-8000-00000000e003").Scan(&touched))
+	assert.Zero(t, touched, "nor anything it wrote: rolled back")
 
 	_, err = ask(record("effective", "security_tightening", order, "demo/other"))
 	assert.True(t, errs.Is(err, "be", errs.ReasonRequestInvalid), "another recorder's record: %v", err)

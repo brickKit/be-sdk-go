@@ -29,6 +29,11 @@ type ReplayFunc func(ctx context.Context, tx db.Tx, r Replayed) error
 // ErrDangling: an object the change refers to no longer exists; nothing is done and the record goes to review.
 var ErrDangling = errors.New("evidence: an object the change refers to no longer exists")
 
+// ErrDeferred: what the re-execution depends on has not arrived yet (for example a source's replayed state not yet
+// applied); nothing is done, and the recovery tool asks again once the authorization member applied its sources
+// (P12.20, P12.22).
+var ErrDeferred = errors.New("evidence: the replay depends on what has not arrived yet")
+
 // CheckFunc checks a record whose effect lies outside the recovery group (P12.20: the assembly protocol 15's 6.7, a
 // credential tightening in an identity product outside the group): outside any transaction it asks the other side
 // whether the effect still holds. It answers false with the reason when it does not; an error (the other side could
@@ -83,6 +88,7 @@ const (
 	Applied          = "applied"
 	Dangling         = "dangling"
 	Unsupported      = "unsupported"
+	Deferred         = "deferred"     // not yet: asked again after 6.4 (ErrDeferred)
 	Consistent       = "consistent"   // checked: the effect still holds outside the recovery group
 	Inconsistent     = "inconsistent" // checked: it does not, or could not be asked (for review)
 )
@@ -119,6 +125,9 @@ func (s *ReplayServer) Replay(ctx context.Context, req *evidencepb.ReplayRequest
 		switch {
 		case errors.Is(err, ErrDangling):
 			outcome, detail = Dangling, err.Error()
+			return errRollback
+		case errors.Is(err, ErrDeferred):
+			outcome, detail = Deferred, err.Error()
 			return errRollback
 		case err != nil:
 			return err
@@ -244,7 +253,7 @@ type ReplayClient struct {
 }
 
 // Replay asks the owner to replay one record; it returns the outcome (Applied, AlreadyReflected, Dangling,
-// Unsupported; Consistent, Inconsistent for a checked category) and its detail.
+// Unsupported, Deferred; Consistent, Inconsistent for a checked category) and its detail.
 func (c ReplayClient) Replay(ctx context.Context, record []byte, recovery string) (outcome, detail string, err error) {
 	out, err := evidencepb.NewReplayServiceClient(c.Conn).Replay(ctx, &evidencepb.ReplayRequest{Record: record,
 		Recovery: recovery})
