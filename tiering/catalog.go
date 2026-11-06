@@ -347,7 +347,7 @@ func (c *Catalog) digest(ctx context.Context, tx db.Tx, cl Class, roots []string
 			for i, n := range names {
 				m[n] = vals[i]
 			}
-			k, err := PK(t.Columns, []string{t.PK}, m)
+			k, err := PK(t.Columns, t.KeyColumns(), m)
 			if err != nil {
 				return err
 			}

@@ -77,8 +77,10 @@ func (c *Catalog) convert(cl Class, from string, tables map[string][]map[string]
 // manifestTable is a table as a manifest describes it (an older structure's columns and types).
 func manifestTable(mt ManifestTable) Table {
 	t := Table{Name: mt.Name, Columns: map[string]string{}}
-	if len(mt.PK) > 0 {
+	if len(mt.PK) == 1 {
 		t.PK = mt.PK[0]
+	} else {
+		t.Key = mt.PK
 	}
 	for _, col := range mt.Columns {
 		t.Columns[col.Name] = col.Type
@@ -134,7 +136,7 @@ func (c *Catalog) rewrite(ctx context.Context, unit, route string, edit func(*Ag
 	for _, t := range cl.Tables() {
 		var h TableHash
 		for _, r := range tables[t.Name] {
-			k, err := PK(t.Columns, []string{t.PK}, r)
+			k, err := PK(t.Columns, t.KeyColumns(), r)
 			if err != nil {
 				return Manifest{}, err
 			}

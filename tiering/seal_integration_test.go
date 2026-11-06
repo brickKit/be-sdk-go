@@ -12,6 +12,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/brickKit/be-sdk-go/v3/ids"
@@ -272,4 +273,34 @@ func TestTheBarrierHoldsFromAnotherSearchPath(t *testing.T) {
 	assert.Equal(t, "BE001", pgErr.Code, "refused by the barrier: %v", err)
 	_, err = other.Exec(e.ctx, "UPDATE tier_seal_path.orders SET note = 'x' WHERE id = $1", open)
 	assert.NoError(t, err, "the open order")
+}
+
+// P15.1: a class is checked against its tables at start: a column not declared (it would not be copied, and the
+// release deletes the row), a column declared with another type, a declared column the table lacks.
+func TestAClassMustDeclareItsTables(t *testing.T) {
+	e := setup(t, "tier_columns")
+	cl := class()
+	cl.Routes = []string{tiering.RoutePostgres} // no store here
+	start := func(c tiering.Class) error {
+		values, problems := config.Parse(tiering.Keys([]tiering.Class{c}), config.Map(map[string]string{}))
+		require.Empty(t, problems)
+		_, err := tiering.NewCatalog(e.ctx, e.d, []tiering.Class{c}, values, "p")
+		return err
+	}
+	require.NoError(t, start(cl), "the declaration is the tables")
+
+	pgtest.Exec(t, e.admin, "ALTER TABLE orders ADD COLUMN extra text")
+	assert.ErrorContains(t, start(cl), "orders.extra (text) is not declared")
+	pgtest.Exec(t, e.admin, "ALTER TABLE orders DROP COLUMN extra")
+
+	wrong := cl
+	wrong.Root.Columns = map[string]string{}
+	for k, v := range cl.Root.Columns {
+		wrong.Root.Columns[k] = v
+	}
+	wrong.Root.Columns["total"] = tiering.TypeInt8
+	assert.ErrorContains(t, start(wrong), "orders.total is numeric in the database, declared int8")
+	wrong.Root.Columns["total"] = tiering.TypeNumeric
+	wrong.Root.Columns["remark"] = tiering.TypeText
+	assert.ErrorContains(t, start(wrong), "orders.remark is declared but not in the database")
 }

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/brickKit/be-sdk-go/v3/canon"
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/compress/zstd"
 )
@@ -41,6 +42,8 @@ func parquetNode(typ string) (parquet.Node, error) {
 		n = parquet.Date()
 	case TypeBytea:
 		n = parquet.Leaf(parquet.ByteArrayType)
+	case TypeTextArray:
+		n = parquet.JSON() // the array's canonical JSON text (P15.8)
 	default:
 		return nil, fmt.Errorf("tiering: no Parquet type for %q", typ)
 	}
@@ -68,9 +71,20 @@ func parquetSchema(t Table) (*parquet.Schema, error) {
 	return parquet.NewSchema(t.Name, g), nil
 }
 
-// parquetValue is one value as the column stores it (the driver's Go value; numeric and jsonb as text).
+// parquetValue is one value as the column stores it (the driver's Go value; numeric and jsonb as text; a text array
+// as its canonical JSON text).
 func parquetValue(typ string, v any) (parquet.Value, error) {
 	switch typ {
+	case TypeTextArray:
+		items, err := textArray(v)
+		if err != nil {
+			return parquet.Value{}, err
+		}
+		b, err := canon.Encode(items)
+		if err != nil {
+			return parquet.Value{}, err
+		}
+		return parquet.ByteArrayValue(b), nil
 	case TypeText, TypeNumeric, TypeJSONB:
 		s, ok := v.(string)
 		if !ok {
@@ -120,6 +134,8 @@ func goValue(typ string, v parquet.Value) (any, error) {
 	switch typ {
 	case TypeText, TypeNumeric, TypeJSONB:
 		return string(v.ByteArray()), nil
+	case TypeTextArray:
+		return textArray(string(v.ByteArray()))
 	case TypeInt2:
 		return int16(v.Int32()), nil
 	case TypeInt4:

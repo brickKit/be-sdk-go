@@ -228,11 +228,13 @@ func assemble(cl Class, tables map[string][]map[string]any, u unitRoute, root st
 					continue // its parent is not in the unit (another root's when one root was asked)
 				}
 			}
-			own, err := key(ch.Table, ch.PK, r)
-			if err != nil {
-				return nil, err
+			if ch.PK != "" { // a possible parent: its rows' roots for its children
+				own, err := key(ch.Table, ch.PK, r)
+				if err != nil {
+					return nil, err
+				}
+				rootOf[ch.Name][own] = k
 			}
-			rootOf[ch.Name][own] = k
 			if i, ok := index[k]; ok {
 				out[i].Children[ch.Name] = append(out[i].Children[ch.Name], r)
 			}
@@ -372,7 +374,7 @@ func (c *Catalog) Thaw(ctx context.Context, unit string, ttl time.Duration) erro
 			return err
 		}
 		put := func(t Table, r map[string]any) error {
-			k, err := PK(t.Columns, []string{t.PK}, r)
+			k, err := PK(t.Columns, t.KeyColumns(), r)
 			if err != nil {
 				return err
 			}

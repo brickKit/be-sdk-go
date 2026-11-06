@@ -38,11 +38,22 @@ const (
 	RouteObject   = "object-parquet"
 )
 
-// Table is a class's table: its name, its single-column primary key, and its columns' types (P15.8).
+// Table is a class's table: its name, its primary key, and every column's type (P15.8). The root and a child that is
+// another child's parent have a single-column key (PK); a child no other child points at may have a key of several
+// columns (Key, in key order, in place of PK).
 type Table struct {
 	Name    string
 	PK      string
+	Key     []string
 	Columns map[string]string
+}
+
+// KeyColumns are the table's primary key columns, in key order.
+func (t Table) KeyColumns() []string {
+	if len(t.Key) > 0 {
+		return t.Key
+	}
+	return []string{t.PK}
 }
 
 // Child is a table whose rows belong to a root: FK is its column holding its parent's primary key, the parent being
@@ -210,11 +221,16 @@ func (c Class) Check(n int, registries []string) error {
 		if slices.Contains(registries, t.Name) {
 			bad("%s is a unique registry: never a class's table (P15.5)", t.Name)
 		}
-		if !plainIdent.MatchString(t.Name) || !plainIdent.MatchString(t.PK) {
-			bad("table %q or its key is not a plain identifier", t.Name)
+		if !plainIdent.MatchString(t.Name) {
+			bad("table %q is not a plain identifier", t.Name)
 		}
-		if _, ok := t.Columns[t.PK]; !ok {
-			bad("table %s: its key %s has no type", t.Name, t.PK)
+		if (t.PK == "") == (len(t.Key) == 0) {
+			bad("table %s: a key, either PK or Key", t.Name)
+		}
+		for _, k := range t.KeyColumns() {
+			if _, ok := t.Columns[k]; !ok || !plainIdent.MatchString(k) {
+				bad("table %s: its key column %q has no type", t.Name, k)
+			}
 		}
 		for col, typ := range t.Columns {
 			if !plainIdent.MatchString(col) || !slices.Contains(Types, typ) {
@@ -222,9 +238,15 @@ func (c Class) Check(n int, registries []string) error {
 			}
 		}
 	}
+	if c.Root.PK == "" {
+		bad("the root %s has a single-column key (PK)", c.Root.Name)
+	}
 	for _, ch := range c.Children {
 		if _, ok := ch.Columns[ch.FK]; !ok {
 			bad("child %s: its key to its parent %s has no type", ch.Name, ch.FK)
+		}
+		if parent, ok := c.parent(ch); ok && parent.PK == "" {
+			bad("child %s: its parent %s is a parent, so it has a single-column key (PK)", ch.Name, parent.Name)
 		}
 		if _, ok := c.parent(ch); !ok {
 			bad("child %s: its parent %q is not the root or another child", ch.Name, ch.Parent)

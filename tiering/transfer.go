@@ -161,7 +161,7 @@ func (c *Catalog) copyTables(ctx context.Context, claim Claim, route string, tab
 	}
 	for _, t := range cl.Tables() {
 		rows := tables[t.Name]
-		mt := ManifestTable{Name: t.Name, PK: []string{t.PK}, Rows: strconv.Itoa(len(rows))}
+		mt := ManifestTable{Name: t.Name, PK: t.KeyColumns(), Rows: strconv.Itoa(len(rows))}
 		for _, n := range columnNames(t) {
 			mt.Columns = append(mt.Columns, ManifestColumn{Name: n, Type: t.Columns[n], Nullable: true})
 		}
@@ -205,7 +205,7 @@ func (c *Catalog) copyRows(ctx context.Context, claim Claim, t Table, rows []map
 			return err
 		}
 		for _, r := range rows {
-			k, err := PK(t.Columns, []string{t.PK}, r)
+			k, err := PK(t.Columns, t.KeyColumns(), r)
 			if err != nil {
 				return err
 			}
@@ -236,7 +236,7 @@ func (c *Catalog) Verify(ctx context.Context, m Manifest) error {
 		var h TableHash
 		keys[t.Name] = map[string]bool{}
 		add := func(r map[string]any) error {
-			k, err := PK(t.Columns, []string{t.PK}, r)
+			k, err := PK(t.Columns, t.KeyColumns(), r)
 			if err != nil {
 				return err
 			}
@@ -245,8 +245,10 @@ func (c *Catalog) Verify(ctx context.Context, m Manifest) error {
 				return err
 			}
 			h.Add(k, b)
-			v, _ := Value(t.Columns[t.PK], r[t.PK])
-			keys[t.Name][fmt.Sprint(v)] = true
+			if t.PK != "" { // a parent's keys (a parent has a single-column key)
+				v, _ := Value(t.Columns[t.PK], r[t.PK])
+				keys[t.Name][fmt.Sprint(v)] = true
+			}
 			if t.Name != cl.Root.Name {
 				children[t.Name] = append(children[t.Name], r[fk])
 			}
@@ -291,7 +293,9 @@ func (c *Catalog) Verify(ctx context.Context, m Manifest) error {
 					if err := json.Unmarshal(raw, &obj); err != nil {
 						return err
 					}
-					keys[t.Name][fmt.Sprint(obj[t.PK])] = true
+					if t.PK != "" {
+						keys[t.Name][fmt.Sprint(obj[t.PK])] = true
+					}
 					if t.Name != cl.Root.Name {
 						children[t.Name] = append(children[t.Name], obj[fk])
 					}

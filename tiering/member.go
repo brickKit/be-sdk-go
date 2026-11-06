@@ -63,6 +63,68 @@ func (c *Catalog) PendingRetentions() []string {
 	return out
 }
 
+// sqlTypes are the database's types a column type stands for (information_schema's data_type; a text array is
+// ARRAY of _text).
+var sqlTypes = map[string][]string{TypeText: {"text", "character varying", "character"}, TypeInt2: {"smallint"},
+	TypeInt4: {"integer"}, TypeInt8: {"bigint"}, TypeNumeric: {"numeric"}, TypeBool: {"boolean"}, TypeUUID: {"uuid"},
+	TypeTimestamptz: {"timestamp with time zone"}, TypeDate: {"date"}, TypeJSONB: {"jsonb"}, TypeBytea: {"bytea"},
+	TypeTextArray: {"ARRAY:_text"}}
+
+// checkColumns compares a class's tables with the database's (P15.1): every column declared with its type, none
+// missing, none more. A column the class does not declare is not copied, and the release deletes the whole row.
+func checkColumns(ctx context.Context, d *db.DB, cl Class) error {
+	var problems []string
+	err := d.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+		for _, t := range cl.Tables() {
+			rows, err := tx.Query(ctx, `SELECT column_name, CASE WHEN data_type = 'ARRAY' THEN 'ARRAY:' || udt_name ELSE data_type END
+				FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1`, t.Name)
+			if err != nil {
+				return err
+			}
+			have := map[string]string{}
+			for rows.Next() {
+				var name, typ string
+				if err := rows.Scan(&name, &typ); err != nil {
+					rows.Close()
+					return err
+				}
+				have[name] = typ
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			if len(have) == 0 {
+				problems = append(problems, fmt.Sprintf("table %s is not in the database", t.Name))
+				continue
+			}
+			for name, typ := range have {
+				declared, ok := t.Columns[name]
+				switch {
+				case !ok:
+					problems = append(problems, fmt.Sprintf("%s.%s (%s) is not declared: it would not be copied, and the release deletes the row", t.Name, name, typ))
+				case !slices.Contains(sqlTypes[declared], typ):
+					problems = append(problems, fmt.Sprintf("%s.%s is %s in the database, declared %s", t.Name, name, typ, declared))
+				}
+			}
+			for name := range t.Columns {
+				if _, ok := have[name]; !ok {
+					problems = append(problems, fmt.Sprintf("%s.%s is declared but not in the database", t.Name, name))
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(problems) > 0 {
+		sort.Strings(problems)
+		return fmt.Errorf("%s: the declaration is not the tables (P15.1): %s", cl.Name, strings.Join(problems, "; "))
+	}
+	return nil
+}
+
 // Keys are the keys of a member that declares classes.
 func Keys(classes []Class) []config.Key {
 	one := int64(1)
@@ -113,6 +175,11 @@ func NewCatalog(ctx context.Context, d *db.DB, classes []Class, values *config.V
 		}
 		if err := cl.Check(n, own); err != nil {
 			return nil, err
+		}
+		if d != nil && cl.Tierable() {
+			if err := checkColumns(ctx, d, cl); err != nil {
+				return nil, err
+			}
 		}
 		if _, dup := c.Classes[cl.Name]; dup {
 			return nil, fmt.Errorf("tiering: class %s declared twice", cl.Name)

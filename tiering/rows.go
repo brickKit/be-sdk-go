@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -35,11 +36,12 @@ const (
 	TypeDate        = "date"
 	TypeJSONB       = "jsonb"
 	TypeBytea       = "bytea"
+	TypeTextArray   = "text[]"
 )
 
 // Types are every column type a class's tables may have.
 var Types = []string{TypeText, TypeInt2, TypeInt4, TypeInt8, TypeNumeric, TypeBool, TypeUUID, TypeTimestamptz,
-	TypeDate, TypeJSONB, TypeBytea}
+	TypeDate, TypeJSONB, TypeBytea, TypeTextArray}
 
 // DigestVersion is the version of the canonical row and the digest (P15.10).
 const DigestVersion = 1
@@ -131,6 +133,8 @@ func Value(typ string, v any) (any, error) {
 			return nil, refused(typ, v)
 		}
 		return base64.StdEncoding.EncodeToString(b), nil
+	case TypeTextArray:
+		return textArray(v)
 	}
 	return nil, fmt.Errorf("tiering: unknown column type %q", typ)
 }
@@ -310,6 +314,45 @@ func driverValue(typ string, v any) (any, error) {
 		if b, err := base64.StdEncoding.DecodeString(s); isString && err == nil {
 			return b, nil
 		}
+	case TypeTextArray:
+		items, err := textArray(v)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]string, len(items))
+		for i, e := range items {
+			out[i] = e.(string)
+		}
+		return out, nil
 	}
 	return nil, refused(typ, v)
+}
+
+// textArray is a text array's canonical value: its elements in order, each NFC; an element that is null (or not text)
+// has none (P15.8). It takes the driver's []string or []any, a canonical row's []any, or a Parquet column's JSON text.
+func textArray(v any) ([]any, error) {
+	var items []any
+	switch a := v.(type) {
+	case []string:
+		for _, e := range a {
+			items = append(items, e)
+		}
+	case []any:
+		items = a
+	case string:
+		if err := json.Unmarshal([]byte(a), &items); err != nil {
+			return nil, refused(TypeTextArray, v)
+		}
+	default:
+		return nil, refused(TypeTextArray, v)
+	}
+	out := make([]any, len(items))
+	for i, e := range items {
+		s, ok := e.(string)
+		if !ok {
+			return nil, refused(TypeTextArray, v)
+		}
+		out[i] = canon.Text(s)
+	}
+	return out, nil
 }

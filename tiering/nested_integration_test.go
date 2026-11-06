@@ -32,7 +32,9 @@ const nestedSQL = `CREATE TABLE invoices (id uuid PRIMARY KEY, entity uuid NOT N
   created_at timestamptz NOT NULL, status text NOT NULL);
 CREATE TABLE invoice_lines (id uuid PRIMARY KEY, invoice_id uuid NOT NULL REFERENCES invoices (id), amount numeric(19,4) NOT NULL);
 CREATE TABLE line_taxes (id uuid PRIMARY KEY, line_id uuid NOT NULL REFERENCES invoice_lines (id), rate numeric(9,6) NOT NULL,
-  remark text);`
+  remark text);
+CREATE TABLE line_tags (line_id uuid NOT NULL REFERENCES invoice_lines (id), tag text NOT NULL, serials text[] NOT NULL,
+  PRIMARY KEY (line_id, tag));`
 
 func nestedClass() tiering.Class {
 	return tiering.Class{Name: "billing.invoices", Category: tiering.CategoryCompleted,
@@ -44,7 +46,11 @@ func nestedClass() tiering.Class {
 				"line_id": tiering.TypeUUID, "rate": tiering.TypeNumeric, "remark": tiering.TypeText}}, FK: "line_id",
 				Parent: "invoice_lines"}, // declared before its parent: the order of the declaration does not matter
 			{Table: tiering.Table{Name: "invoice_lines", PK: "id", Columns: map[string]string{"id": tiering.TypeUUID,
-				"invoice_id": tiering.TypeUUID, "amount": tiering.TypeNumeric}}, FK: "invoice_id"}},
+				"invoice_id": tiering.TypeUUID, "amount": tiering.TypeNumeric}}, FK: "invoice_id"},
+			// a leaf with a key of two columns and a text array (P15.1, P15.8)
+			{Table: tiering.Table{Name: "line_tags", Key: []string{"line_id", "tag"}, Columns: map[string]string{
+				"line_id": tiering.TypeUUID, "tag": tiering.TypeText, "serials": tiering.TypeTextArray}}, FK: "line_id",
+				Parent: "invoice_lines"}},
 		Group: []string{"entity"}, Anchor: "closed_at", Created: "created_at", Terminal: "r.status = 'closed'",
 		ResidenceDays: 365, Retention: tiering.Retention{MinDays: 3650, MaxDays: 3650, Basis: "test"},
 		Locate: []string{"entity"}, Erasable: []string{"remark"}, Routes: []string{tiering.RoutePostgres},
@@ -63,7 +69,8 @@ func invoice(t *testing.T, admin *pgx.Conn, entity string, closed bool) (string,
 	pgtest.Exec(t, admin, fmt.Sprintf("INSERT INTO invoices VALUES ('%s', '%s', %s, now() - interval '500 days', '%s')", id, entity, at, status))
 	for l := 0; l < 2; l++ {
 		line := ids.New().String()
-		pgtest.Exec(t, admin, fmt.Sprintf("INSERT INTO invoice_lines VALUES ('%s', '%s', %d.5)", line, id, l+1))
+		pgtest.Exec(t, admin, fmt.Sprintf("INSERT INTO invoice_lines VALUES ('%s', '%s', %d.5)", line, id, l+1),
+			fmt.Sprintf("INSERT INTO line_tags VALUES ('%s', 'lot', ARRAY['S-%d', 'S-%d']), ('%s', 'colour', '{}')", line, l, l+10, line))
 		for x := 0; x < 2; x++ {
 			tax = ids.New().String()
 			pgtest.Exec(t, admin, fmt.Sprintf("INSERT INTO line_taxes VALUES ('%s', '%s', 0.21, 'Mr Example, +34 600')", tax, line))
@@ -142,6 +149,14 @@ func TestAnAggregateOfThreeLevels(t *testing.T) {
 			require.True(t, found)
 			assert.Len(t, agg.Children["invoice_lines"], 2)
 			assert.Len(t, agg.Children["line_taxes"], 4, "the third level under its root")
+			require.Len(t, agg.Children["line_tags"], 4, "a leaf of two key columns")
+			var serials []any
+			for _, g := range agg.Children["line_tags"] {
+				if g["tag"] == "lot" {
+					serials = append(serials, g["serials"])
+				}
+			}
+			assert.ElementsMatch(t, []any{[]any{"S-0", "S-10"}, []any{"S-1", "S-11"}}, serials, "a text array as it was")
 			var got []string
 			for _, l := range agg.Children["invoice_lines"] {
 				got = append(got, fmt.Sprintf("line %s %s", l["id"], l["amount"]))
@@ -156,6 +171,7 @@ func TestAnAggregateOfThreeLevels(t *testing.T) {
 			require.NoError(t, err)
 			require.Empty(t, why)
 			for _, q := range []string{"SELECT count(*) FROM invoices WHERE id IN ($1, $2)",
+				"SELECT count(*) FROM line_tags g JOIN invoice_lines l ON l.id = g.line_id WHERE l.invoice_id IN ($1, $2)",
 				"SELECT count(*) FROM invoice_lines WHERE invoice_id IN ($1, $2)",
 				"SELECT count(*) FROM line_taxes x JOIN invoice_lines l ON l.id = x.line_id WHERE l.invoice_id IN ($1, $2)"} {
 				var n int

@@ -14,12 +14,13 @@ import (
 func TestEveryColumnTypeRoundTrips(t *testing.T) {
 	all := Table{Name: "everything", PK: "id", Columns: map[string]string{"id": TypeUUID, "t": TypeText,
 		"i2": TypeInt2, "i4": TypeInt4, "i8": TypeInt8, "n": TypeNumeric, "b": TypeBool, "ts": TypeTimestamptz,
-		"d": TypeDate, "j": TypeJSONB, "bin": TypeBytea}}
+		"d": TypeDate, "j": TypeJSONB, "bin": TypeBytea, "tags": TypeTextArray}}
 	at := time.Date(2026, 3, 1, 7, 0, 0, 500000000, time.UTC)
 	rows := []map[string]any{
 		{"id": [16]byte{1, 2, 3}, "t": "café ünïcode 中文", "i2": int16(-32768), "i4": int32(2147483647),
 			"i8": int64(9007199254740993), "n": "-1250.5000", "b": true, "ts": at,
-			"d": time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC), "j": `{"a": [1, 2], "b": null}`, "bin": []byte{0, 255, 16}},
+			"d": time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC), "j": `{"a": [1, 2], "b": null}`, "bin": []byte{0, 255, 16},
+			"tags": []any{"B-2", "café", "A-1"}},
 		{"id": [16]byte{9}, "t": "", "i2": nil, "i4": nil, "i8": nil, "n": nil, "b": false, "ts": nil, "d": nil,
 			"j": nil, "bin": []byte{}},
 		{"id": [16]byte{5}, "t": nil, "i2": int16(0), "i4": int32(-1), "i8": int64(-9007199254740993), "n": "0.000",
@@ -62,13 +63,13 @@ func TestEveryColumnTypeRoundTrips(t *testing.T) {
 func TestACanonicalRowIsWrittenAgainAsItWas(t *testing.T) {
 	all := Table{Name: "everything", PK: "id", Columns: map[string]string{"id": TypeUUID, "t": TypeText,
 		"i2": TypeInt2, "i4": TypeInt4, "i8": TypeInt8, "n": TypeNumeric, "b": TypeBool, "ts": TypeTimestamptz,
-		"d": TypeDate, "j": TypeJSONB, "bin": TypeBytea}}
+		"d": TypeDate, "j": TypeJSONB, "bin": TypeBytea, "tags": TypeTextArray}}
 	rows := []map[string]any{
 		{"id": [16]byte{1, 2, 3}, "t": "café 中文", "i2": int16(-32768), "i4": int32(2147483647),
 			"i8": int64(9007199254740993), "n": "-1250.5000", "b": true,
 			"ts": time.Date(2026, 3, 1, 7, 0, 0, 500000000, time.UTC), "d": time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC),
-			"j": `{"a": [1, 2], "b": null}`, "bin": []byte{0, 255, 16}},
-		{"id": [16]byte{9}, "t": "", "b": false, "bin": []byte{}},
+			"j": `{"a": [1, 2], "b": null}`, "bin": []byte{0, 255, 16}, "tags": []string{"x", "y"}},
+		{"id": [16]byte{9}, "t": "", "b": false, "bin": []byte{}, "tags": []string{}},
 	}
 	for _, r := range rows {
 		first, err := Row(all.Columns, r)
@@ -87,4 +88,12 @@ func TestACanonicalRowIsWrittenAgainAsItWas(t *testing.T) {
 	assert.ErrorIs(t, err, ErrRefused, "out of the column's range")
 	_, err = FromCanonical(all, map[string]any{"nope": "x"})
 	assert.Error(t, err)
+}
+
+// P15.8: a text array's elements are NFC each, in their order, whatever form they came in.
+func TestATextArrayIsNFC(t *testing.T) {
+	cols := map[string]string{"tags": TypeTextArray}
+	b, err := Row(cols, map[string]any{"tags": []string{"café", "B"}})
+	require.NoError(t, err)
+	assert.Equal(t, `{"tags":["caf`+"é"+`","B"]}`, string(b))
 }

@@ -47,6 +47,14 @@ func TestAClassDeclaration(t *testing.T) {
 			c.Children = append(c.Children, Child{Table: Table{Name: "notes", PK: "id", Columns: map[string]string{
 				"id": TypeUUID, "line_id": TypeUUID}}, FK: "line_id", Parent: "lines"})
 		},
+		"a root with a key of two columns": func(c *Class) { c.Root.PK, c.Root.Key = "", []string{"id", "legal_entity"} },
+		"a table with both a PK and a Key": func(c *Class) { c.Children[0].Key = []string{"id", "order_id"} },
+		"a parent with a key of two columns": func(c *Class) {
+			c.Children[0].PK, c.Children[0].Key = "", []string{"id", "order_id"}
+			c.Children = append(c.Children, Child{Table: Table{Name: "notes", PK: "id", Columns: map[string]string{
+				"id": TypeUUID, "line_id": TypeUUID}}, FK: "line_id", Parent: "order_lines"})
+		},
+		"a key column without a type": func(c *Class) { c.Children[0].PK, c.Children[0].Key = "", []string{"id", "nope"} },
 		"children in a cycle": func(c *Class) {
 			c.Children = []Child{
 				{Table: Table{Name: "a", PK: "id", Columns: map[string]string{"id": TypeUUID, "b_id": TypeUUID}}, FK: "b_id", Parent: "b"},
@@ -74,6 +82,9 @@ func TestAClassDeclaration(t *testing.T) {
 	nested.Children = append(nested.Children, Child{Table: Table{Name: "line_notes", PK: "id", Columns: map[string]string{
 		"id": TypeUUID, "line_id": TypeUUID}}, FK: "line_id", Parent: "order_lines"})
 	assert.NoError(t, nested.Check(90, nil), "a child under a child (P15.1)")
+	leaf := orders()
+	leaf.Children[0].PK, leaf.Children[0].Key = "", []string{"order_id", "id"}
+	assert.NoError(t, leaf.Check(90, nil), "a leaf with a key of two columns")
 	never := orders()
 	never.ResidenceDays = Never
 	assert.NoError(t, never.Check(90, nil), "a class may stay online")
