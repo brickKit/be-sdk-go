@@ -230,7 +230,9 @@ func TestRedeliveryAfterTheConsumersDatabaseWentBack(t *testing.T) {
 			assert.Equal(t, 1, count(`SELECT count(*) FROM rdcons.be_resend_gap WHERE kind = 'beyond_retention'
 				AND subscription = 'redeliv' AND source_component = 'demo/rdprod' AND progress LIKE '%/3'`))
 			assert.Contains(t, consLogs.String(), `"event":"event_resend_beyond_retention"`)
-			assert.Equal(t, 1, count(`SELECT count(*) FROM rdcons.repaired`), "the read model's repair ran")
+			// the gap is committed first and the repair runs after it (a repair that fails leaves the gap recorded)
+			require.Eventually(t, func() bool { return count(`SELECT count(*) FROM rdcons.repaired`) == 1 }, 10*time.Second,
+				50*time.Millisecond, "the read model's repair ran")
 			require.Eventually(t, func() bool { return seen(consURL) == 10 }, 20*time.Second, 50*time.Millisecond,
 				"what is still kept arrives (6 to 10); 4 and 5 were handled already, but after the cut: the gap from the "+
 					"progress (3) to the purge (5) is reported all the same, the consumer cannot know what it may lack there")

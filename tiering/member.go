@@ -35,6 +35,12 @@ func RetentionKey(class string) string {
 	return "TIERING_RETENTION_" + strings.ToUpper(strings.NewReplacer(".", "_", "-", "_").Replace(class))
 }
 
+// RouteKey is a class's route chosen at deployment, one of the routes the class allows (P15.35): where the archive
+// lives is the operator's choice. Changing it moves the published units there (the transfer job).
+func RouteKey(class string) string {
+	return "TIERING_ROUTE_" + strings.ToUpper(strings.NewReplacer(".", "_", "-", "_").Replace(class))
+}
+
 // retentionOf parses a retention given at deployment.
 func retentionOf(raw string) (Retention, error) {
 	parts := strings.SplitN(raw, "/", 3)
@@ -134,7 +140,8 @@ func Keys(classes []Class) []config.Key {
 	for _, c := range classes {
 		if c.Tierable() {
 			keys = append(keys, config.Key{Name: ResidenceKey(c.Name), Type: config.String},
-				config.Key{Name: RetentionKey(c.Name), Type: config.String})
+				config.Key{Name: RetentionKey(c.Name), Type: config.String},
+				config.Key{Name: RouteKey(c.Name), Type: config.String})
 		}
 	}
 	return append(append(keys, ColdKeys()...), StoreKeys()...)
@@ -160,6 +167,12 @@ func NewCatalog(ctx context.Context, d *db.DB, classes []Class, values *config.V
 		c.StoreLocked = locked
 	}
 	for _, cl := range classes {
+		if raw := values.String(RouteKey(cl.Name)); raw != "" && cl.Tierable() { // the deployment's route (P15.35)
+			if !slices.Contains(cl.Routes, raw) {
+				return nil, fmt.Errorf("%s: %q is not one of the routes %s allows %v", RouteKey(cl.Name), raw, cl.Name, cl.Routes)
+			}
+			cl.Routes = append([]string{raw}, slices.DeleteFunc(slices.Clone(cl.Routes), func(r string) bool { return r == raw })...)
+		}
 		if raw := values.String(RetentionKey(cl.Name)); raw != "" && cl.Tierable() { // the deployment's retention (P15.4)
 			r, err := retentionOf(raw)
 			if err != nil {

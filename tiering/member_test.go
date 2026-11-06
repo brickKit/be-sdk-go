@@ -40,3 +40,21 @@ func TestARetentionGivenAtDeployment(t *testing.T) {
 		assert.ErrorContains(t, err, RetentionKey(cl.Name), bad)
 	}
 }
+
+// P15.35: the deployment picks the target among the routes the class allows; another route refuses the start; the
+// object store chosen without a store refuses it too.
+func TestARouteChosenAtDeployment(t *testing.T) {
+	cl := orders()
+	cl.Routes = []string{RoutePostgres, RouteObject}
+	c, err := catalogWith(t, cl, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{RoutePostgres, RouteObject}, c.Classes[cl.Name].Routes, "the declared first")
+	_, err = catalogWith(t, cl, map[string]string{RouteKey(cl.Name): RouteObject})
+	assert.ErrorContains(t, err, "TIERING_STORE_URL", "the object store chosen: it needs one")
+	cl.Routes = []string{RouteObject, RoutePostgres}
+	c, err = catalogWith(t, cl, map[string]string{RouteKey(cl.Name): RoutePostgres})
+	require.NoError(t, err)
+	assert.Equal(t, []string{RoutePostgres, RouteObject}, c.Classes[cl.Name].Routes, "the chosen first")
+	_, err = catalogWith(t, cl, map[string]string{RouteKey(cl.Name): "iceberg"})
+	assert.ErrorContains(t, err, RouteKey(cl.Name))
+}
