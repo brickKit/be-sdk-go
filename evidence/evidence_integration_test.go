@@ -5,6 +5,7 @@ package evidence
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"testing"
@@ -91,6 +92,30 @@ func TestAnUnreachableStoreDoesNotHoldATighteningBack(t *testing.T) {
 		"the tightening goes on")
 	_, err = Transfer(ctx, d, store, w.log())
 	assert.Error(t, err, "the store is down: the conclusions stay local")
+
+	// P12.23: the double failure is itself a record, committed locally and sent once the store answers again: it
+	// names the lost intent (identity, category, time), not its change
+	store.mu.Lock()
+	store.down = false
+	store.mu.Unlock()
+	_, err = Transfer(ctx, d, store, w.log())
+	require.NoError(t, err)
+	var lost map[string]any
+	for _, r := range store.got {
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(r.Record, &m))
+		if m["category"] == DoubleFailure {
+			lost = m
+		}
+	}
+	require.NotNil(t, lost, "the double failure's record reached the store")
+	assert.Equal(t, "general", lost["phase"])
+	assert.Equal(t, sectestBob, lost["subject"])
+	change := lost["change"].(map[string]any)
+	assert.Equal(t, p.ID, change["record"])
+	assert.Equal(t, "security_tightening", change["category"])
+	assert.NotEmpty(t, change["at"])
+	assert.NotContains(t, change, "termination", "not the lost record's change")
 }
 
 // A failed business transaction writes the cancelled conclusion, without a position (P12.9, P12.16); a record the

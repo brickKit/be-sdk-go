@@ -144,7 +144,29 @@ func (w *Writer) Intent(ctx context.Context, category, subject string, obj Objec
 	w.log().Error("an intent reached neither the evidence store nor the alert channel", "event", "evidence_double_failure",
 		"id", p.ID, "category", category)
 	p.Intent = "lost"
+	w.doubleFailure(ctx, p, rec["at"])
 	return p, nil
+}
+
+// DoubleFailure is the category of the record a double failure leaves (P12.23).
+const DoubleFailure = "evidence_double_failure"
+
+// doubleFailure commits the record of a lost intent locally, in its own transaction: the evidence outbox sends it
+// once the store answers again, and a full recovery's step 9 lists it as a loss (P12.23). It names the lost record
+// (its identity, category, time), never its change. Writing it may fail too (the database): logged, the caller goes on.
+func (w *Writer) doubleFailure(ctx context.Context, p *Pending, at any) {
+	if w.DB == nil {
+		return
+	}
+	err := w.DB.Tx(context.WithoutCancel(ctx), func(ctx context.Context, tx db.Tx) error {
+		_, err := w.General(ctx, tx, DoubleFailure, p.subject, p.obj, map[string]any{"record": p.ID,
+			"category": p.category, "at": at})
+		return err
+	})
+	if err != nil {
+		w.log().Error("the double failure's own record could not be written", "event", "evidence_double_failure_unrecorded",
+			"id", p.ID, "error", err.Error())
+	}
 }
 
 type position struct {
