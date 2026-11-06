@@ -27,6 +27,7 @@ import (
 
 	"github.com/brickKit/be-sdk-go/v3/canon"
 	"github.com/brickKit/be-sdk-go/v3/config"
+	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/internal/s3sig"
 )
@@ -384,6 +385,9 @@ func (s *Store) Verify(r Record) error {
 	if err != nil {
 		return err
 	}
+	if err := writerIsSigner(r, leaf); err != nil {
+		return err
+	}
 	msg, err := SignedBytes(r)
 	if err != nil {
 		return err
@@ -498,7 +502,22 @@ func (s *Store) verifyRecord(r Record, trust *TrustHistory, received time.Time) 
 	if err != nil {
 		return err
 	}
+	if err := writerIsSigner(r, leaf); err != nil {
+		return err
+	}
 	return verifySignature(r, leaf)
+}
+
+// writerIsSigner: the record's writer is its signing certificate's service identity (P12.4: one component's credential
+// does not write a record naming another as its writer). Trust records are signed by a CA and read by BuildTrust.
+func writerIsSigner(r Record, leaf *x509.Certificate) error {
+	want := identity.SPIFFE(r.Deployment, r.Writer.Component)
+	for _, u := range leaf.URIs {
+		if u.String() == want {
+			return nil
+		}
+	}
+	return fmt.Errorf("the writer %s is not the signing certificate's identity", r.Writer.Component)
 }
 
 // Trust reads the trust material's history (P12.24-P12.26): both trust kinds, against the configured roots. A trust

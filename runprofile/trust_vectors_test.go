@@ -1,8 +1,10 @@
 package runprofile
 
 import (
+	"crypto/x509"
 	"encoding/json"
 	"io/fs"
+	"net/url"
 	"testing"
 	"time"
 
@@ -11,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// P12.24-P12.26 on the protocol's trust-history vectors: the trusted CAs (from the configured root along doubly signed
+// P12.4, P12.24-P12.26 on the protocol's trust-history vectors (the writer is the signer): the trusted CAs (from the configured root along doubly signed
 // rotations), and whether a record received at t holds (its chain ends at a trusted CA, nothing of it revoked at r
 // with t > r - skew; a revocation counts only when its signer was trusted).
 func TestTheTrustHistoryVectors(t *testing.T) {
@@ -24,6 +26,8 @@ func TestTheTrustHistoryVectors(t *testing.T) {
 				Record struct {
 					Chain    []string
 					Received int64
+					Writer   *string
+					Signer   string
 				}
 				Configured []string
 				Rotations  []struct {
@@ -67,6 +71,9 @@ func TestTheTrustHistoryVectors(t *testing.T) {
 				reason = "untrusted_ca"
 			case revokedAt(chain, at(c.Input.Record.Received), rev, time.Duration(c.Input.Skew)*time.Second):
 				reason = "revoked"
+			case c.Input.Record.Writer != nil && writerIsSigner(Record{Deployment: "d", Writer: Writer{Component: *c.Input.Record.Writer}},
+				&x509.Certificate{URIs: []*url.URL{{Scheme: "spiffe", Host: "d", Path: "/component/" + c.Input.Record.Signer}}}) != nil:
+				reason = "writer_not_signer"
 			}
 			assert.Equal(t, c.Expected.Holds, reason == "")
 			assert.Equal(t, c.Expected.Reason, reason)

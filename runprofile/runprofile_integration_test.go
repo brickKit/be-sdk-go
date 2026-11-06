@@ -21,6 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/internal/s3test"
 	"github.com/brickKit/be-sdk-go/v3/sectest"
@@ -55,6 +56,7 @@ func setup(t *testing.T) env {
 	}
 	e.w = sectest.New(t)
 	e.deployment = ids.New().String() // this run's own records
+	e.w.Deployment = e.deployment     // the certificates' identities are of this deployment (P12.4)
 	return e
 }
 
@@ -109,7 +111,8 @@ func TestARecordIsSignedLockedAndReadBack(t *testing.T) { // P12.1, P12.2, P12.3
 	assert.NotContains(t, string(b), "PRIVATE KEY")
 }
 
-// A record whose body was changed, or signed under another trust root, is not used and is reported (P12.4).
+// A record whose body was changed, signed under another trust root, or naming another component than its signer as its
+// writer is not used and is reported (P12.4).
 func TestATamperedOrForeignRecordIsNotUsed(t *testing.T) {
 	e := setup(t)
 	s := e.store(t, "infra/authz")
@@ -126,12 +129,24 @@ func TestATamperedOrForeignRecordIsNotUsed(t *testing.T) {
 	fs := foreign.store(t, "infra/authz", func(o *Options) { o.Deployment = e.deployment })
 	_, err = fs.Append(ctx, KindAuthzGeneration, map[string]int64{"value": 50})
 	require.NoError(t, err)
+	// the audit component's own (valid) credential signs a record naming the authorization member as its writer
+	other := e.store(t, "infra/authz", func(o *Options) { o.Identity = e.w.TLS(t, "infra/audit") })
+	spoofed, err := other.Append(ctx, KindAuthzGeneration, map[string]int64{"value": 60})
+	require.NoError(t, err)
+	assert.ErrorContains(t, s.Verify(spoofed), "writer", "against the current trust root too")
+	// the same CA's credential of the same component in another deployment
+	cert, key, ca := e.w.CertsIn(t, "another-deployment", "infra/authz")
+	elsewhere, err := identity.LoadServiceTLS("another-deployment", "infra/authz", cert, key, ca, os.ReadFile)
+	require.NoError(t, err)
+	_, err = e.store(t, "infra/authz", func(o *Options) { o.Identity = elsewhere }).Append(ctx, KindAuthzGeneration,
+		map[string]int64{"value": 70})
+	require.NoError(t, err)
 
 	recs, problems, err := s.List(ctx, KindAuthzGeneration)
 	require.NoError(t, err)
 	require.Len(t, recs, 1, "only the genuine record")
 	assert.Equal(t, r.ID, recs[0].ID)
-	assert.Len(t, problems, 2)
+	assert.Len(t, problems, 4)
 	cur, _, err := s.Current(ctx, KindAuthzGeneration)
 	require.NoError(t, err)
 	assert.EqualValues(t, 4, cur, "the tampered 99 and the foreign 50 are not the generation")
@@ -139,13 +154,15 @@ func TestATamperedOrForeignRecordIsNotUsed(t *testing.T) {
 	// ListAll: every record with its verification; an untrusted one comes with its content (6.2 reviews it)
 	all, err := s.ListAll(ctx, KindAuthzGeneration)
 	require.NoError(t, err)
-	require.Len(t, all, 3)
+	require.Len(t, all, 5)
 	bodies := map[string]bool{}
 	for _, l := range all {
 		require.True(t, l.Read, l.Key)
 		bodies[string(l.Record.Body)] = l.Err == nil
 	}
-	assert.Equal(t, map[string]bool{`{"value":4}`: true, `{"value":99}`: false, `{"value":50}`: false}, bodies)
+	assert.Equal(t, map[string]bool{`{"value":4}`: true, `{"value":99}`: false, `{"value":50}`: false, `{"value":60}`: false,
+		`{"value":70}`: false},
+		bodies, "the writer is the signer (P12.4)")
 }
 
 // A generation advances to the largest value seen anywhere plus one, written to the run profile first; without the
@@ -230,7 +247,8 @@ func TestTheTrustHistoryInTheStore(t *testing.T) {
 	before, err := old.Append(ctx, KindAlert, map[string]string{"what": "before the revocation"})
 	require.NoError(t, err)
 
-	b := sectest.New(t)       // the new trust root B
+	b := sectest.New(t) // the new trust root B
+	b.Deployment = e.deployment
 	reader := func() *Store { // a reader with only B configured
 		s, err := New(Options{Endpoint: e.url, Bucket: lockBucket, AccessKey: e.access, Secret: func() string { return e.secret },
 			Deployment: e.deployment, Writer: Writer{Component: "ops/recover", Instance: "r-1"}, Identity: b.TLS(t, "ops/recover"),
