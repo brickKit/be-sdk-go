@@ -216,6 +216,18 @@ func (m *Member) evidenceWriter(values *config.Values, sh Shared) (*evidence.Wri
 		return nil, err
 	}
 	m.hasJobs = true
+	// in the recovery phases but frozen no job runs, yet the evidence store never goes back: a conclusion written
+	// during the recovery reaches it before the replay (P1.23)
+	if w.Store != nil {
+		m.loops = append(m.loops, loop{name: "the evidence transfer", every: evidence.TransferEvery,
+			in: func(phase string) bool { return phase != "" && phase != PhaseFrozen },
+			run: func(ctx context.Context) error {
+				ctx, cancel := context.WithTimeout(ctx, 30*time.Second) // calls need a deadline (P4.4)
+				defer cancel()
+				_, err := evidence.Transfer(ctx, sh.DB, w.Store, m.Logger)
+				return err
+			}})
+	}
 	return w, nil
 }
 
