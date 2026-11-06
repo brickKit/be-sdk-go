@@ -18,7 +18,11 @@ import (
 // barrierFunction is the one trigger function every barrier calls. Arguments: the class, "root" or "child", the root
 // table, the root's key column, the root key's SQL type, the column of this table that holds its parent's key, and for
 // a child below another child the query that finds the root's key from the parent's ($1).
-const barrierFunction = `CREATE OR REPLACE FUNCTION be_tier_barrier() RETURNS trigger LANGUAGE plpgsql AS $$
+//
+// The function keeps the search path it was created under (the component's schema, at its migration): a write from a
+// session with another search path (an operator naming the schema) finds the catalog all the same, and no session can
+// put another be_tier_member in front of it.
+const barrierFunction = `CREATE OR REPLACE FUNCTION be_tier_barrier() RETURNS trigger LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE
   cls text := TG_ARGV[0];
   kind text := TG_ARGV[1];

@@ -19,6 +19,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/internal/pgtest"
 	"github.com/brickKit/be-sdk-go/v3/tiering"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -247,4 +248,28 @@ func TestTheCandidatesJobSealsAndAlerts(t *testing.T) {
 	var due time.Time
 	require.NoError(t, e.admin.QueryRow(e.ctx, "SELECT blocked_since FROM be_tier_unit WHERE blocked IS NOT NULL").Scan(&due))
 	assert.WithinDuration(t, time.Now().Add(-35*24*time.Hour), due, time.Hour, "blocked since it came due")
+}
+
+// P15.13: the barrier holds for a write from a session whose search path is not the component's (an operator's
+// session naming the schema): the trigger finds the catalog in its own schema, refuses the sealed order, lets the
+// open one through.
+func TestTheBarrierHoldsFromAnotherSearchPath(t *testing.T) {
+	e := setup(t, "tier_seal_path")
+	e.order(t, 400)
+	e.order(t, 400)
+	open := e.order(t, -1)
+	groups, err := e.cat.Groupings(e.ctx, "sales.orders")
+	require.NoError(t, err)
+	_, err = e.cat.Seal(e.ctx, "sales.orders", groups[0])
+	require.NoError(t, err)
+	var sealed string
+	require.NoError(t, e.admin.QueryRow(e.ctx, "SELECT root_id FROM be_tier_member LIMIT 1").Scan(&sealed))
+
+	other := pgtest.Admin(t, pgtest.Database) // search path: the default, not the component's schema
+	_, err = other.Exec(e.ctx, "UPDATE tier_seal_path.orders SET note = 'x' WHERE id = $1", sealed)
+	var pgErr *pgconn.PgError
+	require.ErrorAs(t, err, &pgErr)
+	assert.Equal(t, "BE001", pgErr.Code, "refused by the barrier: %v", err)
+	_, err = other.Exec(e.ctx, "UPDATE tier_seal_path.orders SET note = 'x' WHERE id = $1", open)
+	assert.NoError(t, err, "the open order")
 }
