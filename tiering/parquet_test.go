@@ -1,6 +1,7 @@
 package tiering
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -54,4 +55,36 @@ func TestEveryColumnTypeRoundTrips(t *testing.T) {
 	other := Table{Name: "everything", PK: "id", Columns: map[string]string{"id": TypeUUID, "t": TypeText}}
 	_, err = ReadParquet(other, data)
 	assert.Error(t, err, "a file whose columns are not the table's")
+}
+
+// A unit read back from a route is canonical rows; FromCanonical turns them into values a copy writes again, to the
+// same canonical bytes (every column type, nulls absent) and through Parquet (P15.8, P15.31, P15.35).
+func TestACanonicalRowIsWrittenAgainAsItWas(t *testing.T) {
+	all := Table{Name: "everything", PK: "id", Columns: map[string]string{"id": TypeUUID, "t": TypeText,
+		"i2": TypeInt2, "i4": TypeInt4, "i8": TypeInt8, "n": TypeNumeric, "b": TypeBool, "ts": TypeTimestamptz,
+		"d": TypeDate, "j": TypeJSONB, "bin": TypeBytea}}
+	rows := []map[string]any{
+		{"id": [16]byte{1, 2, 3}, "t": "café 中文", "i2": int16(-32768), "i4": int32(2147483647),
+			"i8": int64(9007199254740993), "n": "-1250.5000", "b": true,
+			"ts": time.Date(2026, 3, 1, 7, 0, 0, 500000000, time.UTC), "d": time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC),
+			"j": `{"a": [1, 2], "b": null}`, "bin": []byte{0, 255, 16}},
+		{"id": [16]byte{9}, "t": "", "b": false, "bin": []byte{}},
+	}
+	for _, r := range rows {
+		first, err := Row(all.Columns, r)
+		require.NoError(t, err)
+		var canonical map[string]any
+		require.NoError(t, json.Unmarshal(first, &canonical))
+		back, err := FromCanonical(all, canonical)
+		require.NoError(t, err)
+		again, err := Row(all.Columns, back)
+		require.NoError(t, err)
+		assert.Equal(t, string(first), string(again))
+		_, err = WriteParquet(all, []map[string]any{back})
+		require.NoError(t, err, "written to an object again")
+	}
+	_, err := FromCanonical(all, map[string]any{"i2": "40000"})
+	assert.ErrorIs(t, err, ErrRefused, "out of the column's range")
+	_, err = FromCanonical(all, map[string]any{"nope": "x"})
+	assert.Error(t, err)
 }

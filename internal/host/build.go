@@ -142,6 +142,7 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 			}
 			catalog.Backups = tiering.BackupsFrom(rp)
 		}
+		catalog.Log = m.Logger
 		catalog.Evidence = writer          // the destructions' evidence (P15.29); their replay is registered with the module's
 		catalog.Enqueue = m.runner.Enqueue // the history exports (P15.38), under the requester's authorization then
 		catalog.Subject = func(principal string) *authz.Subject {
@@ -152,7 +153,7 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		}
 		for _, j := range []work.Job{catalog.CandidatesJob(values.String(tiering.KeyWindow), m.Logger),
 			catalog.TransferJob(m.Logger), catalog.ReleaseJob(m.Logger), catalog.ExportJobOf(m.Logger),
-			catalog.ExportCleanupJob(m.Logger), catalog.DestroyJob(m.Logger)} {
+			catalog.ExportCleanupJob(m.Logger), catalog.DestroyJob(m.Logger), catalog.EraseJobOf(m.Logger)} {
 			if err := m.addSDKJob(j); err != nil {
 				return nil, err
 			}
@@ -544,7 +545,7 @@ func (m *Member) systemSurface(member obs.Member, rt *runtime.Runtime) error {
 		}
 	}
 	rp, replayer := m.Module.(evidence.Replayer)
-	destroys := rt.Tiering != nil && rt.Tiering.Destroys()
+	destroys := rt.Tiering != nil && rt.Tiering.Replaying()
 	if replayer || destroys { // the owner's replay of its evidence (P12.19), the tiering's destructions with it
 		var replays evidence.Replays
 		if replayer {

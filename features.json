@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.102",
+  "protocol": "3.0.0-alpha.103",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -630,20 +630,17 @@
         "tiering.TestAHoldSetDuringTheDecisionWins",
         "tiering.TestADestructionAfterTheRecoveryPointIsReplayed",
         "launcher.TestAComponentWithClassesServes",
-        "internal/host.TestATieringClassNamesDeclaredOperations"
+        "internal/host.TestATieringClassNamesDeclaredOperations",
+        "tiering.TestAnArchivedOrderIsErasedAsANewVersion",
+        "tiering.TestAnErasureInASealedUnitRestartsItsTransfer",
+        "tiering.TestAnErasureAfterTheRecoveryPointIsReplayed",
+        "tiering.TestAHoldSetDuringAnErasureWins",
+        "tiering.TestACanonicalRowIsWrittenAgainAsItWas"
       ],
       "pending": [
         {
           "rule": "P15.23",
           "reason": "列表的默认范围由组件的列表实现，随装配项目底层先行第 5 项的 T10"
-        },
-        {
-          "rule": "P15.30",
-          "reason": "销毁的重放已实现（`Catalog.Replays`）；擦除的重放随装配项目底层先行第 5 项的 T7b"
-        },
-        {
-          "rule": "P15.31",
-          "reason": "未实现：装配项目底层先行第 5 项的 T7"
         },
         {
           "rule": "P15.33",

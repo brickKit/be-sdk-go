@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -71,6 +72,8 @@ type Catalog struct {
 	ColdConcurrency int
 	// Enqueue queues a job's work item in the transaction (the member's runner); nil: no exports.
 	Enqueue func(ctx context.Context, tx db.Tx, job string, args any) (string, error)
+	// Log takes the catalog's alerts (an erasure deferred by a hold); nil: none.
+	Log *slog.Logger
 	// Evidence writes the destructions' and erasures' evidence (P15.29-P15.31); nil: neither is done.
 	Evidence *evidence.Writer
 	// Subject is a principal's authorization now (the member's view), for the exports; nil or a nil answer: none.

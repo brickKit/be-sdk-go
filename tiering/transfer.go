@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -35,11 +36,17 @@ var ErrVerification = errors.New("tiering: the copy does not verify")
 // ErrStaleClaim is a publish refused because the unit changed since the claim (P15.18).
 var ErrStaleClaim = errors.New("tiering: the claim is stale")
 
-// Claim is one worker's claim of a unit.
+// Claim is one worker's claim of a unit: a sealed unit's transfer, or a published or released unit written again
+// (an erasure's new version, a route change: P15.31, P15.35).
 type Claim struct {
-	Unit, Class, Digest, Epoch string
-	Generation                 int64
-	Version                    int // the manifest version this transfer writes
+	Unit, Class, Epoch string
+	Generation         int64
+	// Digest is the content this claim writes; Was the unit's digest when claimed (equal for a transfer).
+	Digest, Was string
+	// State and Base are the unit's state and manifest version when claimed; Version the one this claim writes.
+	State   string
+	Base    int
+	Version int
 }
 
 func epochOf(ctx context.Context, tx db.Tx) (string, error) {
@@ -52,17 +59,22 @@ func epochOf(ctx context.Context, tx db.Tx) (string, error) {
 
 // ClaimUnit claims a sealed unit for its transfer (P15.14).
 func (c *Catalog) ClaimUnit(ctx context.Context, unit string) (Claim, error) {
+	return c.claim(ctx, unit, StateSealed)
+}
+
+// claim raises a unit's generation for a worker, the unit in one of the states.
+func (c *Catalog) claim(ctx context.Context, unit string, states ...string) (Claim, error) {
 	var cl Claim
 	err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
-		var state string
 		var version int
 		if err := tx.QueryRow(ctx, "SELECT class, state, coalesce(digest, ''), manifest_version FROM be_tier_unit "+
-			"WHERE id = $1 FOR UPDATE", unit).Scan(&cl.Class, &state, &cl.Digest, &version); err != nil {
+			"WHERE id = $1 FOR UPDATE", unit).Scan(&cl.Class, &cl.State, &cl.Digest, &version); err != nil {
 			return err
 		}
-		if state != StateSealed {
-			return fmt.Errorf("tiering: unit %s is %s, not sealed", unit, state)
+		if !slices.Contains(states, cl.State) {
+			return fmt.Errorf("tiering: unit %s is %s, not %s", unit, cl.State, strings.Join(states, " or "))
 		}
+		cl.Was, cl.Base = cl.Digest, version
 		epoch, err := epochOf(ctx, tx)
 		if err != nil {
 			return err
@@ -122,11 +134,16 @@ func sha(b []byte) string {
 
 // Copy writes the claimed unit to a route and answers its manifest (P15.15, P15.16).
 func (c *Catalog) Copy(ctx context.Context, claim Claim, route string) (Manifest, error) {
-	cl := c.Classes[claim.Class]
-	tables, err := c.readUnit(ctx, cl, claim.Unit)
+	tables, err := c.readUnit(ctx, c.Classes[claim.Class], claim.Unit)
 	if err != nil {
 		return Manifest{}, err
 	}
+	return c.copyTables(ctx, claim, route, tables)
+}
+
+// copyTables writes a unit's content (the driver's values by table) to a route as the claim's version.
+func (c *Catalog) copyTables(ctx context.Context, claim Claim, route string, tables map[string][]map[string]any) (Manifest, error) {
+	cl := c.Classes[claim.Class]
 	m := Manifest{RecordType: ManifestRecordType, Schema: "1.0", Unit: claim.Unit, Class: claim.Class,
 		Version: claim.Version, Route: route, Generation: claim.Generation, Epoch: claim.Epoch,
 		SchemaVersion: cl.SchemaVersion, DigestVersion: DigestVersion, Digest: claim.Digest,
@@ -331,19 +348,27 @@ func childFK(cl Class, name string) string {
 	return fk
 }
 
-// Publish makes a verified copy the unit's authority in one local transaction (P15.18): the unit still sealed, the
-// claim's generation and epoch current, the digest unchanged; otherwise ErrStaleClaim and nothing changes.
+// Publish makes a verified copy the unit's authority in one local transaction (P15.18): the unit still in the state
+// and at the manifest version it was claimed in, the claim's generation and epoch current, its digest unchanged since
+// the claim; otherwise ErrStaleClaim and nothing changes. A sealed unit turns published; a published or released
+// one written again keeps its state (P15.31, P15.35).
 func (c *Catalog) Publish(ctx context.Context, claim Claim, m Manifest) error {
+	return c.publish(ctx, claim, m, nil)
+}
+
+// publish is Publish with more work in its transaction (an erasure's online rows and evidence).
+func (c *Catalog) publish(ctx context.Context, claim Claim, m Manifest, also func(context.Context, db.Tx) error) error {
 	raw, err := m.Canonical()
 	if err != nil {
 		return err
 	}
 	return c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
-		var state, digest string
+		var state, digest, route string
 		var gen int64
+		var version int
 		var epoch *string
-		if err := tx.QueryRow(ctx, "SELECT state, coalesce(digest, ''), generation, claim_epoch FROM be_tier_unit "+
-			"WHERE id = $1 FOR UPDATE", claim.Unit).Scan(&state, &digest, &gen, &epoch); err != nil {
+		if err := tx.QueryRow(ctx, "SELECT state, coalesce(digest, ''), generation, claim_epoch, manifest_version, route "+
+			"FROM be_tier_unit WHERE id = $1 FOR UPDATE", claim.Unit).Scan(&state, &digest, &gen, &epoch, &version, &route); err != nil {
 			return err
 		}
 		now, err := epochOf(ctx, tx)
@@ -351,13 +376,14 @@ func (c *Catalog) Publish(ctx context.Context, claim Claim, m Manifest) error {
 			return err
 		}
 		switch {
-		case state != StateSealed:
-			return fmt.Errorf("%w: unit %s is %s", ErrStaleClaim, claim.Unit, state)
+		case state != claim.State || version != claim.Base:
+			return fmt.Errorf("%w: unit %s is %s at version %d, the claim's %s at %d", ErrStaleClaim, claim.Unit, state,
+				version, claim.State, claim.Base)
 		case gen != claim.Generation || epoch == nil || *epoch != claim.Epoch:
 			return fmt.Errorf("%w: unit %s is at generation %d, the claim %d", ErrStaleClaim, claim.Unit, gen, claim.Generation)
 		case claim.Epoch != now:
 			return fmt.Errorf("%w: the database's epoch is %s, the claim's %s", ErrStaleClaim, now, claim.Epoch)
-		case digest != m.Digest:
+		case digest != claim.Was || m.Digest != claim.Digest:
 			return fmt.Errorf("%w: the sealed content changed", ErrStaleClaim)
 		}
 		if _, err := tx.Exec(ctx, "INSERT INTO be_tier_manifest (unit, version, route, generation, manifest, digest) "+
@@ -368,9 +394,18 @@ func (c *Catalog) Publish(ctx context.Context, claim Claim, m Manifest) error {
 		if err := tx.QueryRow(ctx, "UPDATE be_tier_catalog SET version = version + 1 RETURNING version").Scan(&catalog); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, "UPDATE be_tier_unit SET route = $2, manifest_version = $3, state = 'published', "+
-			"published_at = now(), route_version = $4 WHERE id = $1", claim.Unit, m.Route, m.Version, catalog)
-		return err
+		if state == StateSealed {
+			_, err = tx.Exec(ctx, "UPDATE be_tier_unit SET route = $2, manifest_version = $3, state = 'published', "+
+				"published_at = now(), route_version = $4 WHERE id = $1", claim.Unit, m.Route, m.Version, catalog)
+		} else { // written again: the route version moves only when the route does (older leases read the old one)
+			_, err = tx.Exec(ctx, "UPDATE be_tier_unit SET route = $2, manifest_version = $3, digest = $4, "+
+				"route_version = CASE WHEN route = $2 THEN route_version ELSE $5 END WHERE id = $1", claim.Unit, m.Route,
+				m.Version, m.Digest, catalog)
+		}
+		if err != nil || also == nil {
+			return err
+		}
+		return also(ctx, tx)
 	})
 }
 

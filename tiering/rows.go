@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -243,4 +244,72 @@ func UnitDigest(class, schemaVersion string, tables []TableSum) (string, error) 
 	}
 	return canon.Digest("be.tier.unit", 1, map[string]any{"class": class, "schema_version": schemaVersion,
 		"tables": entries})
+}
+
+// FromCanonical turns a canonical row (as a route reads it back, P15.8) into the driver's values a copy writes: the
+// inverse of Value for every column type, so a unit read from one route can be written to another or again.
+func FromCanonical(t Table, row map[string]any) (map[string]any, error) {
+	out := make(map[string]any, len(row))
+	for name, v := range row {
+		typ, ok := t.Columns[name]
+		if !ok {
+			return nil, fmt.Errorf("tiering: %s has no column %q", t.Name, name)
+		}
+		if v == nil {
+			out[name] = nil
+			continue
+		}
+		d, err := driverValue(typ, v)
+		if err != nil {
+			return nil, fmt.Errorf("%s.%s: %w", t.Name, name, err)
+		}
+		out[name] = d
+	}
+	return out, nil
+}
+
+func driverValue(typ string, v any) (any, error) {
+	s, isString := v.(string)
+	switch typ {
+	case TypeText, TypeNumeric, TypeJSONB:
+		if isString {
+			return s, nil
+		}
+	case TypeBool:
+		if b, ok := v.(bool); ok {
+			return b, nil
+		}
+	case TypeInt2, TypeInt4, TypeInt8:
+		if isString {
+			bits := map[string]int{TypeInt2: 16, TypeInt4: 32, TypeInt8: 64}[typ]
+			n, err := strconv.ParseInt(s, 10, bits)
+			if err != nil {
+				return nil, refused(typ, v)
+			}
+			switch typ {
+			case TypeInt2:
+				return int16(n), nil
+			case TypeInt4:
+				return int32(n), nil
+			}
+			return n, nil
+		}
+	case TypeUUID:
+		if b, err := hex.DecodeString(strings.ReplaceAll(s, "-", "")); isString && err == nil && len(b) == 16 {
+			return [16]byte(b), nil
+		}
+	case TypeTimestamptz:
+		if t, err := time.Parse(time.RFC3339Nano, s); isString && err == nil {
+			return t.UTC(), nil
+		}
+	case TypeDate:
+		if t, err := time.Parse(time.DateOnly, s); isString && err == nil {
+			return t, nil
+		}
+	case TypeBytea:
+		if b, err := base64.StdEncoding.DecodeString(s); isString && err == nil {
+			return b, nil
+		}
+	}
+	return nil, refused(typ, v)
 }

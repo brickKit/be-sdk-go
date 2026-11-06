@@ -38,6 +38,8 @@ var inRecovery = map[string]recoveryRule{
 		"authorization being recovered; the queued exports run once open"},
 	"be.tiering.destroy": {why: "not run: a destruction decides on the member's own database, which goes back; the " +
 		"destructions after the recovery's point are replayed from their evidence, the rest run once open"},
+	"be.tiering.erase": {why: "not run: an erasure writes the member's own database and its archive copies; the " +
+		"erasures replayed during the recovery are queued and run once open"},
 	"be.tiering.export.cleanup": {why: "not run: housekeeping of the member's own database, which goes back; once open"},
 }
 

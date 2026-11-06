@@ -216,20 +216,22 @@ func (c *Catalog) DestroyJob(log *slog.Logger) work.Job {
 		}}
 }
 
-// Destroys says whether any class of the catalog can be destroyed (its retention is not pending): the component then
-// replays destructions in a full recovery and declares the replay's operation (Definition.Replay).
-func (c *Catalog) Destroys() bool {
+// Replaying says whether the catalog has evidence to replay: a class that can be destroyed (its retention is not
+// pending) or erased. The component then declares the replay's operation (Definition.Replay).
+func (c *Catalog) Replaying() bool {
 	for _, cl := range c.Classes {
-		if !cl.Retention.Pending {
+		if !cl.Retention.Pending || len(cl.Erasable) > 0 {
 			return true
 		}
 	}
 	return false
 }
 
-// Replays registers the re-execution of the destructions a full recovery finds after its point (P15.30, TR16): the
-// unit turns destroyed without the business preconditions; its data goes with the next destruction run (PurgeAgain).
+// Replays registers the re-execution of the destructions and erasures a full recovery finds after its point (P15.30,
+// TR16): a destroyed unit turns destroyed without the business preconditions, its data going with the next
+// destruction run (PurgeAgain); an erasure as replayErasure says.
 func (c *Catalog) Replays(r *evidence.Replays) {
+	r.Add(CategoryErasure, c.replayErasure)
 	r.Add(CategoryDestruction, func(ctx context.Context, tx db.Tx, rec evidence.Replayed) error {
 		unit := rec.Object.ID
 		u, err := readUnit(ctx, tx, unit, true)

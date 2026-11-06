@@ -86,12 +86,18 @@ func destroyable(t *testing.T, name string) (*destroyWorld, string) {
 	unit, _, _ := published(t, w.env, tiering.RoutePostgres)
 	w.cat.Evidence = &evidence.Writer{DB: w.d, Store: w.kept, Component: "test/sales", Instance: "test-1",
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	h := authz.NewHolder("test/sales", archiveGrants{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	require.NoError(t, h.Verify(w.ctx))
-	require.NoError(t, archiveDefs.Validate())
-	w.alice = &authz.Subject{Principal: alice, Defs: archiveDefs, Holder: h, At: time.Now()}
-	w.bob = &authz.Subject{Principal: bob, Defs: archiveDefs, Holder: h, At: time.Now()}
+	w.alice = holder(t)
+	w.bob = &authz.Subject{Principal: bob, Defs: archiveDefs, Holder: w.alice.Holder, At: time.Now()}
 	return w, unit
+}
+
+// holder is alice with the archive's hold and approval operations.
+func holder(t *testing.T) *authz.Subject {
+	t.Helper()
+	h := authz.NewHolder("test/sales", archiveGrants{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, h.Verify(context.Background()))
+	require.NoError(t, archiveDefs.Validate())
+	return &authz.Subject{Principal: alice, Defs: archiveDefs, Holder: h, At: time.Now()}
 }
 
 func (w *destroyWorld) state(t *testing.T, unit string) string {
