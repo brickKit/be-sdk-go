@@ -48,6 +48,8 @@ type Reader struct {
 	Facts func(root map[string]any) authz.Facts
 	// Output shapes a visible cold aggregate for the caller under its decision (authz.Mask on d.Fields).
 	Output func(a Aggregate, d authz.Decision) (map[string]any, error)
+	// Match keeps the cold aggregates the request's parameters select (the online part filters in its SQL); nil: all.
+	Match func(root map[string]any, params json.RawMessage) bool
 	// Online reads the online part under the snapshot: the class's rows the subject may see (its compiled list),
 	// leaving out the members already off the online tables (Snapshot.OnlineExclusion), each emitted shaped.
 	Online func(ctx context.Context, tx db.Tx, s Snapshot, sub *authz.Subject, params json.RawMessage,
@@ -129,6 +131,9 @@ func (c *Catalog) read(ctx context.Context, sub *authz.Subject, class string, r 
 			return err
 		}
 		for _, a := range aggs {
+			if r.Match != nil && !r.Match(a.Root, params) {
+				continue
+			}
 			d := decide(r.Facts(a.Root))
 			if d.Visible != authz.True || d.Action != authz.True {
 				continue

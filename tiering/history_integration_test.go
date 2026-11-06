@@ -189,6 +189,18 @@ func TestAHistoryReadIsCompleteUnderTheCurrentAuthorization(t *testing.T) {
 	out, _, err = w.cat.History(w.ctx, w.sub, "sales.orders", nil)
 	require.NoError(t, err)
 	assert.Len(t, out, 3, "the revoked entity's orders are not read any more")
+
+	// the request's parameters select among the cold aggregates too (the reader's Match)
+	r := orderReader(&w.slow)
+	r.Match = func(root map[string]any, params json.RawMessage) bool {
+		var p struct{ Lines int }
+		_ = json.Unmarshal(params, &p)
+		return p.Lines == 0 // a request for orders with lines asks the online part only, here
+	}
+	require.NoError(t, w.cat.Register("sales.orders", r))
+	out, _, err = w.cat.History(w.ctx, w.sub, "sales.orders", json.RawMessage(`{"lines": 2}`))
+	require.NoError(t, err)
+	assert.Len(t, out, 1, "the cold ones not matched: the online order only")
 }
 
 // TR11, TR12, P15.38: a read past the limit is not answered in part: it becomes an export, written by the queue job
