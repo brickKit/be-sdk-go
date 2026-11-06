@@ -99,11 +99,11 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		if writer, err = m.evidenceWriter(values, sh); err != nil {
 			return nil, err
 		}
-		if err := m.runner.Add(partitionJob(m.Logger)); err != nil {
+		if err := m.addSDKJob(partitionJob(m.Logger)); err != nil {
 			return nil, err
 		}
 		for _, j := range []work.Job{idem.Job(sh.DB), events.PurgeJob(sh.DB), work.PurgeJob(sh.DB)} {
-			if err := m.runner.Add(j); err != nil {
+			if err := m.addSDKJob(j); err != nil {
 				return nil, err
 			}
 		}
@@ -148,7 +148,7 @@ func (m *Member) auditTransfer(a *audit.Auditor, values *config.Values) error {
 	} else {
 		m.Logger.Warn("AUDIT_GRPC_URL is not set: audit records stay in the local table until it is")
 	}
-	if err := m.runner.Add(a.Job(sender, m.Logger)); err != nil {
+	if err := m.addSDKJob(a.Job(sender, m.Logger)); err != nil {
 		return err
 	}
 	m.hasJobs = true
@@ -212,7 +212,7 @@ func (m *Member) evidenceWriter(values *config.Values, sh Shared) (*evidence.Wri
 		}
 		w.Alert = rp
 	}
-	if err := m.runner.Add(evidence.Job(sh.DB, w.Store, m.Logger)); err != nil {
+	if err := m.addSDKJob(evidence.Job(sh.DB, w.Store, m.Logger)); err != nil {
 		return nil, err
 	}
 	m.hasJobs = true
@@ -421,7 +421,7 @@ func (m *Member) background(sh Shared, rt *runtime.Runtime) error {
 		return errors.New("the definition says ExternalCommands but the module does not implement extcmd.Provider")
 	case provides: // the adapter and its operations; the SDK's job sends and queries (be-protocol chapter 13)
 		rt.External.Adapter, rt.External.Ops = p.ExternalCommands()
-		if err := m.runner.Add(rt.External.Job()); err != nil {
+		if err := m.addSDKJob(rt.External.Job()); err != nil {
 			return err
 		}
 		m.hasJobs = true
