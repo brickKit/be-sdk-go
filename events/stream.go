@@ -1,6 +1,3 @@
-// Package events is protocol chapter 06: the outbox written in the business transaction, numbering after commit under
-// the partition counter's lock with the database epoch, the forwarder, the CloudEvents envelope, the transport port
-// with its JetStream and PostgreSQL queue adapters, and the consumer's inbox, dead letters and claim checks.
 package events
 
 import (

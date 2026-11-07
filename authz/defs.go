@@ -1,7 +1,3 @@
-// Package authz is the component side of authorization (protocol P8.7-P8.18): the resource, operation and field
-// declarations, the bounded local view held and verified against the authorization member, three-valued
-// evaluation of complete segments on one record, and the compilation of a subject's segments into a SQL predicate
-// with a per-row hit bitmap for field masks.
 package authz
 
 import (

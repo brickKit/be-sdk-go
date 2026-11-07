@@ -1,6 +1,3 @@
-// Package db is the only way a module reaches its database (protocol 14, "database"): one transaction entry that
-// switches to the member's role and schema with SET LOCAL and sets per-transaction timeouts; pools per database
-// target, owned by the launcher or the shell; startup checks of the durable settings; the migrate entry.
 package db
 
 import (
