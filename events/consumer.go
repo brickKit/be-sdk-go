@@ -117,27 +117,40 @@ func (c *Consumer) Spec() SubscriptionSpec {
 }
 
 // Handle is the transport handler: claim check, hop limit, inbox and business write in one transaction; a failure on
-// the last delivery becomes a dead letter (P6.20).
+// the last delivery becomes a dead letter (P6.20). The last delivery's dead letter is committed before it is handled
+// (the cause: no outcome), so a process that dies while handling it leaves the dead letter; the handling's own
+// transaction takes it away, and a failure replaces its cause.
 func (c *Consumer) Handle(ctx context.Context, d *Delivery) Outcome {
 	spec := c.Spec()
-	err := c.process(ctx, d)
+	last := d.Attempt >= spec.MaxDeliver
+	if last {
+		if derr := c.deadLetter(context.WithoutCancel(ctx), d, errNoOutcome); derr != nil {
+			c.Log.Error("the last delivery of an event could not be dead-lettered beforehand; not handled", "subscription",
+				c.Sub.Name, "event_id", d.ID(), "error", derr.Error())
+			return Nak
+		}
+	}
+	err := c.process(ctx, d, last)
 	if err == nil {
 		return Ack
 	}
-	if d.Attempt < spec.MaxDeliver {
+	if !last {
 		c.Log.Warn("an event failed; it will be delivered again", "subscription", c.Sub.Name, "event_id", d.ID(),
 			"attempt", d.Attempt, "error", err.Error())
 		return Nak
 	}
 	if derr := c.deadLetter(context.WithoutCancel(ctx), d, err); derr != nil {
-		c.Log.Error("an event failed for the last time and its dead letter could not be written", "subscription",
-			c.Sub.Name, "event_id", d.ID(), "error", derr.Error())
-		return Nak // not lost: the transport keeps it until the dead letter is written or the limit stops it
+		c.Log.Error("an event failed for the last time; its dead letter keeps the cause \"no outcome\"", "subscription",
+			c.Sub.Name, "event_id", d.ID(), "error", err.Error(), "dead_letter_error", derr.Error())
+		return Term // the dead letter committed beforehand stays
 	}
 	c.Log.Error("an event failed for the last time; recorded as a dead letter", "subscription", c.Sub.Name,
 		"event_id", d.ID(), "attempts", d.Attempt, "error", err.Error())
 	return Term
 }
+
+// errNoOutcome is the cause a last delivery's dead letter carries until its handling has an outcome (P6.20).
+var errNoOutcome = errors.New("the last delivery ended without an outcome")
 
 // Receive parses one message as a subscription does: the envelope, the hop limit (P6.15), the claim check
 // resolved (P6.14). The watermark consumer reads the rows a pull returns with it.
@@ -153,7 +166,7 @@ func Receive(ctx context.Context, m Message, claims ClaimReader) (Received, erro
 	return r, err
 }
 
-func (c *Consumer) process(ctx context.Context, d *Delivery) error {
+func (c *Consumer) process(ctx context.Context, d *Delivery, last bool) error {
 	r, err := Receive(ctx, d.Message, c.Claims)
 	if err != nil {
 		return err
@@ -177,6 +190,12 @@ func (c *Consumer) process(ctx context.Context, d *Delivery) error {
 		if err != nil {
 			return err
 		}
+		if last { // an outcome: the dead letter committed beforehand goes in this transaction (P6.20)
+			if _, err := tx.Exec(ctx, `DELETE FROM be_dead_letter WHERE subscription = $1 AND event_id = $2`,
+				c.Sub.Name, r.ID); err != nil {
+				return err
+			}
+		}
 		if tag.RowsAffected() == 0 {
 			return nil // already applied: a redelivery takes effect once
 		}
@@ -188,7 +207,8 @@ func (c *Consumer) deadLetter(ctx context.Context, d *Delivery, cause error) err
 	headers, _ := json.Marshal(d.Headers)
 	return c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO be_dead_letter (subscription, event_id, type, headers, payload, error, attempts)
-			VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING`, c.Sub.Name, d.ID(), d.Headers[HeaderType],
+			VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (subscription, event_id)
+			DO UPDATE SET error = excluded.error, attempts = excluded.attempts`, c.Sub.Name, d.ID(), d.Headers[HeaderType],
 			headers, d.Data, cause.Error(), d.Attempt)
 		return err
 	})

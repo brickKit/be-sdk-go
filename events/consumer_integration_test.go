@@ -70,6 +70,31 @@ func TestTheLastFailureBecomesOneDeadLetter(t *testing.T) { // P6.20
 	assert.Equal(t, 0, count(t, d, "SELECT count(*) FROM be_inbox"), "a failed event is not marked as applied")
 }
 
+// TestTheLastDeliveryLeavesADeadLetterWhileItRuns: before the last delivery is handled its dead letter is committed,
+// so a process that dies while handling it (no outcome: the transport stops delivering it) leaves the dead letter; a
+// handling that succeeds, or finds the event applied, takes it away; earlier deliveries leave none (P6.20). The
+// Python long simulation lost a message whose three deliveries each met a crash.
+func TestTheLastDeliveryLeavesADeadLetterWhileItRuns(t *testing.T) { // P6.20
+	d, _ := source(t, "evcons6")
+	during := -1
+	c := &Consumer{Member: "demo/evcons6", DB: d, Log: quietLog(), Sub: Sub{Name: "moves", Streams: []string{"demo.stock"},
+		Handle: func(ctx context.Context, tx db.Tx, e Received) error {
+			// what a process that died right here would leave behind (read outside this transaction)
+			during = count(t, d, "SELECT count(*) FROM be_dead_letter WHERE error LIKE '%the last delivery ended without an outcome%'")
+			_, err := tx.Exec(ctx, "INSERT INTO items VALUES ($1)", ids.New())
+			return err
+		}}}
+	del := delivery(2, nil, `{}`)
+	assert.Equal(t, Ack, c.Handle(context.Background(), del))
+	assert.Equal(t, 0, during, "an earlier delivery leaves no dead letter")
+	last := delivery(3, nil, `{}`)
+	assert.Equal(t, Ack, c.Handle(context.Background(), last))
+	assert.Equal(t, 1, during, "the last delivery's dead letter is committed before it is handled")
+	assert.Equal(t, 0, count(t, d, "SELECT count(*) FROM be_dead_letter"), "handled: the dead letter is taken away")
+	assert.Equal(t, Ack, c.Handle(context.Background(), last), "the last delivery again, already applied")
+	assert.Equal(t, 0, count(t, d, "SELECT count(*) FROM be_dead_letter"), "applied: no dead letter either")
+}
+
 func TestTooManyHopsIsAFailure(t *testing.T) { // P6.15
 	d, _ := source(t, "evcons3")
 	called := false
