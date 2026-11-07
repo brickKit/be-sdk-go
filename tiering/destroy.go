@@ -101,7 +101,7 @@ func markDestroyed(ctx context.Context, tx db.Tx, unit string, u unitFacts, basi
 func (c *Catalog) Destroy(ctx context.Context, unit string) ([]string, error) {
 	var u unitFacts
 	var why []string
-	if err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) (err error) {
+	if err := c.tx(ctx, "destroy.reasons", func(ctx context.Context, tx db.Tx) (err error) {
 		if u, err = readUnit(ctx, tx, unit, false); err != nil || u.state == StateDestroyed || u.state == StateOpen {
 			return err
 		}
@@ -127,7 +127,7 @@ func (c *Catalog) Destroy(ctx context.Context, unit string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	err = c.tx(ctx, "destroy.decide", func(ctx context.Context, tx db.Tx) error {
 		if _, err := tx.Exec(ctx, "LOCK TABLE be_tier_hold IN SHARE MODE"); err != nil {
 			return err
 		}
@@ -161,7 +161,7 @@ func (c *Catalog) purge(ctx context.Context, unit string, cl Class) error {
 	if err := c.deleteOnline(ctx, unit, cl, nil); err != nil {
 		return err
 	}
-	if err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	if err := c.tx(ctx, "destroy.purge", func(ctx context.Context, tx db.Tx) error {
 		if _, err := tx.Exec(ctx, "DELETE FROM be_tier_thaw WHERE unit::text = $1", unit); err != nil {
 			return err
 		}
@@ -181,6 +181,7 @@ func (c *Catalog) purge(ctx context.Context, unit string, cl Class) error {
 		if err := c.Store.Delete(ctx, o.Key); err != nil {
 			return err
 		}
+		crash("destroy.object/done")
 	}
 	return nil
 }
@@ -192,7 +193,7 @@ func (c *Catalog) DestroyJob(log *slog.Logger) work.Job {
 		MaxAttempts: work.Unlimited, Timeout: 6 * time.Hour,
 		Handle: func(ctx context.Context, run *work.Run) error {
 			var units []string
-			if err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+			if err := c.tx(ctx, "destroy.due", func(ctx context.Context, tx db.Tx) error {
 				rows, err := tx.Query(ctx, "SELECT id::text FROM be_tier_unit WHERE state IN ('sealed', 'published', 'released') "+
 					"OR (state = 'destroyed' AND destroyed_at > now() - make_interval(secs => $1)) ORDER BY id", PurgeAgain.Seconds())
 				if err != nil {

@@ -41,6 +41,8 @@ var inRecovery = map[string]recoveryRule{
 	"be.tiering.erase": {why: "not run: an erasure writes the member's own database and its archive copies; the " +
 		"erasures replayed during the recovery are queued and run once open"},
 	"be.tiering.export.cleanup": {why: "not run: housekeeping of the member's own database, which goes back; once open"},
+	"be.tiering.cleanup": {why: "not run: what the catalog going back no longer names (units published after the " +
+		"recovery's point) is the recovery check's difference, not an orphan yet; daily once open, past the window"},
 }
 
 // checkRecoveryRule refuses one of the SDK's jobs that does not say how it behaves in a recovery.

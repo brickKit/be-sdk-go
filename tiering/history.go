@@ -276,13 +276,24 @@ func (c *Catalog) ExportJobOf(log *slog.Logger) work.Job {
 						ExportTTL.Seconds())
 					return err
 				}
-				_, err := tx.Exec(ctx, "UPDATE be_tier_export SET state = 'done', object_key = $2, rows = $3, finished_at = now(), "+
-					"expires_at = now() + make_interval(secs => $4) WHERE id = $1 AND state = 'pending'", args.Export, body, rows,
-					ExportTTL.Seconds())
-				return err
+				tag, err := tx.Exec(ctx, "UPDATE be_tier_export SET state = 'done', object_key = $2, rows = $3, finished_at = now(), "+
+					"expires_at = now() + make_interval(secs => $4) WHERE id = $1 AND state = 'pending' AND erased_at IS NULL",
+					args.Export, body, rows, ExportTTL.Seconds())
+				if err != nil || tag.RowsAffected() > 0 {
+					return err
+				}
+				var erased bool
+				if err := tx.QueryRow(ctx, "SELECT erased_at IS NOT NULL FROM be_tier_export WHERE id = $1 AND state = 'pending'",
+					args.Export).Scan(&erased); err != nil || !erased {
+					return nil // finished or gone meanwhile
+				}
+				return ErrExportErased
 			})
 		}}
 }
+
+// ErrExportErased: an erasure came while the export read; it is read again.
+var ErrExportErased = errors.New("tiering: an erasure came while the export read; it is read again")
 
 // ExportKey is where an export's object goes.
 func (c *Catalog) ExportKey(id string) string { return c.Store.Prefix + "/exports/" + id + ".ndjson" }
@@ -312,6 +323,25 @@ func (c *Catalog) writeExport(ctx context.Context, id string) (key string, rows 
 		return "", 0, errs.ReasonQueryNotCompletable, nil
 	}
 	key = c.ExportKey(id)
+	// an erasure since an earlier attempt read (P15.31): its object goes before the mark, so a crash in between leaves
+	// the mark and the object is deleted again
+	var erased bool
+	if err := c.DB.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+		return tx.QueryRow(ctx, "SELECT erased_at IS NOT NULL FROM be_tier_export WHERE id = $1", id).Scan(&erased)
+	}); err != nil {
+		return "", 0, "", err
+	}
+	if erased {
+		if err := c.Store.Delete(ctx, key); err != nil && !errors.Is(err, ErrMissing) {
+			return "", 0, "", err
+		}
+		if err := c.DB.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+			_, err := tx.Exec(ctx, "UPDATE be_tier_export SET erased_at = NULL WHERE id = $1", id)
+			return err
+		}); err != nil {
+			return "", 0, "", err
+		}
+	}
 	var buf bytes.Buffer
 	err = c.read(ctx, sub, class, r, params, "export", func(o map[string]any) error {
 		line, err := json.Marshal(o) // map keys sorted

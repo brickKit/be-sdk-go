@@ -198,8 +198,8 @@ func TestTheDestructionConditions(t *testing.T) {
 	assert.Equal(t, []string{"intent"}, w.kept.phases(), "the intent before the decision")
 	assert.Equal(t, []string{"effective"}, w.outbox(t), "the conclusion in it")
 	_, found, err := w.cat.Get(w.ctx, "sales.orders", root)
-	require.NoError(t, err)
-	assert.False(t, found, "read by key: not found")
+	assert.True(t, errs.Is(err, "be", errs.ReasonNotFound), "read by key: NOT_FOUND (P15.29): %v", err)
+	assert.False(t, found)
 }
 
 // TR14, P15.29: a hold set while the destruction decides (its transaction open before the decision's lock) wins: the

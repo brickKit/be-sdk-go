@@ -3,6 +3,7 @@ package tiering
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -66,8 +67,19 @@ type unitAt struct {
 	routeVersion               int64
 }
 
-// releaseReasons are what holds a published unit's release back now (P15.19), with the plan's names.
-func (c *Catalog) releaseReasons(ctx context.Context, tx db.Tx, u unitAt) ([]string, error) {
+// latestBackup is when the deployment's latest backup finished (ok=false: none, or no source). Read before a
+// release's transaction: the source is the run profile's object store, never called inside one (and a later backup
+// only makes a release more allowed).
+func (c *Catalog) latestBackup(ctx context.Context) (time.Time, bool, error) {
+	if c.Backups == nil {
+		return time.Time{}, false, nil
+	}
+	return c.Backups(ctx)
+}
+
+// releaseReasons are what holds a published unit's release back now (P15.19), with the plan's names; finished and ok
+// are the latest backup (latestBackup).
+func (c *Catalog) releaseReasons(ctx context.Context, tx db.Tx, u unitAt, finished time.Time, ok bool) ([]string, error) {
 	var leases int
 	if err := tx.QueryRow(ctx, "SELECT count(*) FROM be_tier_lease WHERE catalog_version < $1 AND expires_at > now()",
 		u.routeVersion).Scan(&leases); err != nil {
@@ -77,14 +89,7 @@ func (c *Catalog) releaseReasons(ctx context.Context, tx db.Tx, u unitAt) ([]str
 	if err := tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
 		return nil, err
 	}
-	backed := false
-	if c.Backups != nil {
-		finished, ok, err := c.Backups(ctx)
-		if err != nil {
-			return nil, err
-		}
-		backed = ok && finished.After(u.publishedAt)
-	}
+	backed := ok && finished.After(u.publishedAt)
 	d := Plan(now, c.N, c.Grace, PlanClass{Category: c.Classes[u.class].Category, ResidenceDays: c.Classes[u.class].ResidenceDays},
 		PlanUnit{State: StatePublished, PublishedAt: u.publishedAt, NewestCreated: u.newestCreated, OldLeases: leases,
 			BackupAfterPublish: backed})
@@ -95,20 +100,24 @@ func (c *Catalog) releaseReasons(ctx context.Context, tx db.Tx, u unitAt) ([]str
 func (c *Catalog) Release(ctx context.Context, unit string) ([]string, error) {
 	var why []string
 	var u unitAt
-	err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	finished, backed, err := c.latestBackup(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = c.tx(ctx, "release.decide", func(ctx context.Context, tx db.Tx) error {
 		var rv *int64
 		if err := tx.QueryRow(ctx, "SELECT class, state, published_at, newest_created, route_version FROM be_tier_unit "+
 			"WHERE id = $1", unit).Scan(&u.class, &u.state, &u.publishedAt, &u.newestCreated, &rv); err != nil {
 			return err
 		}
 		if u.state != StatePublished {
-			return fmt.Errorf("tiering: unit %s is %s, not published", unit, u.state)
+			return fmt.Errorf("%w: unit %s is %s, not published", ErrStaleClaim, unit, u.state)
 		}
 		if rv != nil {
 			u.routeVersion = *rv
 		}
 		var err error
-		why, err = c.releaseReasons(ctx, tx, u)
+		why, err = c.releaseReasons(ctx, tx, u, finished, backed)
 		return err
 	})
 	if err != nil || len(why) > 0 {
@@ -137,7 +146,7 @@ func (c *Catalog) deleteOnline(ctx context.Context, unit string, cl Class, last 
 	}
 	members := "(SELECT m.root_id FROM be_tier_member m WHERE m.unit = $1)"
 	for done := false; !done; {
-		err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+		err := c.tx(ctx, "release.delete", func(ctx context.Context, tx db.Tx) error {
 			if _, err := tx.Exec(ctx, "SELECT set_config('be.tier_unit', $1, true)", unit); err != nil {
 				return err
 			}
@@ -198,6 +207,9 @@ func (c *Catalog) ReleaseJob(log *slog.Logger) work.Job {
 			for _, u := range units {
 				why, err := c.Release(ctx, u)
 				switch {
+				case errors.Is(err, ErrStaleClaim): // destroyed or released by another worker meanwhile
+					log.Info("an archive unit moved on before its release", "event", "tiering_release_moved_on", "unit", u,
+						"detail", err.Error())
 				case err != nil:
 					log.Error("an archive unit's release failed", "event", "tiering_release_failed", "unit", u, "error", err.Error())
 				case len(why) == 0:

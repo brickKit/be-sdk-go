@@ -230,7 +230,7 @@ func (c *Catalog) continueReleases(ctx context.Context) ([]string, error) {
 	var done []string
 	for _, cl := range c.Classes {
 		var units []string
-		if err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+		if err := c.tx(ctx, "check.released", func(ctx context.Context, tx db.Tx) error {
 			rows, err := tx.Query(ctx, fmt.Sprintf("SELECT DISTINCT m.unit::text FROM be_tier_member m JOIN be_tier_unit u ON "+
 				"u.id = m.unit JOIN %s r ON r.%s::text = m.root_id WHERE u.state = 'released' AND u.class = $1",
 				ident(cl.Root.Name), ident(cl.Root.PK)), cl.Name)

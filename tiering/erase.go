@@ -36,6 +36,9 @@ const (
 
 var errHeld = errors.New("tiering: a live hold covers the unit")
 
+// eraseAttempts bounds how many times an erasure starts again when the unit moved on under it (ErrStaleClaim).
+const eraseAttempts = 5
+
 // Erase erases one aggregate's erasable columns for a basis (the request's reference); it answers the outcome.
 func (c *Catalog) Erase(ctx context.Context, class, root, basis string) (string, error) {
 	return c.erase(ctx, class, root, basis, false)
@@ -53,7 +56,7 @@ func (c *Catalog) erase(ctx context.Context, class, root, basis string, redo boo
 	var unit string
 	var u unitFacts
 	var holds int
-	err = c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	err = c.tx(ctx, "erase.find", func(ctx context.Context, tx db.Tx) error {
 		if err := tx.QueryRow(ctx, "SELECT unit::text FROM be_tier_member WHERE class = $1 AND root_id = $2", class, root).
 			Scan(&unit); err != nil {
 			return err
@@ -98,10 +101,34 @@ func (c *Catalog) erase(ctx context.Context, class, root, basis string, redo boo
 		}
 		return p.Effective(ctx, tx)
 	}
-	if u.state == StateSealed {
-		err = c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error { return c.eraseSealed(ctx, tx, cl, unit, root, conclude) })
-	} else {
-		err = c.eraseAgain(ctx, cl, unit, root, conclude)
+	gone := false
+	for attempt := 1; ; attempt++ {
+		if u.state == StateSealed {
+			err = c.tx(ctx, "erase.sealed", func(ctx context.Context, tx db.Tx) error { return c.eraseSealed(ctx, tx, cl, unit, root, conclude) })
+		} else {
+			err = c.eraseAgain(ctx, cl, unit, root, conclude)
+		}
+		if !errors.Is(err, ErrStaleClaim) || attempt == eraseAttempts {
+			break
+		}
+		// the unit moved on meanwhile (published, or written again by a transfer, a route change or another erasure):
+		// the erasure starts again from its state now; the intent stays the one written
+		if err = c.tx(ctx, "erase.find", func(ctx context.Context, tx db.Tx) (err error) {
+			u, err = readUnit(ctx, tx, unit, false)
+			return err
+		}); err != nil {
+			break
+		}
+		if u.state == StateDestroyed { // nothing of it is left to erase
+			gone = true
+			break
+		}
+	}
+	if gone && p != nil {
+		err = p.Cancelled(context.WithoutCancel(ctx))
+		if err == nil {
+			return Erased, nil
+		}
 	}
 	if err != nil && p != nil {
 		err = errors.Join(err, p.Cancelled(context.WithoutCancel(ctx)))
@@ -131,9 +158,26 @@ func (c *Catalog) deferred(unit, class, root string) {
 	}
 }
 
-// nullOnline sets an aggregate's erasable columns null in the online tables, naming its unit for the write barrier.
+// VoidExports makes the class's exports that may hold an erased aggregate unreadable (P15.31, assembly project A159):
+// the finished ones expire now (their status answers NOT_FOUND, the cleanup deletes their objects); a pending one is
+// marked, and its job reads again rather than finishing. It runs in the transaction that erases: the SDK's erasures
+// call it; a component erasing its online rows (ErasedOnline) calls it in its own transaction.
+func VoidExports(ctx context.Context, tx db.Tx, class string) error {
+	if _, err := tx.Exec(ctx, "UPDATE be_tier_export SET expires_at = now() WHERE class = $1 AND state = 'done' "+
+		"AND (expires_at IS NULL OR expires_at > now())", class); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, "UPDATE be_tier_export SET erased_at = now() WHERE class = $1 AND state = 'pending'", class)
+	return err
+}
+
+// nullOnline sets an aggregate's erasable columns null in the online tables, naming its unit for the write barrier,
+// and voids the class's exports.
 func nullOnline(ctx context.Context, tx db.Tx, cl Class, unit, root string) error {
 	if _, err := tx.Exec(ctx, "SELECT set_config('be.tier_unit', $1, true)", unit); err != nil {
+		return err
+	}
+	if err := VoidExports(ctx, tx, cl.Name); err != nil {
 		return err
 	}
 	for _, t := range cl.Tables() {
@@ -223,6 +267,8 @@ func (c *Catalog) eraseAgain(ctx context.Context, cl Class, unit, root string, c
 			if err := nullOnline(ctx, tx, cl, unit, root); err != nil {
 				return err
 			}
+		} else if err := VoidExports(ctx, tx, cl.Name); err != nil {
+			return err
 		}
 		return conclude(ctx, tx)
 	})

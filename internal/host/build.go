@@ -157,7 +157,8 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 		}
 		for _, j := range []work.Job{catalog.CandidatesJob(values.String(tiering.KeyWindow), m.Logger),
 			catalog.TransferJob(m.Logger), catalog.ReleaseJob(m.Logger), catalog.ExportJobOf(m.Logger),
-			catalog.ExportCleanupJob(m.Logger), catalog.DestroyJob(m.Logger), catalog.EraseJobOf(m.Logger)} {
+			catalog.ExportCleanupJob(m.Logger), catalog.DestroyJob(m.Logger), catalog.EraseJobOf(m.Logger),
+			catalog.CleanupJob(m.Logger)} {
 			if err := m.addSDKJob(j); err != nil {
 				return nil, err
 			}

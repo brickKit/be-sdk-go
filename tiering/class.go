@@ -1,7 +1,3 @@
-// Package tiering is hot and cold data (be-protocol chapter 15; the assembly project's protocol 11): the owner's unit
-// catalog, the classes a component declares, candidates and sealing behind a write barrier, the transfer to a route
-// (the warm rows in the same database, or Parquet with a manifest on the object store) under the claim's generation
-// and epoch, the release of the online rows, reads by catalog snapshot, holds, destruction and erasure.
 package tiering
 
 import (

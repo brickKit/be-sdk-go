@@ -65,14 +65,14 @@ func (c *Catalog) ClaimUnit(ctx context.Context, unit string) (Claim, error) {
 // claim raises a unit's generation for a worker, the unit in one of the states.
 func (c *Catalog) claim(ctx context.Context, unit string, states ...string) (Claim, error) {
 	var cl Claim
-	err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	err := c.tx(ctx, "claim", func(ctx context.Context, tx db.Tx) error {
 		var version int
 		if err := tx.QueryRow(ctx, "SELECT class, state, coalesce(digest, ''), manifest_version FROM be_tier_unit "+
 			"WHERE id = $1 FOR UPDATE", unit).Scan(&cl.Class, &cl.State, &cl.Digest, &version); err != nil {
 			return err
 		}
 		if !slices.Contains(states, cl.State) {
-			return fmt.Errorf("tiering: unit %s is %s, not %s", unit, cl.State, strings.Join(states, " or "))
+			return fmt.Errorf("%w: unit %s is %s, not %s", ErrStaleClaim, unit, cl.State, strings.Join(states, " or "))
 		}
 		cl.Was, cl.Base = cl.Digest, version
 		epoch, err := epochOf(ctx, tx)
@@ -92,7 +92,7 @@ func (c *Catalog) claim(ctx context.Context, unit string, states ...string) (Cla
 // readUnit reads a unit's tables from one read-only snapshot: the roots (members) and their children.
 func (c *Catalog) readUnit(ctx context.Context, cl Class, unit string) (map[string][]map[string]any, error) {
 	out := map[string][]map[string]any{}
-	err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	err := c.tx(ctx, "copy.read", func(ctx context.Context, tx db.Tx) error {
 		read := func(t Table, where string) error {
 			names, list := selectList(t, "t")
 			rows, err := tx.Query(ctx, fmt.Sprintf("SELECT %s FROM %s t WHERE %s", list, ident(t.Name), where), unit, cl.Name)
@@ -166,8 +166,12 @@ func (c *Catalog) copyTables(ctx context.Context, claim Claim, route string, tab
 			mt.Columns = append(mt.Columns, ManifestColumn{Name: n, Type: t.Columns[n], Nullable: true})
 		}
 		if route == RouteObject {
-			for part := 0; part == 0 || part*PartRows < len(rows); part++ {
-				chunk := rows[part*PartRows : min(len(rows), (part+1)*PartRows)]
+			per := c.Parts
+			if per <= 0 {
+				per = PartRows
+			}
+			for part := 0; part == 0 || part*per < len(rows); part++ {
+				chunk := rows[part*per : min(len(rows), (part+1)*per)]
 				data, err := WriteParquet(t, chunk)
 				if err != nil {
 					return Manifest{}, err
@@ -176,6 +180,7 @@ func (c *Catalog) copyTables(ctx context.Context, claim Claim, route string, tab
 				if err := c.Store.Put(ctx, key, data); err != nil {
 					return Manifest{}, err
 				}
+				crash("copy.object/done")
 				mt.Objects = append(mt.Objects, ManifestObject{Key: key, Rows: strconv.Itoa(len(chunk)),
 					Bytes: strconv.Itoa(len(data)), SHA256: sha(data)})
 			}
@@ -192,13 +197,14 @@ func (c *Catalog) copyTables(ctx context.Context, claim Claim, route string, tab
 		if err := c.Store.Put(ctx, ManifestKey(c.Store.Prefix, claim.Class, claim.Unit, claim.Generation, claim.Version), raw); err != nil {
 			return Manifest{}, err
 		}
+		crash("copy.manifest/done")
 	}
 	return m, nil
 }
 
 // copyRows writes a table's canonical rows into the warm route under the claim's version (not read before published).
 func (c *Catalog) copyRows(ctx context.Context, claim Claim, t Table, rows []map[string]any) error {
-	return c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	return c.tx(ctx, "copy.rows", func(ctx context.Context, tx db.Tx) error {
 		// a stale worker's rows of the same version would be another generation's: the generation decides (P15.18)
 		if _, err := tx.Exec(ctx, "DELETE FROM be_tier_row WHERE unit = $1 AND version = $2 AND tbl = $3",
 			claim.Unit, claim.Version, t.Name); err != nil {
@@ -275,7 +281,7 @@ func (c *Catalog) Verify(ctx context.Context, m Manifest) error {
 				}
 			}
 		case RoutePostgres:
-			if err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+			if err := c.tx(ctx, "verify.rows", func(ctx context.Context, tx db.Tx) error {
 				rows, err := tx.Query(ctx, "SELECT pk, row FROM be_tier_row WHERE unit = $1 AND version = $2 AND tbl = $3",
 					m.Unit, m.Version, mt.Name)
 				if err != nil {
@@ -361,7 +367,7 @@ func (c *Catalog) publish(ctx context.Context, claim Claim, m Manifest, also fun
 	if err != nil {
 		return err
 	}
-	return c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	return c.tx(ctx, "publish", func(ctx context.Context, tx db.Tx) error {
 		var state, digest, route string
 		var gen int64
 		var version int
@@ -428,22 +434,28 @@ func (c *Catalog) Transfer(ctx context.Context, unit string) (Manifest, error) {
 // CleanOrphans removes what no manifest of a unit names (P15.20): objects under the unit's prefix older than the window,
 // and warm rows of a version no manifest names that no transfer is writing.
 func (c *Catalog) CleanOrphans(ctx context.Context, unit, class string, window time.Duration) (int, error) {
-	var published []string // "<generation>.<version>/" of every manifest of the unit
-	var versions []int
-	err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
-		rows, err := tx.Query(ctx, "SELECT generation, version FROM be_tier_manifest WHERE unit = $1", unit)
+	return c.cleanOrphans(ctx, class, unit, window)
+}
+
+// cleanOrphans is CleanOrphans for one unit, or for every unit of the class when unit is empty (one listing of the
+// class's prefix): the objects and warm rows no manifest names, and the thawed copies whose time is up (P15.27).
+func (c *Catalog) cleanOrphans(ctx context.Context, class, unit string, window time.Duration) (int, error) {
+	named := map[string][]string{} // unit -> "<generation>.<version>/" of each of its manifests
+	err := c.tx(ctx, "orphans.list", func(ctx context.Context, tx db.Tx) error {
+		rows, err := tx.Query(ctx, "SELECT m.unit::text, m.generation, m.version FROM be_tier_manifest m JOIN be_tier_unit u "+
+			"ON u.id = m.unit WHERE u.class = $1 AND ($2 = '' OR m.unit::text = $2)", class, unit)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
+			var u string
 			var g int64
 			var v int
-			if err := rows.Scan(&g, &v); err != nil {
+			if err := rows.Scan(&u, &g, &v); err != nil {
 				return err
 			}
-			published = append(published, fmt.Sprintf("%d.%d/", g, v))
-			versions = append(versions, v)
+			named[u] = append(named[u], fmt.Sprintf("%d.%d/", g, v))
 		}
 		return rows.Err()
 	})
@@ -452,48 +464,77 @@ func (c *Catalog) CleanOrphans(ctx context.Context, unit, class string, window t
 	}
 	removed := 0
 	if c.Store != nil {
-		prefix := fmt.Sprintf("%s/%s/%s/", c.Store.Prefix, class, unit)
+		base := fmt.Sprintf("%s/%s/", c.Store.Prefix, class)
+		prefix := base
+		if unit != "" {
+			prefix += unit + "/"
+		}
 		objects, err := c.Store.List(ctx, prefix)
 		if err != nil {
 			return 0, err
 		}
 		for _, o := range objects {
-			rest := strings.TrimPrefix(o.Key, prefix)
-			named := false
-			for _, p := range published {
-				if strings.HasPrefix(rest, p) {
-					named = true
-				}
-			}
-			if named || time.Since(o.LastModified) < window {
+			u, rest, _ := strings.Cut(strings.TrimPrefix(o.Key, base), "/")
+			if slices.ContainsFunc(named[u], func(p string) bool { return strings.HasPrefix(rest, p) }) ||
+				time.Since(o.LastModified) < window {
 				continue
 			}
 			if err := c.Store.Delete(ctx, o.Key); err != nil {
 				return removed, err
 			}
+			crash("orphans.object/done")
 			removed++
 		}
 	}
-	err = c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	err = c.tx(ctx, "orphans.delete", func(ctx context.Context, tx db.Tx) error {
 		// a warm row is an orphan when no manifest names its version and it is not the version a transfer may be
 		// writing now (the next one)
-		tag, err := tx.Exec(ctx, "DELETE FROM be_tier_row r WHERE r.unit = $1 AND NOT (r.version = ANY($2)) AND r.version >= 0 "+
-			"AND r.version <> (SELECT manifest_version + 1 FROM be_tier_unit WHERE id = $1)", unit, versions)
+		tag, err := tx.Exec(ctx, "DELETE FROM be_tier_row r USING be_tier_unit u WHERE u.id = r.unit AND u.class = $1 "+
+			"AND ($2 = '' OR r.unit::text = $2) AND r.version >= 0 AND r.version <> u.manifest_version + 1 "+
+			"AND NOT EXISTS (SELECT 1 FROM be_tier_manifest m WHERE m.unit = r.unit AND m.version = r.version)", class, unit)
 		if err != nil {
 			return err
 		}
 		removed += int(tag.RowsAffected())
 		// a thawed copy (version -1) goes when its time is up (P15.27)
-		tag, err = tx.Exec(ctx, "DELETE FROM be_tier_row WHERE unit = $1 AND version = -1 AND EXISTS (SELECT 1 FROM be_tier_thaw "+
-			"WHERE unit = $1 AND expires_at <= now())", unit)
+		tag, err = tx.Exec(ctx, "DELETE FROM be_tier_row r USING be_tier_unit u, be_tier_thaw t WHERE u.id = r.unit "+
+			"AND u.class = $1 AND ($2 = '' OR r.unit::text = $2) AND r.version = -1 AND t.unit = r.unit AND t.expires_at <= now()",
+			class, unit)
 		if err != nil {
 			return err
 		}
 		removed += int(tag.RowsAffected())
-		_, err = tx.Exec(ctx, "DELETE FROM be_tier_thaw WHERE unit = $1 AND expires_at <= now()", unit)
+		_, err = tx.Exec(ctx, "DELETE FROM be_tier_thaw t USING be_tier_unit u WHERE u.id = t.unit AND u.class = $1 "+
+			"AND ($2 = '' OR t.unit::text = $2) AND t.expires_at <= now()", class, unit)
 		return err
 	})
 	return removed, err
+}
+
+// CleanupJob is the SDK's daily job that removes every class's orphans and expired thawed copies (P15.20, P15.27):
+// what a transfer, a route change or an erasure that stopped midway left, once past the verification window.
+func (c *Catalog) CleanupJob(log *slog.Logger) work.Job {
+	return work.Job{Name: "be.tiering.cleanup", Kind: work.Singleton, Effect: work.IdempotentExternal,
+		Interval: 24 * time.Hour, MaxAttempts: work.Unlimited, Timeout: 6 * time.Hour,
+		Handle: func(ctx context.Context, run *work.Run) error {
+			window := c.OrphanAge
+			if window == 0 {
+				window = OrphanWindow
+			}
+			for name, cl := range c.Classes {
+				if !cl.Tierable() {
+					continue
+				}
+				n, err := c.cleanOrphans(ctx, name, "", window)
+				if err != nil {
+					return err
+				}
+				if n > 0 {
+					log.Info("archive orphans removed", "event", "tiering_orphans_removed", "class", name, "removed", n)
+				}
+			}
+			return run.Complete(ctx, func(context.Context, db.Tx) error { return nil })
+		}}
 }
 
 // TransferJob is the SDK's job that transfers the sealed units (P15.14-P15.18) and cleans their orphans (P15.20).
@@ -507,6 +548,11 @@ func (c *Catalog) TransferJob(log *slog.Logger) work.Job {
 			}
 			for _, u := range units {
 				m, err := c.Transfer(ctx, u)
+				if errors.Is(err, ErrStaleClaim) { // destroyed, or published by another worker, meanwhile
+					log.Info("an archive unit moved on before its transfer", "event", "tiering_transfer_moved_on", "unit", u,
+						"detail", err.Error())
+					continue
+				}
 				if err != nil {
 					log.Error("an archive unit's transfer failed; its online rows stay", "event", "tiering_transfer_failed",
 						"unit", u, "error", err.Error())
@@ -521,6 +567,11 @@ func (c *Catalog) TransferJob(log *slog.Logger) work.Job {
 			}
 			for u, route := range due {
 				m, err := c.Reroute(ctx, u, route)
+				if errors.Is(err, ErrStaleClaim) {
+					log.Info("an archive unit moved on before its route change", "event", "tiering_reroute_moved_on", "unit", u,
+						"detail", err.Error())
+					continue
+				}
 				if err != nil {
 					log.Error("an archive unit's route change failed; it stays on its route", "event", "tiering_reroute_failed",
 						"unit", u, "route", route, "error", err.Error())
@@ -535,7 +586,7 @@ func (c *Catalog) TransferJob(log *slog.Logger) work.Job {
 
 func (c *Catalog) unitsIn(ctx context.Context, state string) ([]string, error) {
 	var out []string
-	err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	err := c.tx(ctx, "units", func(ctx context.Context, tx db.Tx) error {
 		rows, err := tx.Query(ctx, "SELECT id::text FROM be_tier_unit WHERE state = $1 ORDER BY sealed_at LIMIT 100", state)
 		if err != nil {
 			return err

@@ -64,6 +64,10 @@ type Catalog struct {
 	Backups BackupSource
 	// Batch bounds the rows a release deletes per table and transaction (default ReleaseBatch).
 	Batch int
+	// OrphanAge is how old an unnamed object must be before the cleanup removes it (P15.20); zero: OrphanWindow.
+	OrphanAge time.Duration
+	// Parts bounds the rows of one Parquet object of a table (zero: PartRows).
+	Parts int
 	// StoreLocked: the store has object lock (no erasable class, no exports).
 	StoreLocked bool
 	// ColdSyncLimit bounds a synchronous history read and ColdConcurrency the member's cold reads at once
@@ -142,7 +146,7 @@ func (c *Catalog) Groupings(ctx context.Context, class string) ([]Grouping, erro
 	q := fmt.Sprintf("SELECT DISTINCT %s FROM %s r WHERE %s ORDER BY %d", strings.Join(sel, ", "), ident(cl.Root.Name),
 		candidates(cl), len(sel))
 	var out []Grouping
-	err = c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	err = c.tx(ctx, "groupings", func(ctx context.Context, tx db.Tx) error {
 		rows, err := tx.Query(ctx, q, days, class)
 		if err != nil {
 			return err
@@ -196,7 +200,7 @@ func (c *Catalog) Seal(ctx context.Context, class string, g Grouping) (SealResul
 		limit = DefaultMaxMembers
 	}
 	var res SealResult
-	err = c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	err = c.tx(ctx, "seal", func(ctx context.Context, tx db.Tx) error {
 		res = SealResult{}
 		// one sealer per grouping at a time
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", class+"/"+g.Key); err != nil {

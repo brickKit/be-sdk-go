@@ -98,7 +98,7 @@ func (c *Catalog) rewrite(ctx context.Context, unit, route string, edit func(*Ag
 	}
 	cl := c.Classes[claim.Class]
 	var u unitRoute
-	if err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) (err error) {
+	if err := c.tx(ctx, "rewrite.route", func(ctx context.Context, tx db.Tx) (err error) {
 		u, err = c.routeOf(ctx, tx, unit)
 		return err
 	}); err != nil {
@@ -177,7 +177,7 @@ func (c *Catalog) Reroute(ctx context.Context, unit, route string) (Manifest, er
 // rerouteDue are the published and released units on another route than their class's first.
 func (c *Catalog) rerouteDue(ctx context.Context) (map[string]string, error) {
 	due := map[string]string{}
-	err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	err := c.tx(ctx, "reroute.due", func(ctx context.Context, tx db.Tx) error {
 		rows, err := tx.Query(ctx, "SELECT id::text, class, route FROM be_tier_unit WHERE state IN ('published', 'released')")
 		if err != nil {
 			return err
@@ -211,7 +211,11 @@ func (c *Catalog) ReleaseOld(ctx context.Context, unit string) ([]string, error)
 	var olds []old
 	var class string
 	var why []string
-	err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	finished, haveBackup, err := c.latestBackup(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = c.tx(ctx, "releaseold.decide", func(ctx context.Context, tx db.Tx) error {
 		var current int
 		var routeVersion *int64
 		var createdAt, now time.Time
@@ -247,15 +251,7 @@ func (c *Catalog) ReleaseOld(ctx context.Context, unit string) ([]string, error)
 		if leases > 0 {
 			why = append(why, WhyLease)
 		}
-		backed := false
-		if c.Backups != nil {
-			finished, ok, err := c.Backups(ctx)
-			if err != nil {
-				return err
-			}
-			backed = ok && finished.After(createdAt)
-		}
-		if !backed {
+		if !haveBackup || !finished.After(createdAt) {
 			why = append(why, WhyNoBackup)
 		}
 		return nil
@@ -281,9 +277,10 @@ func (c *Catalog) ReleaseOld(ctx context.Context, unit string) ([]string, error)
 				if err := c.Store.Delete(ctx, obj.Key); err != nil {
 					return nil, err
 				}
+				crash("releaseold.object/done")
 			}
 		}
-		if err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+		if err := c.tx(ctx, "releaseold.delete", func(ctx context.Context, tx db.Tx) error {
 			if _, err := tx.Exec(ctx, "DELETE FROM be_tier_row WHERE unit::text = $1 AND version = $2", unit, o.version); err != nil {
 				return err
 			}
@@ -300,7 +297,7 @@ func (c *Catalog) ReleaseOld(ctx context.Context, unit string) ([]string, error)
 // oldVersions are the units with a version whose data is not released yet.
 func (c *Catalog) oldVersions(ctx context.Context) ([]string, error) {
 	var out []string
-	err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	err := c.tx(ctx, "releaseold.list", func(ctx context.Context, tx db.Tx) error {
 		rows, err := tx.Query(ctx, "SELECT DISTINCT m.unit::text FROM be_tier_manifest m JOIN be_tier_unit u ON u.id = m.unit "+
 			"WHERE m.version < u.manifest_version AND m.superseded_at IS NULL AND u.state IN ('published', 'released')")
 		if err != nil {
@@ -320,7 +317,7 @@ func (c *Catalog) CheckReadable(ctx context.Context, class string) (map[string]e
 		return nil, fmt.Errorf("tiering: no class %q", class)
 	}
 	var samples [][2]string
-	if err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	if err := c.tx(ctx, "readable.list", func(ctx context.Context, tx db.Tx) error {
 		rows, err := tx.Query(ctx, "SELECT DISTINCT ON (v) v, unit FROM (SELECT convert_from(m.manifest, 'UTF8')::jsonb ->> "+
 			"'schema_version' AS v, u.id::text AS unit FROM be_tier_unit u JOIN be_tier_manifest m ON m.unit = u.id AND "+
 			"m.version = u.manifest_version WHERE u.class = $1 AND u.state IN ('published', 'released')) s WHERE v <> $2 ORDER BY v, unit",
@@ -339,7 +336,7 @@ func (c *Catalog) CheckReadable(ctx context.Context, class string) (map[string]e
 	failed := map[string]error{}
 	for _, s := range samples {
 		var u unitRoute
-		if err := c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) (err error) {
+		if err := c.tx(ctx, "readable.read", func(ctx context.Context, tx db.Tx) (err error) {
 			u, err = c.routeOf(ctx, tx, s[1])
 			return err
 		}); err != nil {

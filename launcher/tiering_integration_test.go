@@ -106,9 +106,10 @@ func TestAComponentWithClassesServes(t *testing.T) {
 			return false
 		}
 		jobs, err = pgx.CollectRows(rows, pgx.RowTo[string])
-		return err == nil && len(jobs) >= 4
+		return err == nil && len(jobs) >= 5
 	}, 10*time.Second, 50*time.Millisecond, logs.String())
-	assert.Equal(t, []string{"be.tiering.destroy", "be.tiering.export.cleanup", "be.tiering.release", "be.tiering.transfer"},
+	assert.Equal(t, []string{"be.tiering.cleanup", "be.tiering.destroy", "be.tiering.export.cleanup", "be.tiering.release",
+		"be.tiering.transfer"},
 		jobs, "the singletons (the candidates are a cron job, the export a queue)")
 
 	// P15.40: the holds and approvals of the class on the user surface, under its declared operations

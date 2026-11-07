@@ -266,7 +266,7 @@ func (c *Catalog) SealDue(ctx context.Context, log *slog.Logger) error {
 
 // alertBlocked logs every open unit blocked for more than BlockedAlertAfter past its residence (protocol 11, TR30).
 func (c *Catalog) alertBlocked(ctx context.Context, log *slog.Logger) error {
-	return c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	return c.tx(ctx, "blocked", func(ctx context.Context, tx db.Tx) error {
 		rows, err := tx.Query(ctx, "SELECT id::text, class, grouping, blocked::text, blocked_since FROM be_tier_unit "+
 			"WHERE state = 'open' AND blocked IS NOT NULL AND blocked_since <= now() - make_interval(days => $1)",
 			int(BlockedAlertAfter/(24*time.Hour)))

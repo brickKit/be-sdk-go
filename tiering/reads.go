@@ -58,7 +58,9 @@ func (c *Catalog) routeOf(ctx context.Context, tx db.Tx, unit string) (unitRoute
 }
 
 // Get reads one aggregate by its root's key (P15.22). found=false: it has not left the online tables (or does not
-// exist): the caller reads its online tables as usual.
+// exist): the caller reads its online tables as usual, after asking here (the other way round it can find an
+// aggregate half deleted while a release or a destruction deletes its online rows in batches). A destroyed unit's
+// members answer NOT_FOUND from the decision on (P15.29), whatever is left of their rows.
 func (c *Catalog) Get(ctx context.Context, class, root string) (Aggregate, bool, error) {
 	var u unitRoute
 	err := c.DB.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
@@ -70,7 +72,10 @@ func (c *Catalog) Get(ctx context.Context, class, root string) (Aggregate, bool,
 		u, err = c.routeOf(ctx, tx, unit)
 		return err
 	})
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (u.route == RouteOnline || u.state == StateDestroyed)) {
+	if err == nil && u.state == StateDestroyed {
+		return Aggregate{}, false, errs.New(errs.ReasonNotFound, "the record was destroyed at the end of its retention")
+	}
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && u.route == RouteOnline) {
 		return Aggregate{}, false, nil
 	}
 	if err != nil {
@@ -288,10 +293,11 @@ func (c *Catalog) End(ctx context.Context, s Snapshot) error {
 }
 
 // OnlineExclusion is the condition an online query over a class's root (alias) adds under a snapshot: leave out the
-// aggregates whose unit had left the online tables at the snapshot's version; they are read from their route.
+// aggregates whose unit had left the online tables at the snapshot's version (they are read from their route) and
+// those of a destroyed unit (their online rows are being deleted, P15.24).
 func (s Snapshot) OnlineExclusion(cl Class, alias string) string {
 	return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM be_tier_member m JOIN be_tier_unit u ON u.id = m.unit WHERE m.class = '%s' "+
-		"AND m.root_id = %s.%s::text AND u.route <> 'online' AND u.route_version <= %d)",
+		"AND m.root_id = %s.%s::text AND ((u.route <> 'online' AND u.route_version <= %d) OR u.state = 'destroyed'))",
 		strings.ReplaceAll(cl.Name, "'", "''"), alias, ident(cl.Root.PK), s.Version)
 }
 
@@ -369,7 +375,7 @@ func (c *Catalog) Thaw(ctx context.Context, unit string, ttl time.Duration) erro
 	}
 	cl := c.Classes[u.class]
 	const thawVersion = -1 // a version no manifest has
-	return c.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+	return c.tx(ctx, "thaw", func(ctx context.Context, tx db.Tx) error {
 		if _, err := tx.Exec(ctx, "DELETE FROM be_tier_row WHERE unit = $1 AND version = $2", unit, thawVersion); err != nil {
 			return err
 		}
