@@ -32,6 +32,7 @@
 | `tiering/` | 冷热转层：组件声明的数据类别、封存与写屏障、转层与释放、读取与导出、保全销毁与擦除、路线更换、恢复核对；文件与职责、宿主与模块怎样接上，见包说明 `tiering/doc.go` | 第 15 章 |
 | `sectest/` | 测试用的安全部署：令牌、信任根、授权与审计的替身、账号的安全变更（只给测试） | — |
 | `sessionpb/` | `be.session.v1` 的生成代码（`make gen`），身份成员实现 `SessionService` 时用 | P8.28 |
+| `reserve/` | 预占的参与方：分支的状态机（`lifecycle.go` 的 `Decide`，对协议向量）、命令与到期作业（`reserve.go`）；组件只写占用、归还、消耗与事件 | 第 16 章 |
 | `extcmd/` | 对外命令：命令的写入与幂等、状态表（`state.go`，纯函数）、发送与查询的作业（`commands.go`）、整套恢复的外部对账（`reconcile.go` 的匹配是纯函数，`reconcileserver.go` 是 `ReconcileService`） | 第 13 章 |
 | `recovery/` | 整套恢复的核对 `CheckService`：组件的登记（`checks.go`）、SDK 自带的检查（`builtin.go`）、服务（`server.go`）；单号的读取与提升在 `db/docno.go` | 第 14 章 |
 | `externalpb/`、`recoverypb/` | `be.external.v1`、`be.recovery.v1` 的生成代码（`make gen`），恢复工具调用时用 | 第 13、14 章 |

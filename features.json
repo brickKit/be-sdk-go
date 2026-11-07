@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.114",
+  "protocol": "3.0.0-alpha.116",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -656,6 +656,24 @@
         {
           "rule": "P15.23",
           "reason": "列表的默认范围由组件的列表实现，随装配项目底层先行第 5 项的 T10"
+        }
+      ]
+    },
+    "reserve-participant": {
+      "status": "verified",
+      "evidence": [
+        "reserve.TestTheProtocolsVector",
+        "reserve.TestEndedStatesStayEnded",
+        "reserve.TestABranchsLife",
+        "reserve.TestTombstonesAndTheEnded",
+        "reserve.TestExpiry",
+        "reserve.TestNoOversellAndNoDeadlock",
+        "reserve.TestAnotherKindsBranch"
+      ],
+      "pending": [
+        {
+          "rule": "P16.9",
+          "reason": "调整与期初分支只留形状：参与方答 CAPABILITY_UNSUPPORTED，由组件答（SDK 没有它们的入口）"
         }
       ]
     }
