@@ -70,6 +70,9 @@ type World struct {
 	RefuseDefinitions string
 	accountCheck      func(*authzv3.CheckAccountChangeRequest) *authzv3.CheckAccountChangeResponse
 	accountChecks     []*authzv3.CheckAccountChangeRequest
+	linkCheck         func(*authzv3.CheckLinkChangeRequest) *authzv3.CheckLinkChangeResponse
+	linkChecks        []*authzv3.CheckLinkChangeRequest
+	admins            map[string]bool
 	evidence          map[[2]string]evidenceKept // (id, phase) -> what the fake evidence store keeps
 	evidenceSeq       int64
 	evidenceDown      bool
@@ -372,6 +375,60 @@ func (w *World) AccountChecks() []*authzv3.CheckAccountChangeRequest {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return append([]*authzv3.CheckAccountChangeRequest(nil), w.accountChecks...)
+}
+
+// CheckLinkChange answers as the test set with LinkCheck and remembers the request (the employee member asks before
+// it links an account or ends a link, contract-infra-authz alpha.6). By default a request with a confirmation is
+// allowed and one without needs it.
+func (m authzMember) CheckLinkChange(_ context.Context, in *authzv3.CheckLinkChangeRequest) (*authzv3.CheckLinkChangeResponse, error) {
+	m.w.mu.Lock()
+	m.w.linkChecks = append(m.w.linkChecks, in)
+	answer := m.w.linkCheck
+	m.w.mu.Unlock()
+	if answer != nil {
+		return answer(in), nil
+	}
+	if in.GetConfirmation() == "" {
+		return &authzv3.CheckLinkChangeResponse{Verdict: authzv3.AccountChangeVerdict_ACCOUNT_CHANGE_VERDICT_CONFIRMATION_REQUIRED}, nil
+	}
+	return &authzv3.CheckLinkChangeResponse{Verdict: authzv3.AccountChangeVerdict_ACCOUNT_CHANGE_VERDICT_ALLOWED}, nil
+}
+
+// LinkCheck sets the fake member's answer to CheckLinkChange (nil: the default above).
+func (w *World) LinkCheck(answer func(*authzv3.CheckLinkChangeRequest) *authzv3.CheckLinkChangeResponse) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.linkCheck = answer
+}
+
+// LinkChecks returns the CheckLinkChange requests the fake member received, in order.
+func (w *World) LinkChecks() []*authzv3.CheckLinkChangeRequest {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]*authzv3.CheckLinkChangeRequest(nil), w.linkChecks...)
+}
+
+// Administrators answers which of the accounts the test made authorization admins with Admins.
+func (m authzMember) Administrators(_ context.Context, in *authzv3.AdministratorsRequest) (*authzv3.AdministratorsResponse, error) {
+	m.w.mu.Lock()
+	defer m.w.mu.Unlock()
+	out := &authzv3.AdministratorsResponse{}
+	for _, a := range in.GetAccounts() {
+		if m.w.admins[a] {
+			out.Administrators = append(out.Administrators, a)
+		}
+	}
+	return out, nil
+}
+
+// Admins makes the principals the fake member's authorization admins (for Administrators); nil: none.
+func (w *World) Admins(principals ...string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.admins = map[string]bool{}
+	for _, p := range principals {
+		w.admins[p] = true
+	}
 }
 
 func (m authzMember) Verify(_ context.Context, in *authzv3.VerifyRequest) (*authzv3.VerifyResponse, error) {

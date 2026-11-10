@@ -39,3 +39,38 @@ func TestTheFakeMemberAnswersAccountChecks(t *testing.T) {
 	assert.Equal(t, Bob, got[0].GetAccount())
 	assert.Equal(t, "security_frozen", got[1].GetTargetState())
 }
+
+// The fake authorization member answers CheckLinkChange (a confirmation given: allowed; none: required; or as the
+// test sets it) and remembers the requests; Administrators answers the accounts the test made admins.
+func TestTheFakeMemberAnswersLinkChecksAndAdministrators(t *testing.T) {
+	w := New(t)
+	tls := w.TLS(t, "mdm/employee")
+	conn, err := grpc.NewClient(w.AuthzAddr, grpc.WithTransportCredentials(credentials.NewTLS(tls.ClientConfig("infra/authz"))))
+	require.NoError(t, err)
+	defer conn.Close()
+	c := authzv3.NewAccountServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := c.CheckLinkChange(ctx, &authzv3.CheckLinkChangeRequest{Employee: "e1", Account: Bob, Action: "link"})
+	require.NoError(t, err)
+	assert.Equal(t, authzv3.AccountChangeVerdict_ACCOUNT_CHANGE_VERDICT_CONFIRMATION_REQUIRED, out.GetVerdict())
+	out, err = c.CheckLinkChange(ctx, &authzv3.CheckLinkChangeRequest{Employee: "e1", Account: Bob, Action: "link", Confirmation: "c1"})
+	require.NoError(t, err)
+	assert.Equal(t, authzv3.AccountChangeVerdict_ACCOUNT_CHANGE_VERDICT_ALLOWED, out.GetVerdict())
+	w.LinkCheck(func(*authzv3.CheckLinkChangeRequest) *authzv3.CheckLinkChangeResponse {
+		return &authzv3.CheckLinkChangeResponse{Verdict: authzv3.AccountChangeVerdict_ACCOUNT_CHANGE_VERDICT_REFUSED, Reason: "used"}
+	})
+	out, err = c.CheckLinkChange(ctx, &authzv3.CheckLinkChangeRequest{Employee: "e1", Account: Bob, Action: "unlink", Confirmation: "c2"})
+	require.NoError(t, err)
+	assert.Equal(t, authzv3.AccountChangeVerdict_ACCOUNT_CHANGE_VERDICT_REFUSED, out.GetVerdict())
+	require.Len(t, w.LinkChecks(), 3)
+	assert.Equal(t, "unlink", w.LinkChecks()[2].GetAction())
+
+	admins, err := c.Administrators(ctx, &authzv3.AdministratorsRequest{Accounts: []string{Alice, Bob}})
+	require.NoError(t, err)
+	assert.Empty(t, admins.GetAdministrators())
+	w.Admins(Alice)
+	admins, err = c.Administrators(ctx, &authzv3.AdministratorsRequest{Accounts: []string{Alice, Bob}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{Alice}, admins.GetAdministrators())
+}
