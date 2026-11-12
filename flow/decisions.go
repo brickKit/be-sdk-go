@@ -120,8 +120,7 @@ func (k *Kernel) decideIn(ctx context.Context, tx db.Tx, subj *sdkauthz.Subject,
 	s.Self = s.Self || me == i.Initiator
 	_, _, err = subj.Check(ctx, d.Operation, facts)
 	s.Operation = err == nil
-	if d.Steps[i.Step-1].Rule == Position && s.Task == Pending {
-		b := i.Assignments[i.Step-1]
+	if b := i.Assignments[i.Step-1]; kind(d.Steps[i.Step-1], b) == Position && s.Task == Pending {
 		holds, complete, err := k.Directory.Holds(ctx, tx, me, b.LegalEntity, b.PositionID, date)
 		switch {
 		case err != nil:

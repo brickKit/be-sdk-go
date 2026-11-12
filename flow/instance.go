@@ -73,6 +73,15 @@ func (k *Kernel) StartIn(ctx context.Context, tx db.Tx, s Start) (Instance, erro
 	case len(s.Digests) != len(d.Steps) || (!s.Automatic && len(s.Bindings) != len(d.Steps)):
 		return Instance{}, fmt.Errorf("flow: %s has %d steps: a digest and a binding each", d.Key, len(d.Steps))
 	}
+	if !s.Automatic {
+		for n, st := range d.Steps {
+			b := s.Bindings[n]
+			pos, person := b.PositionID != "" && b.LegalEntity != "", b.Principal != ""
+			if pos == person || (st.Rule == Position && !pos) || (st.Rule == Person && !person) {
+				return Instance{}, fmt.Errorf("flow: %s step %d (%s) is bound to a position or a principal, one of them", d.Key, n+1, st.Rule)
+			}
+		}
+	}
 	state := Running
 	if s.Automatic {
 		state = Approved
@@ -162,7 +171,7 @@ func (k *Kernel) resolve(ctx context.Context, tx db.Tx, i Instance) ([]string, s
 		return nil, "", err
 	}
 	var accounts []string
-	switch d.Steps[i.Step-1].Rule {
+	switch kind(d.Steps[i.Step-1], b) {
 	case Person:
 		accounts = []string{b.Principal}
 	case Position:

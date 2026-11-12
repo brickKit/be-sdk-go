@@ -30,7 +30,21 @@ type RuleKind string
 const (
 	Position RuleKind = "position" // the holders of a position in a legal entity
 	Person   RuleKind = "person"   // one principal
+	// PositionOrPerson is either, as the start binds it: a binding with a position is the position's holders, one with
+	// a principal is that person (a component's policy gives one or the other by legal entity).
+	PositionOrPerson RuleKind = "position_or_person"
 )
+
+// kind is the rule a step resolves and checks by: its declared kind, or for PositionOrPerson the binding's.
+func kind(s Step, b Binding) RuleKind {
+	if s.Rule != PositionOrPerson {
+		return s.Rule
+	}
+	if b.PositionID != "" {
+		return Position
+	}
+	return Person
+}
 
 // Step is one step of a definition: its form and the kind of its assignment; the parameters are bound at the start.
 type Step struct {
@@ -141,7 +155,7 @@ func (k *Kernel) Check() error {
 			if s.Form != Single && s.Form != Any {
 				return fmt.Errorf("flow: definition %q step %d: form %q is not in this version (P17.2)", d.Key, i+1, s.Form)
 			}
-			if s.Rule != Position && s.Rule != Person {
+			if s.Rule != Position && s.Rule != Person && s.Rule != PositionOrPerson {
 				return fmt.Errorf("flow: definition %q step %d: rule %q is not in this version (P17.3)", d.Key, i+1, s.Rule)
 			}
 		}

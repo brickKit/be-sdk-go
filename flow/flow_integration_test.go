@@ -165,6 +165,7 @@ const (
 	twoSteps  = "demo.two"       // a position (any), then a person; a rejection returns the document
 	oneStep   = "demo.one"       // a position (single); a rejection rejects it
 	commented = "demo.commented" // a person (single); people approve it, a rejection says why
+	either    = "demo.either"    // a position or a person, as the start binds it
 )
 
 func newWorld(t *testing.T, name string) *world {
@@ -185,7 +186,9 @@ func newWorld(t *testing.T, name string) *world {
 				ReadOperation: "demo.doc.read", OnReject: flow.Rejected, Steps: []flow.Step{{Form: flow.Single, Rule: flow.Position}}},
 			{Key: commented, Version: 1, TaskType: "test.purchase.commented.approval", DocumentType: "doc",
 				Operation: "demo.doc.approve", ReadOperation: "demo.doc.read", OnReject: flow.Returned, RejectComment: true,
-				Manual: true, Steps: []flow.Step{{Form: flow.Single, Rule: flow.Person}}}},
+				Manual: true, Steps: []flow.Step{{Form: flow.Single, Rule: flow.Person}}},
+			{Key: either, Version: 1, TaskType: "test.purchase.either.approval", DocumentType: "doc", Operation: "demo.doc.approve",
+				ReadOperation: "demo.doc.read", OnReject: flow.Returned, Steps: []flow.Step{{Form: flow.Any, Rule: flow.PositionOrPerson}}}},
 		Hooks: flow.Hooks{
 			Document: func(ctx context.Context, tx db.Tx, doc flow.Document) (int64, string, authz.Facts, error) {
 				var rev int64
@@ -559,4 +562,40 @@ func TestAnAutomaticApproval(t *testing.T) {
 		assert.Equal(t, "person-1", p)
 		return err
 	}))
+}
+
+// startBound makes a document and starts the either flow with the binding; answers the document, the task, the error.
+func (w *world) startBound(b flow.Binding) (string, string, error) {
+	doc := ids.New().String()
+	var task string
+	err := w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO doc (id, legal_entity) VALUES ($1, $2)`, doc, le); err != nil {
+			return err
+		}
+		i, err := w.k.StartIn(ctx, tx, flow.Start{Flow: either, Document: flow.Document{Type: "doc", ID: doc}, LegalEntity: le,
+			KeyRevision: 1, Digests: []string{"sha256:e"}, Bindings: []flow.Binding{b}, Initiator: initiator})
+		if err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT id::text FROM be_flow_task WHERE instance_id = $1`, i.ID).Scan(&task)
+	})
+	return doc, task, err
+}
+
+// P17.3: a step of a position or a person resolves and checks by what the start bound.
+func TestAStepBoundAtTheStart(t *testing.T) {
+	w := newWorld(t, "flow_either")
+	_, byPosition, err := w.startBound(flow.Binding{LegalEntity: le, PositionID: position})
+	require.NoError(t, err)
+	assert.Equal(t, []string{alice, bob}, w.task(byPosition).Candidates, "the position's holders")
+	doc, byPerson, err := w.startBound(flow.Binding{Principal: dave})
+	require.NoError(t, err)
+	assert.Equal(t, []string{dave}, w.task(byPerson).Candidates, "the principal")
+	_, err = w.decide(dave, byPerson, "k-dave", w.task(byPerson).Version, flow.Approve)
+	require.NoError(t, err, "a person binding has no position to hold")
+	assert.Equal(t, "approved", w.docState(doc))
+	_, _, err = w.startBound(flow.Binding{LegalEntity: le, PositionID: position, Principal: dave})
+	assert.Error(t, err, "both")
+	_, _, err = w.startBound(flow.Binding{})
+	assert.Error(t, err, "neither")
 }
