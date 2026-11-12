@@ -46,7 +46,15 @@ const (
 	ReasonCapabilityUnsupported    = "CAPABILITY_UNSUPPORTED"
 	ReasonResultUnknown            = "RESULT_UNKNOWN"
 	ReasonAuditCapacityExhausted   = "AUDIT_CAPACITY_EXHAUSTED"
-	ReasonInternal                 = "INTERNAL"
+	// the flow kernel's decision (protocol chapter 17, P17.10)
+	ReasonTaskNotPending       = "TASK_NOT_PENDING"
+	ReasonVersionConflict      = "VERSION_CONFLICT"
+	ReasonNotAssignee          = "NOT_ASSIGNEE"
+	ReasonSelfApproval         = "SELF_APPROVAL"
+	ReasonNotQualified         = "NOT_QUALIFIED"
+	ReasonQualificationUnknown = "QUALIFICATION_UNKNOWN"
+	ReasonRevisionChanged      = "REVISION_CHANGED"
+	ReasonInternal             = "INTERNAL"
 )
 
 // Retryability of a reason, as the catalog states it.
@@ -112,6 +120,13 @@ func init() {
 		{ReasonCapabilityUnsupported, Unimplemented, 0, RetryNo, "This capability is not supported"},
 		{ReasonResultUnknown, DeadlineExceeded, 0, RetryQueryFirst, "The result is not known yet; query it"},
 		{ReasonAuditCapacityExhausted, Unavailable, 0, RetryYes, "Audited operations are paused until the audit backlog drains"},
+		{ReasonTaskNotPending, FailedPrecondition, 409, RetryNo, "The task is not pending, or its instance has ended"},
+		{ReasonVersionConflict, Aborted, 0, RetryNo, "The record changed since that version"},
+		{ReasonNotAssignee, PermissionDenied, 0, RetryNo, "You are not a candidate of this task"},
+		{ReasonSelfApproval, PermissionDenied, 0, RetryNo, "The one who started it does not decide it"},
+		{ReasonNotQualified, PermissionDenied, 0, RetryNo, "You no longer qualify for this step"},
+		{ReasonQualificationUnknown, Unavailable, 0, RetryYes, "Your qualification cannot be proven right now"},
+		{ReasonRevisionChanged, Aborted, 0, RetryNo, "The document changed since the approval started"},
 		{ReasonInternal, Internal, 0, RetryNo, "Internal error"},
 	} {
 		platform[e.Reason] = e
