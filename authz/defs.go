@@ -166,6 +166,9 @@ func (d *Definitions) Validate() error {
 		if _, ok := d.resources[o.ResourceType]; !ok {
 			problems = append(problems, o.Key+": resource type "+o.ResourceType+" is not declared")
 		}
+		if action, ok := strings.CutPrefix(o.Key, o.ResourceType+"."); !ok || action == "" || strings.Contains(action, ".") {
+			problems = append(problems, o.Key+": an operation key is its resource type and one action ("+o.ResourceType+".<action>)")
+		}
 		if o.RiskClass != "low" && o.RiskClass != "high" {
 			problems = append(problems, o.Key+": risk class must be low or high (never assumed low)")
 		}

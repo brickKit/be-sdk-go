@@ -157,8 +157,10 @@ func Accounts(iam, password string, users ...string) (map[string]Account, error)
 
 // WaitGranted waits until a write the holder of c's token sends with an empty body is refused for its body (400)
 // rather than not found (404): the component checks the operation before the body, so 400 means a grant has reached
-// the component's view, and nothing is written. A read does not tell: a list answers 200 with nothing in it to a user
-// without the read operation.
+// the component's view, and nothing is written. A read does not tell when a list answers 200 with nothing in it to a
+// user without the read operation. A component with nothing but reads (infra/workflow's worklist) has no write to
+// probe: when its read checks the operation first and answers 404 without the grant, wait with UntilGranted on that
+// read until it answers 200.
 func (c Client) WaitGranted(method, path string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {

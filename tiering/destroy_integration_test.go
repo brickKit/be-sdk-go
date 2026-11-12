@@ -55,20 +55,20 @@ type archiveGrants struct{}
 func (archiveGrants) Verify(_ context.Context, req authz.VerifyRequest) (authz.VerifyAnswer, error) {
 	var segs []authz.Segment
 	for _, op := range []string{"sales.order.hold", "sales.order.approve_destruction"} {
-		segs = append(segs, authz.Segment{ResourceType: "sales.archive", Operation: op, Atoms: map[string]authz.Atom{},
+		segs = append(segs, authz.Segment{ResourceType: "sales.order", Operation: op, Atoms: map[string]authz.Atom{},
 			Valid: authz.Window{From: "2026-01-01T00:00:00Z"}})
 	}
-	s := authz.Shard{Shard: "s", Applicability: []string{"sales.archive"}, Digest: "d",
+	s := authz.Shard{Shard: "s", Applicability: []string{"sales.order"}, Digest: "d",
 		Subjects: map[string]authz.SubjectEntry{alice: {Segments: segs}}}
 	return authz.VerifyAnswer{Nonce: req.Nonce, RecoveryGeneration: authz.Revision{Value: "1"},
 		Shards: []authz.ShardAnswer{{Shard: "s", Status: "changed", View: &s}}}, nil
 }
 
-var archiveDefs = &authz.Definitions{Component: "test/sales", Resources: []authz.Resource{{Type: "sales.archive",
+var archiveDefs = &authz.Definitions{Component: "test/sales", Resources: []authz.Resource{{Type: "sales.order",
 	ViewOperation: "sales.order.hold", Dimensions: map[string]authz.Dimension{}, Fields: map[string]authz.Field{}}},
 	Operations: []authz.Operation{
-		{Key: "sales.order.hold", ResourceType: "sales.archive", Purpose: "manage", RiskClass: "low"},
-		{Key: "sales.order.approve_destruction", ResourceType: "sales.archive", Purpose: "manage", RiskClass: "low"}}}
+		{Key: "sales.order.hold", ResourceType: "sales.order", Purpose: "manage", RiskClass: "low"},
+		{Key: "sales.order.approve_destruction", ResourceType: "sales.order", Purpose: "manage", RiskClass: "low"}}}
 
 type destroyWorld struct {
 	env

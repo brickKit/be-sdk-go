@@ -45,7 +45,7 @@ func (g *greeter) Routes(r *httpx.Routes) error {
 	return nil
 }
 
-func opKey(id string) string { return strings.ReplaceAll(id, "/", ".") + ".read" }
+func opKey(id string) string { return strings.ReplaceAll(id, "/", ".") + ".greeting.read" }
 
 func def(id, version string) component.Definition {
 	return component.Definition{ID: id, Version: version, Authz: sectest.Defs(id, strings.ReplaceAll(id, "/", ".")+".greeting", opKey(id)),

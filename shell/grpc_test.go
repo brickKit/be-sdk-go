@@ -29,13 +29,13 @@ func (e *echoMember) Routes(*httpx.Routes) error { return nil }
 func (e *echoMember) Services(s *grpcx.Services) error {
 	s.Register(&echotest.Desc, echotest.Say(func(_ context.Context, in *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 		return wrapperspb.String(e.id + ": " + in.Value), nil
-	}), map[string]grpcx.Method{"Say": {Operation: strings.ReplaceAll(e.id, "/", ".") + ".say", Callers: []string{"demo/client"}}})
+	}), map[string]grpcx.Method{"Say": {Operation: strings.ReplaceAll(e.id, "/", ".") + ".echo.say", Callers: []string{"demo/client"}}})
 	return nil
 }
 
 func echoDef(id string) component.Definition {
 	return component.Definition{ID: id, Version: "0.1.0", Keys: []config.Key{},
-		Authz: sectest.Defs(id, strings.ReplaceAll(id, "/", ".")+".echo", strings.ReplaceAll(id, "/", ".")+".say"),
+		Authz: sectest.Defs(id, strings.ReplaceAll(id, "/", ".")+".echo", strings.ReplaceAll(id, "/", ".")+".echo.say"),
 		New:   func(*runtime.Runtime) (component.Module, error) { return &echoMember{id: id}, nil }}
 }
 
@@ -100,7 +100,7 @@ func (c *callerMember) Services(s *grpcx.Services) error {
 		out := new(wrapperspb.StringValue)
 		err := conn.Invoke(ctx, echotest.Method, in, out, calls.Idempotent())
 		return out, err
-	}), map[string]grpcx.Method{"Say": {Operation: strings.ReplaceAll(c.id, "/", ".") + ".say",
+	}), map[string]grpcx.Method{"Say": {Operation: strings.ReplaceAll(c.id, "/", ".") + ".echo.say",
 		Callers: []string{"demo/client", "demo/beta"}}})
 	return nil
 }
@@ -111,7 +111,7 @@ func TestMembersOfOneShellCallEachOtherAsThemselves(t *testing.T) {
 	pa, ga, pb, gb, ps := freePort(t), freePort(t), freePort(t), freePort(t), freePort(t)
 	def := func(id, relayTo, relayAddr string) component.Definition {
 		return component.Definition{ID: id, Version: "0.1.0", Keys: []config.Key{},
-			Authz: sectest.Defs(id, strings.ReplaceAll(id, "/", ".")+".echo", strings.ReplaceAll(id, "/", ".")+".say"),
+			Authz: sectest.Defs(id, strings.ReplaceAll(id, "/", ".")+".echo", strings.ReplaceAll(id, "/", ".")+".echo.say"),
 			New: func(rt *runtime.Runtime) (component.Module, error) {
 				return &callerMember{id: id, relayTo: relayTo, relayAddr: relayAddr, rt: rt}, nil
 			}}
