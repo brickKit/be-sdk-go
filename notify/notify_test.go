@@ -52,6 +52,7 @@ func TestAnIntentOutsideTheContractIsNotEmitted(t *testing.T) {
 		"no recipient":                 func(i *Intent) { i.Recipients = nil },
 		"an unknown category":          func(i *Intent) { i.Category = "newsletter" },
 		"a link outside the system":    func(i *Intent) { i.Link = "https://example.com" },
+		"a protocol-relative link":     func(i *Intent) { i.Link = "//example.com/x" },
 		"no title":                     func(i *Intent) { i.Title = "" },
 		"a title too long":             func(i *Intent) { i.Title = strings.Repeat("x", 201) },
 		"expires before it occurred":   func(i *Intent) { i.ExpiresAt = "2000-01-01T00:00:00Z" },
