@@ -348,15 +348,18 @@ func (k *Kernel) readTask(ctx context.Context, tx db.Tx, id string, lock bool) (
 	return t, nil
 }
 
-// publish publishes a task's complete state on the component's stream (P17.15), in the transaction that changed it.
+// publish publishes a task's complete state on the component's stream (P17.15), and its notification intent (P18.10),
+// in the transaction that changed it.
 func (k *Kernel) publish(ctx context.Context, tx db.Tx, id string) error {
 	t, err := k.readTask(ctx, tx, id, false)
 	if err != nil {
 		return err
 	}
-	_, err = k.Events.Emit(ctx, tx, k.Stream, events.Event{Type: k.TaskEvent, RecordID: t.ID, Version: t.Version,
-		Projection: events.Full, LegalEntity: t.instance.LegalEntity, Data: t})
-	return err
+	if _, err = k.Events.Emit(ctx, tx, k.Stream, events.Event{Type: k.TaskEvent, RecordID: t.ID, Version: t.Version,
+		Projection: events.Full, LegalEntity: t.instance.LegalEntity, Data: t}); err != nil {
+		return err
+	}
+	return k.intend(ctx, tx, t) // the notification intent goes with the projection (P18.10)
 }
 
 // bump changes a task's state and version, its candidates (nil: none, as a task that left pending has), and publishes it.

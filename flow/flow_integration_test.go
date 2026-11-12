@@ -25,6 +25,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/idem"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/internal/dbtest"
+	"github.com/brickKit/be-sdk-go/v3/notify"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -643,4 +644,72 @@ func TestAPositionTaskWithoutTheDirectory(t *testing.T) {
 	w.k.Directory = nil
 	_, err := w.decide(alice, task, "k-nodir", w.task(task).Version, flow.Approve)
 	assert.Equal(t, flow.ReasonNotQualified, reason(err))
+}
+
+// intents reads the notification intents of a task, in the order they were emitted (P18.10).
+func (w *world) intents(task string) []notify.Intent {
+	w.t.Helper()
+	var out []notify.Intent
+	require.NoError(w.t, w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT data FROM published WHERE type = 'test.purchase_notification.intent.v1'
+			AND data->>'collapse_key' = $1 ORDER BY at`, "task:"+task)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var b []byte
+			var in notify.Intent
+			if err := rows.Scan(&b); err != nil {
+				return err
+			}
+			require.NoError(w.t, json.Unmarshal(b, &in))
+			out = append(out, in)
+		}
+		return rows.Err()
+	}))
+	return out
+}
+
+// P18.10: a pending task is delivered to its candidates with its version as the sequence; deciding it withdraws it
+// (a newer sequence); the next step's task is delivered to its own candidates; a paused task delivers nothing until
+// it is resolved again.
+func TestTheTasksNotificationIntents(t *testing.T) {
+	w := newWorld(t, "flow_intents")
+	_, task := w.start(twoSteps)
+	first := w.task(task)
+	got := w.intents(task)
+	require.Len(t, got, 1)
+	in := got[0]
+	assert.Equal(t, notify.Deliver, in.Kind)
+	assert.Equal(t, "test/purchase", in.Sender)
+	assert.Equal(t, notify.ApprovalTask, in.Category)
+	assert.Equal(t, []notify.Recipient{{Principal: alice}, {Principal: bob}}, in.Recipients)
+	assert.Equal(t, first.Version, in.CollapseSeq)
+	assert.Equal(t, "/workflow/tasks/"+task, in.Link)
+	assert.Equal(t, flow.TaskTemplate, in.Template)
+	assert.Equal(t, first.TaskType, in.Params["task_type"])
+	assert.NotEmpty(t, in.Title)
+	require.NoError(t, notify.Check(in), "it follows the shared contract")
+
+	_, err := w.decide(bob, task, "k-intent", first.Version, flow.Approve)
+	require.NoError(t, err)
+	got = w.intents(task)
+	require.Len(t, got, 2)
+	assert.Equal(t, notify.Withdraw, got[1].Kind, "a decided task withdraws its message")
+	assert.Equal(t, w.task(task).Version, got[1].CollapseSeq)
+	assert.Greater(t, got[1].CollapseSeq, got[0].CollapseSeq)
+	assert.Empty(t, got[1].Recipients)
+
+	w.dir.set([]string{alice}, false)
+	_, paused := w.start(oneStep)
+	got = w.intents(paused)
+	require.Len(t, got, 1)
+	assert.Equal(t, notify.Withdraw, got[0].Kind, "a paused task delivers nothing")
+	w.dir.set([]string{bob}, true)
+	require.NoError(t, w.k.ResolvePaused(w.ctx))
+	got = w.intents(paused)
+	require.Len(t, got, 2)
+	assert.Equal(t, notify.Deliver, got[1].Kind)
+	assert.Equal(t, []notify.Recipient{{Principal: bob}}, got[1].Recipients)
 }

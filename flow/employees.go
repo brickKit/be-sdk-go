@@ -140,6 +140,11 @@ func (e *Employees) Sub() events.Sub {
 	return s
 }
 
+// OnChange sets what runs in the transaction of each event that changed the projection, with the runtime's work
+// runner: the kernel queues its re-resolution (Kernel.Check sets it); another user of the directory, such as the
+// notification component expanding positions, queues its own work.
+func (e *Employees) OnChange(f func(ctx context.Context, tx db.Tx, w Enqueuer) error) { e.changed = f }
+
 // Start installs the source once and runs its pulls and alignment (the component's Start).
 func (e *Employees) Start(ctx context.Context) error {
 	if err := e.W.Install(ctx); err != nil {
