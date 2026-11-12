@@ -361,14 +361,19 @@ func (k *Kernel) publish(ctx context.Context, tx db.Tx, id string) error {
 
 // bump changes a task's state and version, its candidates (nil: none, as a task that left pending has), and publishes it.
 func (k *Kernel) bump(ctx context.Context, tx db.Tx, id string, state TaskState, reason string, cands []string) error {
+	if err := k.change(ctx, tx, id, state, reason, cands); err != nil {
+		return err
+	}
+	return k.publish(ctx, tx, id)
+}
+
+// change is bump without the publication: the caller publishes once what else changes with it has changed.
+func (k *Kernel) change(ctx context.Context, tx db.Tx, id string, state TaskState, reason string, cands []string) error {
 	if _, err := tx.Exec(ctx, `UPDATE be_flow_task SET state = $2, paused_reason = $3, version = version + 1,
 		updated_at = now() WHERE id = $1`, id, string(state), nullable(reason)); err != nil {
 		return err
 	}
-	if err := k.setCandidates(ctx, tx, id, cands); err != nil {
-		return err
-	}
-	return k.publish(ctx, tx, id)
+	return k.setCandidates(ctx, tx, id, cands)
 }
 
 // end ends an instance (P17.6): its state, the rest of its pending and paused tasks superseded, and the component's

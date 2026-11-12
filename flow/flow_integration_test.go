@@ -336,6 +336,7 @@ func TestADecisionFromStartToApproval(t *testing.T) {
 	end, err := w.decide(dave, second, "k-dave-ok", s2.Version, flow.Approve)
 	require.NoError(t, err)
 	assert.Equal(t, flow.Approved, end.Instance.State)
+	assert.Equal(t, flow.Approved, w.task(second).Instance.State, "the projection too (P17.15)")
 	assert.Equal(t, "approved", w.docState(doc), "the end hook changed the document in the same transaction (P17.6)")
 
 	// the release check (P17.7)
@@ -399,6 +400,8 @@ func TestEndsOfAnInstance(t *testing.T) {
 	end, err := w.decide(bob, task, "k-reject", first.Version, flow.Reject)
 	require.NoError(t, err)
 	assert.Equal(t, flow.Rejected, end.Instance.State)
+	assert.Equal(t, flow.Rejected, w.task(task).Instance.State, "the decided task's projection carries the instance's end (P17.15)")
+	assert.Equal(t, end.Version, w.task(task).Version)
 	assert.Equal(t, "rejected", w.docState(doc))
 
 	doc2, task2 := w.start(twoSteps)

@@ -148,11 +148,13 @@ func (k *Kernel) decideIn(ctx context.Context, tx db.Tx, subj *sdkauthz.Subject,
 		digest); err != nil {
 		return Task{}, err
 	}
-	if err := k.bump(ctx, tx, t.ID, Decided, "", nil); err != nil {
+	// the task and the step's others leave pending first, so the instance's end does not supersede them; they are
+	// published after the instance changed, so their projections carry its state (P17.15)
+	if err := k.change(ctx, tx, t.ID, Decided, "", nil); err != nil {
 		return Task{}, err
 	}
 	for _, id := range others {
-		if err := k.bump(ctx, tx, id, Superseded, "", nil); err != nil {
+		if err := k.change(ctx, tx, id, Superseded, "", nil); err != nil {
 			return Task{}, err
 		}
 	}
@@ -173,6 +175,11 @@ func (k *Kernel) decideIn(ctx context.Context, tx db.Tx, subj *sdkauthz.Subject,
 		}
 		i.Ending = &DecisionRecord{Decision: in.Decision, By: me, At: canon.Time(at), Comment: in.Comment}
 		if err := k.end(ctx, tx, i, o.Instance, true); err != nil {
+			return Task{}, err
+		}
+	}
+	for _, id := range append([]string{t.ID}, others...) {
+		if err := k.publish(ctx, tx, id); err != nil {
 			return Task{}, err
 		}
 	}
