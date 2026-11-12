@@ -95,8 +95,8 @@ func (k *Kernel) decideIn(ctx context.Context, tx db.Tx, subj *sdkauthz.Subject,
 		return Task{}, err
 	}
 	me := subj.Principal
-	if !k.visible(ctx, subj, t, d, facts) {
-		return Task{}, errNotFound()
+	if !k.visible(ctx, subj, t, d, facts) { // the first check of P17.10: a refusal like the others
+		return Task{}, refused{reason: errs.ReasonNotFound, err: errNotFound()}
 	}
 	s := Situation{Task: t.State, Instance: i.State, VersionMatches: in.Version == t.Version, Candidate: contains(t.Candidates, me),
 		RevisionMatches: i.KeyRevision == revision, Qualification: Qualified}
