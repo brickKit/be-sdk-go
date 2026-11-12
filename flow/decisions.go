@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/audit"
 	sdkauthz "github.com/brickKit/be-sdk-go/v3/authz"
+	"github.com/brickKit/be-sdk-go/v3/canon"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/brickKit/be-sdk-go/v3/idem"
@@ -98,6 +100,10 @@ func (k *Kernel) decideIn(ctx context.Context, tx db.Tx, subj *sdkauthz.Subject,
 	if !k.visible(ctx, subj, t, d, facts) { // the first check of P17.10: a refusal like the others
 		return Task{}, refused{reason: errs.ReasonNotFound, err: errNotFound()}
 	}
+	if in.Decision == Reject && d.RejectComment && (in.Comment == nil || strings.TrimSpace(*in.Comment) == "") { // P17.1
+		return Task{}, errs.New(errs.ReasonRequestInvalid, "a rejection of this task says why").
+			WithViolations(errs.Violation{Field: "comment", Reason: "REQUIRED", Description: "the rejection's comment"})
+	}
 	s := Situation{Task: t.State, Instance: i.State, VersionMatches: in.Version == t.Version, Candidate: contains(t.Candidates, me),
 		RevisionMatches: i.KeyRevision == revision, Qualification: Qualified}
 	person := me
@@ -162,6 +168,11 @@ func (k *Kernel) decideIn(ctx context.Context, tx db.Tx, subj *sdkauthz.Subject,
 			return Task{}, err
 		}
 	case o.Instance != Running:
+		var at time.Time
+		if err := tx.QueryRow(ctx, `SELECT decided_at FROM be_flow_decision WHERE task_id = $1`, t.ID).Scan(&at); err != nil {
+			return Task{}, err
+		}
+		i.Ending = &DecisionRecord{Decision: in.Decision, By: me, At: canon.Time(at), Comment: in.Comment}
 		if err := k.end(ctx, tx, i, o.Instance, true); err != nil {
 			return Task{}, err
 		}
@@ -244,4 +255,47 @@ func uuidForm(s string) bool {
 		}
 	}
 	return true
+}
+
+// DecideDocument is a decision through the component's own approve or reject route (P17.14): the task is picked in the
+// document's newest instance (the current step's pending task the caller is a candidate of; else a task the caller
+// decided, so a repeat replays; else any open task of the current step, so the checks of P17.10 answer why) and
+// decided at its version now. Without a key the key is the task, the caller and the decision; the request compared
+// for idempotency is the decision and the comment. A document without an instance answers TASK_NOT_PENDING.
+func (k *Kernel) DecideDocument(ctx context.Context, subj *sdkauthz.Subject, key string, d Document, c Choice, comment *string) (Task, error) {
+	me := subj.Principal
+	var task string
+	var version int64
+	err := k.DB.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+		return tx.QueryRow(ctx, `WITH i AS (SELECT id, step FROM be_flow_instance WHERE document_type = $1 AND document_id = $2::uuid
+				ORDER BY created_at DESC, id DESC LIMIT 1)
+			SELECT t.id::text, t.version FROM be_flow_task t JOIN i ON i.id = t.instance_id
+				LEFT JOIN be_flow_decision d ON d.task_id = t.id
+			ORDER BY CASE
+				WHEN t.step = i.step AND t.state = 'pending' AND EXISTS (SELECT 1 FROM be_flow_candidate c
+					WHERE c.task_id = t.id AND c.principal = $3) THEN 0
+				WHEN d.by_account = $3 THEN 1
+				WHEN t.step = i.step AND t.state IN ('pending', 'paused') THEN 2
+				ELSE 3 END, t.created_at DESC, t.id DESC LIMIT 1`, d.Type, d.ID, me).Scan(&task, &version)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Task{}, refusal(ReasonTaskNotPending)
+	}
+	if err != nil {
+		return Task{}, err
+	}
+	if key == "" {
+		key = "flow:" + task + ":" + string(c)
+	} else if !idem.ValidKey(key) {
+		return Task{}, errs.New(errs.ReasonRequestInvalid, "the idempotency key is 1-255 visible ASCII characters")
+	}
+	body, err := json.Marshal(struct {
+		Decision Choice  `json:"decision"`
+		Comment  *string `json:"comment"`
+	}{c, comment})
+	if err != nil {
+		return Task{}, err
+	}
+	return k.Decide(ctx, subj, idem.Request{Principal: me, Key: key, Operation: k.Operation, Body: body,
+		Target: "POST " + RoutePrefix + "tasks/" + task + "/decisions"}, task, DecisionIn{Version: version, Decision: c, Comment: comment})
 }

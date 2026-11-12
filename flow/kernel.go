@@ -47,6 +47,8 @@ type Definition struct {
 	Operation     string        // what deciding a task of this flow needs (the component's operation)
 	ReadOperation string        // who may read the document may see its tasks (P17.14); "" none beyond the parties
 	OnReject      InstanceState // Rejected or Returned
+	RejectComment bool          // a rejection carries a comment (P17.1): REQUEST_INVALID without
+	Manual        bool          // people must approve: an automatic start is refused (P17.5)
 	Steps         []Step
 }
 
@@ -90,7 +92,8 @@ type Hooks struct {
 	// Document locks the document in tx (P17.17) and answers its current key revision, its legal entity's business
 	// date and the facts a definition's operation is decided on.
 	Document func(ctx context.Context, tx db.Tx, d Document) (keyRevision int64, businessDate string, facts sdkauthz.Facts, err error)
-	// Ended changes the document when its instance ends (approved, rejected, returned), in the same transaction (P17.6).
+	// Ended changes the document when its instance ends (approved, rejected, returned), in the same transaction (P17.6);
+	// i.Ending is the decision that ended it.
 	Ended func(ctx context.Context, tx db.Tx, i Instance) error
 }
 
@@ -176,4 +179,14 @@ func (k *Kernel) latest(key string) (Definition, error) {
 // Owner is a module that manages flows: the host adds its kernel's standard routes after the module's own (P17.14).
 type Owner interface {
 	FlowKernel() *Kernel
+}
+
+// PersonOf answers the person behind an account (P17.12): the employee it is linked to, or the account itself without
+// the employee component or a link. A component compares people by it where its own rules separate duties (a release
+// by another than the requester).
+func (k *Kernel) PersonOf(ctx context.Context, tx db.Tx, account string) (string, error) {
+	if k.Directory == nil {
+		return account, nil
+	}
+	return k.Directory.PersonOf(ctx, tx, account)
 }

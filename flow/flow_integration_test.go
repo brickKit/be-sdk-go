@@ -34,7 +34,7 @@ import (
 // emit, in the emit's transaction).
 var tables = fstest.MapFS{"0001_demo.up.sql": {Data: []byte(`
 CREATE TABLE doc (id uuid PRIMARY KEY, state text NOT NULL DEFAULT 'submitted', key_revision bigint NOT NULL DEFAULT 1,
-	legal_entity text NOT NULL);
+	legal_entity text NOT NULL, decided_by text, comment text);
 CREATE TABLE published (at timestamptz NOT NULL DEFAULT clock_timestamp(), type text NOT NULL, record_id text NOT NULL, version bigint NOT NULL,
 	data jsonb NOT NULL);
 `)}}
@@ -162,8 +162,9 @@ type world struct {
 }
 
 const (
-	twoSteps = "demo.two" // a position (any), then a person; a rejection returns the document
-	oneStep  = "demo.one" // a position (single); a rejection rejects it
+	twoSteps  = "demo.two"       // a position (any), then a person; a rejection returns the document
+	oneStep   = "demo.one"       // a position (single); a rejection rejects it
+	commented = "demo.commented" // a person (single); people approve it, a rejection says why
 )
 
 func newWorld(t *testing.T, name string) *world {
@@ -181,7 +182,10 @@ func newWorld(t *testing.T, name string) *world {
 				ReadOperation: "demo.doc.read", OnReject: flow.Returned,
 				Steps: []flow.Step{{Form: flow.Any, Rule: flow.Position}, {Form: flow.Single, Rule: flow.Person}}},
 			{Key: oneStep, Version: 1, TaskType: "test.purchase.one.approval", DocumentType: "doc", Operation: "demo.doc.approve",
-				ReadOperation: "demo.doc.read", OnReject: flow.Rejected, Steps: []flow.Step{{Form: flow.Single, Rule: flow.Position}}}},
+				ReadOperation: "demo.doc.read", OnReject: flow.Rejected, Steps: []flow.Step{{Form: flow.Single, Rule: flow.Position}}},
+			{Key: commented, Version: 1, TaskType: "test.purchase.commented.approval", DocumentType: "doc",
+				Operation: "demo.doc.approve", ReadOperation: "demo.doc.read", OnReject: flow.Returned, RejectComment: true,
+				Manual: true, Steps: []flow.Step{{Form: flow.Single, Rule: flow.Person}}}},
 		Hooks: flow.Hooks{
 			Document: func(ctx context.Context, tx db.Tx, doc flow.Document) (int64, string, authz.Facts, error) {
 				var rev int64
@@ -190,7 +194,12 @@ func newWorld(t *testing.T, name string) *world {
 				return rev, "2026-11-12", authz.Facts{"legal_entity": authz.Value(entity)}, err
 			},
 			Ended: func(ctx context.Context, tx db.Tx, i flow.Instance) error {
-				_, err := tx.Exec(ctx, `UPDATE doc SET state = $2 WHERE id = $1`, i.Document.ID, string(i.State))
+				var by, comment *string
+				if i.Ending != nil {
+					by, comment = &i.Ending.By, i.Ending.Comment
+				}
+				_, err := tx.Exec(ctx, `UPDATE doc SET state = $2, decided_by = $3, comment = $4 WHERE id = $1`, i.Document.ID,
+					string(i.State), by, comment)
 				return err
 			}},
 		Directory: w.dir, Audit: w.aud, DB: d, Events: emitter{}}
@@ -216,6 +225,9 @@ func (w *world) start(flowKey string) (string, string) {
 			steps = 2
 		}
 		b := []flow.Binding{{LegalEntity: le, PositionID: position}, {Principal: dave}}[:steps]
+		if flowKey == commented {
+			b = []flow.Binding{{Principal: dave}}
+		}
 		digests := []string{"sha256:step1", "sha256:step2"}[:steps]
 		i, err := w.k.StartIn(ctx, tx, flow.Start{Flow: flowKey, Document: flow.Document{Type: "doc", ID: doc, Number: "PO-1"},
 			LegalEntity: le, KeyRevision: 1, Digests: digests, Bindings: b, Initiator: initiator,
@@ -451,4 +463,100 @@ func TestPausedTasksResolveAgain(t *testing.T) {
 		return tx.QueryRow(ctx, `SELECT count(*) FROM published WHERE type = 'test.purchase_task.heartbeat.v1'`).Scan(&beats)
 	}))
 	assert.Equal(t, 1, beats)
+}
+
+func (w *world) docRow(doc string) (state string, by, comment *string) {
+	w.t.Helper()
+	require.NoError(w.t, w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error {
+		return tx.QueryRow(ctx, `SELECT state, decided_by, comment FROM doc WHERE id = $1`, doc).Scan(&state, &by, &comment)
+	}))
+	return state, by, comment
+}
+
+func (w *world) byDocument(who, key, doc string, c flow.Choice, comment *string) (flow.Task, error) {
+	return w.k.DecideDocument(w.ctx, w.subject(who), key, flow.Document{Type: "doc", ID: doc}, c, comment)
+}
+
+// P17.1, P17.6, P17.14: the end hook gets the deciding decision; a definition that wants a comment on a rejection
+// refuses one without; the component's own approve and reject routes decide by the document.
+func TestDecisionsByTheDocument(t *testing.T) {
+	w := newWorld(t, "flow_bydoc")
+	doc, _ := w.start(oneStep)
+	_, err := w.byDocument("account-stranger", "", doc, flow.Approve, nil)
+	assert.Equal(t, errs.ReasonNotFound, reason(err), "one who may not see it")
+	_, err = w.byDocument(dave, "", doc, flow.Approve, nil)
+	assert.Equal(t, flow.ReasonNotAssignee, reason(err), "dave is not a holder: the open task answers why")
+	done, err := w.byDocument(alice, "", doc, flow.Approve, nil)
+	require.NoError(t, err)
+	assert.Equal(t, flow.Approved, done.Instance.State)
+	again, err := w.byDocument(alice, "", doc, flow.Approve, nil)
+	require.NoError(t, err, "the same caller and decision without a key: the first result (P17.14)")
+	assert.Equal(t, done.Version, again.Version)
+	_, err = w.byDocument(bob, "", doc, flow.Approve, nil)
+	assert.Equal(t, flow.ReasonTaskNotPending, reason(err), "decided already")
+	_, err = w.byDocument(alice, "", doc, flow.Reject, nil)
+	assert.Equal(t, flow.ReasonTaskNotPending, reason(err), "another decision by the same caller is another key")
+
+	two, _ := w.start(twoSteps) // alice approves step 1; her repeat replays it although step 2 is open
+	first, err := w.byDocument(alice, "", two, flow.Approve, nil)
+	require.NoError(t, err)
+	replay, err := w.byDocument(alice, "", two, flow.Approve, nil)
+	require.NoError(t, err)
+	assert.Equal(t, first.ID, replay.ID)
+	assert.Equal(t, first.Version, replay.Version)
+	state, by, _ := w.docRow(doc)
+	assert.Equal(t, "approved", state)
+	require.NotNil(t, by, "the end hook got the decision (P17.6)")
+	assert.Equal(t, alice, *by)
+
+	_, err = w.byDocument(alice, "", ids.New().String(), flow.Approve, nil)
+	assert.Equal(t, flow.ReasonTaskNotPending, reason(err), "a document without an instance")
+
+	doc2, task2 := w.start(commented)
+	_, err = w.decide(dave, task2, "k-bare", w.task(task2).Version, flow.Reject)
+	assert.Equal(t, errs.ReasonRequestInvalid, reason(err), "the definition wants a comment on a rejection")
+	why := "the price is wrong"
+	r, err := w.byDocument(dave, "k-why", doc2, flow.Reject, &why)
+	require.NoError(t, err)
+	assert.Equal(t, flow.Returned, r.Instance.State)
+	state, by, comment := w.docRow(doc2)
+	assert.Equal(t, "returned", state)
+	require.NotNil(t, comment)
+	assert.Equal(t, why, *comment)
+	assert.Equal(t, dave, *by)
+}
+
+// P17.5, P17.12: a flow choice without manual approval leaves an approved instance the release check passes; a
+// definition people must approve refuses it; the person behind an account.
+func TestAnAutomaticApproval(t *testing.T) {
+	w := newWorld(t, "flow_auto")
+	doc := ids.New().String()
+	require.NoError(t, w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO doc (id, legal_entity, state) VALUES ($1, $2, 'approved')`, doc, le); err != nil {
+			return err
+		}
+		i, err := w.k.StartIn(ctx, tx, flow.Start{Flow: oneStep, Document: flow.Document{Type: "doc", ID: doc}, LegalEntity: le,
+			KeyRevision: 1, Digests: []string{"sha256:auto"}, Initiator: initiator, Automatic: true})
+		if err != nil {
+			return err
+		}
+		assert.Equal(t, flow.Approved, i.State)
+		var tasks int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM be_flow_task WHERE instance_id = $1`, i.ID).Scan(&tasks); err != nil {
+			return err
+		}
+		assert.Zero(t, tasks, "no task")
+		return w.k.ReleaseIn(ctx, tx, flow.Document{Type: "doc", ID: doc}, 1, []string{"sha256:auto"})
+	}))
+	err := w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error {
+		_, err := w.k.StartIn(ctx, tx, flow.Start{Flow: commented, Document: flow.Document{Type: "doc", ID: ids.New().String()},
+			LegalEntity: le, KeyRevision: 1, Digests: []string{"sha256:x"}, Initiator: initiator, Automatic: true})
+		return err
+	})
+	assert.ErrorIs(t, err, flow.ErrManual)
+	require.NoError(t, w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error {
+		p, err := w.k.PersonOf(ctx, tx, eve)
+		assert.Equal(t, "person-1", p)
+		return err
+	}))
 }

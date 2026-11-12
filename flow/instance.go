@@ -34,6 +34,8 @@ type Instance struct {
 	State           InstanceState
 	Step            int
 	Version         int64
+	// Ending is the decision that ended the instance (approved, rejected, returned), for the end hook; nil otherwise.
+	Ending *DecisionRecord
 }
 
 // Start is a new instance's request: the flow, the document, its key revision and each step's digest and binding, the
@@ -47,7 +49,13 @@ type Start struct {
 	Bindings    []Binding // one a step
 	Initiator   string
 	Summary     Summary
+	// Automatic is the component's flow choice of no manual approval (P17.5): the instance is approved at once with
+	// its key revision and digests, no task; Bindings may be empty.
+	Automatic bool
 }
+
+// ErrManual is an automatic start of a flow people must approve (P17.5).
+var ErrManual = errors.New("flow: people must approve this document type: no automatic approval")
 
 // ErrLive is a start for a document that has a running or approved instance already (P17.4).
 var ErrLive = errors.New("flow: the document has a running or approved instance")
@@ -59,8 +67,15 @@ func (k *Kernel) StartIn(ctx context.Context, tx db.Tx, s Start) (Instance, erro
 	if err != nil {
 		return Instance{}, err
 	}
-	if len(s.Digests) != len(d.Steps) || len(s.Bindings) != len(d.Steps) {
+	switch {
+	case s.Automatic && d.Manual:
+		return Instance{}, ErrManual
+	case len(s.Digests) != len(d.Steps) || (!s.Automatic && len(s.Bindings) != len(d.Steps)):
 		return Instance{}, fmt.Errorf("flow: %s has %d steps: a digest and a binding each", d.Key, len(d.Steps))
+	}
+	state := Running
+	if s.Automatic {
+		state = Approved
 	}
 	person := s.Initiator
 	if k.Directory != nil {
@@ -70,8 +85,11 @@ func (k *Kernel) StartIn(ctx context.Context, tx db.Tx, s Start) (Instance, erro
 	}
 	i := Instance{ID: ids.New().String(), FlowKey: d.Key, FlowVersion: d.Version, TaskType: d.TaskType, Document: s.Document,
 		LegalEntity: s.LegalEntity, KeyRevision: s.KeyRevision, Digests: s.Digests, Assignments: s.Bindings,
-		OnReject: d.OnReject, Summary: s.Summary, Initiator: s.Initiator, InitiatorPerson: person, State: Running, Step: 1,
+		OnReject: d.OnReject, Summary: s.Summary, Initiator: s.Initiator, InitiatorPerson: person, State: state, Step: 1,
 		Version: 1}
+	if i.Assignments == nil {
+		i.Assignments = []Binding{}
+	}
 	digests, _ := json.Marshal(i.Digests)
 	bindings, _ := json.Marshal(i.Assignments)
 	summary, _ := json.Marshal(i.Summary)
@@ -81,15 +99,18 @@ func (k *Kernel) StartIn(ctx context.Context, tx db.Tx, s Start) (Instance, erro
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO be_flow_instance (id, flow_key, flow_version, task_type, document_type, document_id,
 		document_number, legal_entity_id, key_revision, digests, assignments, reject_outcome, summary, initiator,
-		initiator_person, state, step) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'running', 1)`,
+		initiator_person, state, step) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 1)`,
 		i.ID, i.FlowKey, i.FlowVersion, i.TaskType, i.Document.Type, i.Document.ID, nullable(i.Document.Number), le,
-		i.KeyRevision, digests, bindings, string(i.OnReject), summary, i.Initiator, i.InitiatorPerson)
+		i.KeyRevision, digests, bindings, string(i.OnReject), summary, i.Initiator, i.InitiatorPerson, string(state))
 	if err != nil {
 		var pe *pgconn.PgError
 		if errors.As(err, &pe) && pe.Code == "23505" { // the unique index of live instances
 			return Instance{}, ErrLive
 		}
 		return Instance{}, err
+	}
+	if s.Automatic {
+		return i, nil
 	}
 	return i, k.makeTasks(ctx, tx, i)
 }
