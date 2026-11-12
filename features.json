@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.117",
+  "protocol": "3.0.0-alpha.118",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -675,6 +675,29 @@
         {
           "rule": "P16.9",
           "reason": "调整与期初分支只留形状：参与方答 CAPABILITY_UNSUPPORTED，由组件答（SDK 没有它们的入口）"
+        }
+      ]
+    },
+    "flow-kernel": {
+      "status": "verified",
+      "evidence": [
+        "flow.TestTheProtocolsVector",
+        "flow.TestADecisionFromStartToApproval",
+        "flow.TestEndsOfAnInstance",
+        "flow.TestPausedTasksResolveAgain"
+      ],
+      "pending": [
+        {
+          "rule": "P17.8",
+          "reason": "员工投影的目录（Employees，基于 mdm.employee 的带水位投影）对真实的员工组件：随装配项目阶段计划 C7 的格验证；SDK 的集成测试用假目录"
+        },
+        {
+          "rule": "P17.14",
+          "reason": "标准路由经宿主登记与边缘路由到组件：随 C7 的格与 L3 验证"
+        },
+        {
+          "rule": "P17.17",
+          "reason": "锁的顺序（单据、实例、任务）由代码保证，没有并发的测试"
         }
       ]
     }

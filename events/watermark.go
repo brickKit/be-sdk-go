@@ -90,7 +90,7 @@ func (w *WatermarkSource) Pull(ctx context.Context, req *sourcepb.PullRequest) (
 	if !ok || s.Watermark == nil {
 		return nil, errs.New(errs.ReasonNotFound, fmt.Sprintf("no watermark stream %q", req.GetStream()))
 	}
-	if !contains(s.Watermark.Pullers, caller) {
+	if !allowed(s.Watermark.Pullers, caller) {
 		return nil, errs.New(errs.ReasonPermissionDenied, fmt.Sprintf("%s may not pull %s", caller, s.Name))
 	}
 	if b, err := hex.DecodeString(req.GetNonce()); err != nil || len(b) < 16 {
@@ -378,6 +378,12 @@ func rowsBetween(ctx context.Context, tx db.Tx, stream string, p int, e Epoch, a
 		return nil, err
 	}
 	return scanRows(rows, stream, p)
+}
+
+// allowed says whether a caller (a service identity) is among the declared components, every component when they list
+// grpcx.AnyComponent; no identity is never allowed.
+func allowed(list []string, caller string) bool {
+	return caller != "" && (contains(list, caller) || contains(list, grpcx.AnyComponent))
 }
 
 func contains(list []string, s string) bool {

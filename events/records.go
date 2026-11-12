@@ -94,7 +94,7 @@ func (r *RecordSource) stream(ctx context.Context, name, method string) (Stream,
 	if !ok || s.Records == nil {
 		return s, errs.New(errs.ReasonNotFound, fmt.Sprintf("no stream %q with record reads", name))
 	}
-	if !contains(s.Records.Readers, caller) {
+	if !allowed(s.Records.Readers, caller) {
 		return s, errs.New(errs.ReasonPermissionDenied, fmt.Sprintf("%s may not read %s", caller, s.Name))
 	}
 	r.Log.Info("record read", "event", "record_read", "caller", caller, "stream", s.Name, "method", method)
