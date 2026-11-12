@@ -172,3 +172,8 @@ func (k *Kernel) latest(key string) (Definition, error) {
 	}
 	return best, nil
 }
+
+// Owner is a module that manages flows: the host adds its kernel's standard routes after the module's own (P17.14).
+type Owner interface {
+	FlowKernel() *Kernel
+}

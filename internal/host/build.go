@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/brickKit/be-sdk-go/v3/flow"
 	"google.golang.org/grpc"
 	"io"
 	"log/slog"
@@ -375,6 +376,9 @@ func (m *Member) userSurface(member obs.Member, values *config.Values, sh Shared
 	}
 	if rt.Tiering != nil { // holds, approvals and export status of the classes (P15.40)
 		rt.Tiering.Routes(&routes)
+	}
+	if fo, ok := m.Module.(flow.Owner); ok && fo.FlowKernel() != nil { // the flow kernel's standard routes (P17.14)
+		fo.FlowKernel().Routes(&routes)
 	}
 	var ops []string
 	for _, r := range routes.List() {

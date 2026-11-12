@@ -5,7 +5,9 @@ import (
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/db"
+	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/projection"
+	"github.com/brickKit/be-sdk-go/v3/runtime"
 )
 
 // EmployeeProjection is the runtime's projection of mdm.employee the assignment resolves against (P17.8): the
@@ -92,4 +94,38 @@ func (e Employees) PersonOf(ctx context.Context, tx db.Tx, account string) (stri
 		return account, err
 	}
 	return "employee:" + *person, nil
+}
+
+// SourceHigh is protocol 02's D_src_high for a position's holders (protocol 09: the qualification by position uses
+// it), the starting value the authorization member uses too.
+const SourceHigh = time.Minute
+
+// EmployeeStream is the watermark source's stream.
+var EmployeeStream = events.Stream{Name: "mdm.employee", Partitions: 4}
+
+// NewEmployees builds the directory when the assembly has mdm/employee (an optional dependency of the component): the
+// watermark projection of its stream, pulled and read over its system surface. ok is false without it: a position rule
+// then answers no_assignee (P17.3).
+func NewEmployees(rt *runtime.Runtime) (*Employees, bool) {
+	conn, ok := rt.GRPC(EmployeeSource)
+	if !ok {
+		return nil, false
+	}
+	w := &projection.Watermarked{Projection: projection.Projection{Name: EmployeeProjection}, DB: rt.DB,
+		Source: EmployeeSource, Stream: EmployeeStream, Deployment: rt.Config.String("DEPLOYMENT_ID"), Freshness: SourceHigh,
+		Pull: projection.PullClient{Conn: conn}, Snapshot: projection.RecordClient{Conn: conn, Stream: EmployeeStream.Name},
+		Log: rt.Logger}
+	return &Employees{W: w, Freshness: SourceHigh}, true
+}
+
+// Sub is the projection's subscription (the component adds it to its subscriptions).
+func (e *Employees) Sub() events.Sub { return e.W.Sub("be-flow-employee") }
+
+// Start installs the source once and runs its pulls and alignment (the component's Start).
+func (e *Employees) Start(ctx context.Context) error {
+	if err := e.W.Install(ctx); err != nil {
+		return err
+	}
+	go e.W.Run(ctx)
+	return nil
 }
