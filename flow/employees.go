@@ -23,6 +23,10 @@ const EmployeeSource = "mdm/employee"
 type Employees struct {
 	W         *projection.Watermarked
 	Freshness time.Duration
+	// work and changed queue a re-resolution when an event changes the projection (P17.8): the kernel that uses this
+	// directory sets changed (Kernel.Check), NewEmployees the runtime's work runner.
+	work    Enqueuer
+	changed func(ctx context.Context, tx db.Tx, w Enqueuer) error
 }
 
 // complete says whether the projection may be relied on now.
@@ -115,11 +119,26 @@ func NewEmployees(rt *runtime.Runtime) (*Employees, bool) {
 		Source: EmployeeSource, Stream: EmployeeStream, Deployment: rt.Config.String("DEPLOYMENT_ID"), Freshness: SourceHigh,
 		Pull: projection.PullClient{Conn: conn}, Snapshot: projection.RecordClient{Conn: conn, Stream: EmployeeStream.Name},
 		Log: rt.Logger}
-	return &Employees{W: w, Freshness: SourceHigh}, true
+	out := &Employees{W: w, Freshness: SourceHigh}
+	if rt.Work != nil {
+		out.work = rt.Work
+	}
+	return out, true
 }
 
-// Sub is the projection's subscription (the component adds it to its subscriptions).
-func (e *Employees) Sub() events.Sub { return e.W.Sub("be-flow-employee") }
+// Sub is the projection's subscription (the component adds it to its subscriptions): each event applied, the waiting
+// tasks are resolved again soon (P17.8).
+func (e *Employees) Sub() events.Sub {
+	s := e.W.Sub("be-flow-employee")
+	handle := s.Handle
+	s.Handle = func(ctx context.Context, tx db.Tx, ev events.Received) error {
+		if err := handle(ctx, tx, ev); err != nil || e.changed == nil || e.work == nil {
+			return err
+		}
+		return e.changed(ctx, tx, e.work)
+	}
+	return s
+}
 
 // Start installs the source once and runs its pulls and alignment (the component's Start).
 func (e *Employees) Start(ctx context.Context) error {

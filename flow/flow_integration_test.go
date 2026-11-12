@@ -602,3 +602,45 @@ func TestAStepBoundAtTheStart(t *testing.T) {
 	_, _, err = w.startBound(flow.Binding{})
 	assert.Error(t, err, "neither")
 }
+
+// enqueuer records the queued items.
+type enqueuer struct{ jobs []string }
+
+func (e *enqueuer) Enqueue(_ context.Context, _ db.Tx, job string, _ any) (string, error) {
+	e.jobs = append(e.jobs, job)
+	return "", nil
+}
+
+// P17.8: a change of the employee projection queues a re-resolution while tasks wait paused (and none is queued
+// already); without paused tasks it queues nothing.
+func TestTheEmployeeProjectionsChangeResolvesAgain(t *testing.T) {
+	w := newWorld(t, "flow_changed")
+	q := &enqueuer{}
+	changed := func() {
+		t.Helper()
+		require.NoError(t, w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error { return w.k.EmployeesChanged(ctx, tx, q) }))
+	}
+	changed()
+	assert.Empty(t, q.jobs, "nothing waits")
+	w.dir.set([]string{alice}, false)
+	_, _ = w.start(oneStep)
+	changed()
+	assert.Equal(t, []string{flow.JobResolveNow}, q.jobs, "a paused task: resolved again at once")
+	require.NoError(t, w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error { // one queued already
+		_, err := tx.Exec(ctx, `INSERT INTO be_work_item (id, job, kind, state, max_attempts, effect_class, operation_id,
+			args, run_at) VALUES ($1, $2, 'queue', 'pending', 1, 'local', $1, '{}', now())`, ids.New().String(), flow.JobResolveNow)
+		return err
+	}))
+	changed()
+	assert.Len(t, q.jobs, 1, "not a second one while one waits")
+}
+
+// P17.8, P17.10: a position task decided after the deployment lost its employee directory is not qualified (nothing
+// proves the holder), it does not fail.
+func TestAPositionTaskWithoutTheDirectory(t *testing.T) {
+	w := newWorld(t, "flow_nodir")
+	_, task := w.start(oneStep)
+	w.k.Directory = nil
+	_, err := w.decide(alice, task, "k-nodir", w.task(task).Version, flow.Approve)
+	assert.Equal(t, flow.ReasonNotQualified, reason(err))
+}

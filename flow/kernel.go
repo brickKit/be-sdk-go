@@ -162,6 +162,9 @@ func (k *Kernel) Check() error {
 		types[d.TaskType] = d.Key
 		k.defs[defKey(d.Key, d.Version)] = d
 	}
+	if e, ok := k.Directory.(*Employees); ok && e != nil { // its changes resolve the waiting tasks again (P17.8)
+		e.changed = k.EmployeesChanged
+	}
 	return nil
 }
 

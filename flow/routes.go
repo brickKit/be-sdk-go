@@ -132,6 +132,8 @@ func (k *Kernel) taskIDs(ctx context.Context, tx db.Tx, q string, args ...any) (
 const (
 	JobResolve   = "be-flow-resolve"
 	JobHeartbeat = "be-flow-heartbeat"
+	// JobResolveNow is the re-resolution queued when the employee projection changes while tasks wait (P17.8).
+	JobResolveNow = "be-flow-resolve-now"
 	// HeartbeatEvery is P17.18's interval.
 	HeartbeatEvery = 5 * time.Minute
 )
@@ -139,6 +141,8 @@ const (
 // Jobs registers the re-resolution of the paused tasks (P17.8; queued when the employee projection changes, and every
 // minute as the floor) and the heartbeat (P17.18).
 func (k *Kernel) Jobs(j *work.Jobs) {
+	j.Add(work.Job{Name: JobResolveNow, Kind: work.Queue, Effect: work.Local, MaxAttempts: work.Unlimited,
+		Handle: func(ctx context.Context, _ *work.Run) error { return k.ResolvePaused(ctx) }})
 	j.Add(work.Job{Name: JobResolve, Kind: work.Singleton, Effect: work.Local, Interval: time.Minute,
 		MaxAttempts: work.Unlimited, Handle: func(ctx context.Context, _ *work.Run) error { return k.ResolvePaused(ctx) }})
 	j.Add(work.Job{Name: JobHeartbeat, Kind: work.Singleton, Effect: work.EmitOnly, Interval: HeartbeatEvery,
@@ -198,4 +202,24 @@ func (k *Kernel) Heartbeat(ctx context.Context) error {
 				"at": canon.Time(time.Now()), "pending": pending, "paused": paused}})
 		return err
 	})
+}
+
+// Enqueuer queues a work item in the caller's transaction (the runtime's work runner).
+type Enqueuer interface {
+	Enqueue(ctx context.Context, tx db.Tx, job string, args any) (string, error)
+}
+
+// EmployeesChanged is called in the transaction that changed the employee projection (P17.8): while tasks wait paused
+// and no re-resolution is queued yet, it queues one, so a task waits for the projection, not for the minute.
+func (k *Kernel) EmployeesChanged(ctx context.Context, tx db.Tx, w Enqueuer) error {
+	var due bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM be_flow_task WHERE state = 'paused')
+		AND NOT EXISTS (SELECT 1 FROM be_work_item WHERE job = $1 AND state = 'pending')`, JobResolveNow).Scan(&due); err != nil {
+		return err
+	}
+	if !due {
+		return nil
+	}
+	_, err := w.Enqueue(ctx, tx, JobResolveNow, struct{}{})
+	return err
 }

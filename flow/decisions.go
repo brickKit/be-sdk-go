@@ -121,14 +121,18 @@ func (k *Kernel) decideIn(ctx context.Context, tx db.Tx, subj *sdkauthz.Subject,
 	_, _, err = subj.Check(ctx, d.Operation, facts)
 	s.Operation = err == nil
 	if b := i.Assignments[i.Step-1]; kind(d.Steps[i.Step-1], b) == Position && s.Task == Pending {
-		holds, complete, err := k.Directory.Holds(ctx, tx, me, b.LegalEntity, b.PositionID, date)
-		switch {
-		case err != nil:
-			return Task{}, err
-		case !complete:
-			s.Qualification = Unknown
-		case !holds:
+		if k.Directory == nil { // the deployment lost its employee directory: nothing proves the holder (P17.8)
 			s.Qualification = NotQualified
+		} else {
+			holds, complete, err := k.Directory.Holds(ctx, tx, me, b.LegalEntity, b.PositionID, date)
+			switch {
+			case err != nil:
+				return Task{}, err
+			case !complete:
+				s.Qualification = Unknown
+			case !holds:
+				s.Qualification = NotQualified
+			}
 		}
 	}
 	others, err := k.others(ctx, tx, t)
