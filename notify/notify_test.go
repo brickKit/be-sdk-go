@@ -59,6 +59,11 @@ func TestAnIntentOutsideTheContractIsNotEmitted(t *testing.T) {
 		"a merge key with no sequence": func(i *Intent) { i.CollapseSeq = 0 },
 		"a withdraw with recipients":   func(i *Intent) { i.Kind = Withdraw },
 		"no sender":                    func(i *Intent) { i.Sender = "" },
+		"in-app only with actions": func(i *Intent) {
+			i.InAppOnly = true
+			i.Actions = map[string]Grant{"u1": {ID: "0190f3a1-0000-7000-8000-000000000009", Actions: []Choice{{Action: "approve", Label: "同意"}}}}
+			i.ActionChannels = []string{"integration/im-dingtalk"}
+		},
 	} {
 		in := deliver()
 		change(&in)
@@ -74,6 +79,16 @@ func TestAWithdrawIntent(t *testing.T) {
 	r := &recorder{}
 	_, err := Emit(context.Background(), db.Tx{}, r, Intent{Sender: "erp/purchase", Category: ApprovalTask, Kind: Withdraw,
 		CollapseKey: "task:x", CollapseSeq: 3})
+	require.NoError(t, err)
+	assert.Len(t, r.got, 1)
+}
+
+// P18.11: an intent may be written in-app only (the flow kernel's note that a button did not take effect).
+func TestAnInAppOnlyIntent(t *testing.T) {
+	in := deliver()
+	in.InAppOnly = true
+	r := &recorder{}
+	_, err := Emit(context.Background(), db.Tx{}, r, in)
 	require.NoError(t, err)
 	assert.Len(t, r.got, 1)
 }

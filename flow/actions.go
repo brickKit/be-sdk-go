@@ -80,7 +80,7 @@ func componentForm(c string) bool {
 }
 
 // GrantLife is the longest an action grant lasts (protocol 10's parameter, P17.19); Grace is how long after its
-// expiry an action clicked in time is still processed (P20.7).
+// expiry an action clicked in time is still processed (P20.8).
 const (
 	GrantLife = 7 * 24 * time.Hour
 	Grace     = time.Hour
@@ -120,11 +120,17 @@ func (k *Kernel) grants(ctx context.Context, tx db.Tx, t Task, cands []string, e
 	out := map[string]notify.Grant{}
 	for _, p := range cands {
 		subj := k.Subject(p)
-		if subj == nil { // no authorization view: no grant, the link still works
-			continue
+		var sv int64
+		if subj != nil {
+			sv, err = subj.SecurityVersion(d.Operation)
 		}
-		sv, err := subj.SecurityVersion(d.Operation)
-		if err != nil {
+		if subj == nil || err != nil { // not judged now: no grant, the link still works (P17.19)
+			why := "no authorization view"
+			if err != nil {
+				why = err.Error()
+			}
+			k.logger().Warn("an approval candidate gets no button", "event", "flow_grant_skipped", "task", t.ID,
+				"principal", p, "why", why)
 			continue
 		}
 		id := ids.New().String()
@@ -313,10 +319,34 @@ func (k *Kernel) actionDecision(ctx context.Context, tx db.Tx, subj *sdkauthz.Su
 func (k *Kernel) tellHolder(ctx context.Context, tx db.Tx, g grantRow, reason string) error {
 	now := time.Now()
 	in := notify.Intent{Sender: k.Component, Category: notify.ApprovalTask, Kind: notify.Deliver,
-		Recipients: []notify.Recipient{{Principal: g.principal}}, Title: "按钮的操作没有执行：" + reason,
-		Link: TaskLink(g.task), OccurredAt: canon.Time(now), ExpiresAt: canon.Time(now.Add(notify.DefaultExpiry))}
+		Recipients: []notify.Recipient{{Principal: g.principal}}, Title: "按钮的操作没有执行：" + readable(reason),
+		Template: ActionRefusedTemplate, Params: map[string]string{"reason": reason},
+		Link: TaskLink(g.task), OccurredAt: canon.Time(now), ExpiresAt: canon.Time(now.Add(notify.DefaultExpiry)),
+		InAppOnly: true} // the channel the button was in is no place to say it did not work (P20.8)
 	_, err := notify.Emit(ctx, tx, k.Events, in)
 	return err
+}
+
+// ActionRefusedTemplate is the note's template; its param "reason" is the refusal's code (P20.8).
+const ActionRefusedTemplate = "be.flow.action.refused"
+
+// readable is a refusal's reason as the holder reads it (P20.8); the code goes in the params.
+func readable(reason string) string {
+	switch reason {
+	case errs.ReasonGrantUsed:
+		return "这个按钮已经用来做过另一个决定"
+	case errs.ReasonGrantStale:
+		return "你的权限变了，请到系统里处理"
+	case "expired": // the action's own outcome reason (channel.Take), not an error code
+		return "按钮已经过期，请到系统里处理"
+	case errs.ReasonTaskNotPending:
+		return "任务已经处理过了"
+	case errs.ReasonVersionConflict:
+		return "任务在你点按钮之后变了，请到系统里重新处理"
+	case errs.ReasonPermissionDenied:
+		return "你现在不能处理这个任务"
+	}
+	return "请到系统里处理（" + reason + "）"
 }
 
 // Retryable says whether an error means "cannot decide right now": the view expired or cannot prove the

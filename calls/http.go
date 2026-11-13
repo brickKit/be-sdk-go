@@ -178,6 +178,7 @@ func (e *StatusError) Error() string { return fmt.Sprintf("%s answered %d", e.De
 // transportResult classifies a failure without an answer: the attempt's deadline, a dial failure (nothing was sent),
 // or a failure after sending.
 func transportResult(ctx context.Context, err error) Result {
+	err = withoutQuery(err)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return Result{Err: err, Code: errs.DeadlineExceeded}
 	}
@@ -189,6 +190,24 @@ func transportResult(ctx context.Context, err error) Result {
 		return Result{Err: fmt.Errorf("%w: %w", ErrNotSent, err), Code: errs.Unavailable, ConnectFailed: true}
 	}
 	return Result{Err: err, Code: errs.Unavailable}
+}
+
+// withoutQuery drops the query from a transport error's URL: a query may carry an external product's own credential
+// (an old API's access token), and the error's text reaches logs (C10 exam M1). The error chain is kept.
+func withoutQuery(err error) error {
+	var ue *url.Error
+	if !errors.As(err, &ue) {
+		return err
+	}
+	if u, perr := url.Parse(ue.URL); perr == nil && (u.RawQuery != "" || u.User != nil) {
+		hadQuery := u.RawQuery != ""
+		u.RawQuery, u.User = "", nil
+		ue.URL = u.String()
+		if hadQuery {
+			ue.URL += "?…" // there was one: it is not repeated
+		}
+	}
+	return err
 }
 
 // ClientIdleTimeout drops an idle outbound connection; servers keep theirs longer (P1.20), so the client is the

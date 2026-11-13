@@ -165,15 +165,21 @@ func Step(f Facts, e Event, c Capabilities, now time.Time) (string, string) {
 			since = f.AcceptedSince
 		}
 		if since != nil && now.Sub(*since) > ManualAfter {
+			if s == Unknown && f.AbandonAt != nil { // P13.14: never left for a person
+				return s, "past the manual limit with a local abandon time: waits for it"
+			}
 			return Manual, "no answer within the manual limit"
 		}
 		return s, "the query is unavailable: backoff"
 	case e.Kind == QueryNotFound && s == Unknown:
-		if ok, why := resendable(f, c, now); ok {
+		ok, why := resendable(f, c, now)
+		switch {
+		case ok:
 			return Sending, why
-		} else {
-			return Manual, why
+		case f.AbandonAt != nil: // P13.14: never left for a person
+			return s, "not found and not to be sent again: waits for the local abandon time"
 		}
+		return Manual, why
 	case e.Kind == FinalityPassed && s == Accepted:
 		if c.Query {
 			return Accepted, "past the finality limit: query"

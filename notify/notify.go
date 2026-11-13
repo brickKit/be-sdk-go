@@ -79,6 +79,9 @@ type Intent struct {
 	// that take their actions (the sender's FLOW_ACTION_SOURCES).
 	Actions        map[string]Grant `json:"actions,omitempty"`
 	ActionChannels []string         `json:"action_channels,omitempty"`
+	// InAppOnly writes it as an in-app message only, handed to no external channel (P18.11): the flow kernel's note
+	// that a button did not take effect (P20.8).
+	InAppOnly bool `json:"in_app_only,omitempty"`
 }
 
 // Grant is one principal's action grant in an intent (P18.11, P20.5): its id and the actions it allows.

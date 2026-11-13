@@ -141,3 +141,19 @@ func TestExternalHeadersAndNotSent(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrNotSent)
 }
+
+// A request's query may carry an external product's own credential (an old API's access token or application
+// secret): a transport error never repeats it, so it cannot reach a log through the error (C10 exam M1).
+func TestATransportErrorNeverRepeatsTheQuery(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	url := "http://" + l.Addr().String()
+	require.NoError(t, l.Close())
+	m, err := NewMember(nil)
+	require.NoError(t, err)
+	err = m.HTTP("dingtalk-oapi", url).Do(withDeadline(t, 2e9), Request{Method: "GET", Path: "/gettoken?appkey=k&appsecret=s3cr3t"}, nil)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "s3cr3t")
+	assert.NotContains(t, err.Error(), "appsecret")
+	assert.ErrorIs(t, err, ErrNotSent, "still told apart")
+}

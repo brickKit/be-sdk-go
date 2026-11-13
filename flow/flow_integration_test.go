@@ -86,6 +86,17 @@ func (grants) Verify(_ context.Context, req authz.VerifyRequest) (authz.VerifyAn
 		Shards: []authz.ShardAnswer{{Shard: "s", Status: "changed", View: &s}}}, nil
 }
 
+// staleGrants is grants with dave's account changed since: its security version moved on (P8.27).
+type staleGrants struct{ grants }
+
+func (g staleGrants) Verify(ctx context.Context, req authz.VerifyRequest) (authz.VerifyAnswer, error) {
+	a, err := g.grants.Verify(ctx, req)
+	e := a.Shards[0].View.Subjects[dave]
+	e.SecurityVersion = 5
+	a.Shards[0].View.Subjects[dave] = e
+	return a, err
+}
+
 // directory: the position's holders and the people behind accounts; complete can be switched off.
 type directory struct {
 	mu       sync.Mutex
@@ -751,6 +762,32 @@ func (w *world) decisions(task string) int {
 }
 
 // told is the in-app intents the kernel wrote to a holder whose action was not carried out (P20.8).
+// toldIntents are the notes to a principal that a button did not take effect (P20.8).
+func (w *world) toldIntents(principal string) []notify.Intent {
+	var out []notify.Intent
+	require.NoError(w.t, w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT data FROM published WHERE type = 'test.purchase_notification.intent.v1'
+			AND data->>'collapse_key' IS NULL AND data->'recipients'->0->>'principal' = $1 ORDER BY at`, principal)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var b []byte
+			var in notify.Intent
+			if err := rows.Scan(&b); err != nil {
+				return err
+			}
+			if err := json.Unmarshal(b, &in); err != nil {
+				return err
+			}
+			out = append(out, in)
+		}
+		return rows.Err()
+	}))
+	return out
+}
+
 func (w *world) told(principal string) int {
 	var n int
 	require.NoError(w.t, w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error {
@@ -815,6 +852,12 @@ func TestInteractiveActions(t *testing.T) {
 	require.NoError(t, w.act(w.action(alice, ga.ID, "reject"), dingtalk))
 	assert.Equal(t, "GRANT_USED", w.aud.denials[len(w.aud.denials)-1])
 	assert.Equal(t, 1, w.told(alice))
+	note := w.toldIntents(alice)[0] // in-app only, readable, the code in the params, the task's link (P18.11, P20.8)
+	assert.True(t, note.InAppOnly)
+	assert.Empty(t, note.Actions)
+	assert.Equal(t, "按钮的操作没有执行：这个按钮已经用来做过另一个决定", note.Title)
+	assert.Equal(t, map[string]string{"reason": "GRANT_USED"}, note.Params)
+	assert.Equal(t, flow.TaskLink(task), note.Link)
 
 	// the task decided meanwhile: bob's grant is refused with the decision's reason, recorded, and bob is told
 	require.NoError(t, w.act(w.action(bob, gb.ID, "approve"), dingtalk))
@@ -838,5 +881,22 @@ func TestInteractiveActions(t *testing.T) {
 
 	// a flow whose rejection must say why has only the approve button
 	_, task3 := w.start(commented)
-	assert.Equal(t, []notify.Choice{{Action: "approve", Label: "同意"}}, w.intents(task3)[0].Actions[dave].Actions)
+	g3 := w.intents(task3)[0].Actions[dave]
+	assert.Equal(t, []notify.Choice{{Action: "approve", Label: "同意"}}, g3.Actions)
+
+	// GRANT_STALE: dave's account changed since the grant: refused, recorded, dave told, the task still pending
+	stale := authz.NewHolder("test/purchase", staleGrants{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, stale.Verify(w.ctx))
+	w.k.Subject = func(p string) *authz.Subject {
+		return &authz.Subject{Principal: p, Defs: defs, Holder: stale, At: time.Now()}
+	}
+	require.NoError(t, w.act(w.action(dave, g3.ID, "approve"), dingtalk))
+	_, r = w.grantResult(g3.ID)
+	require.NotNil(t, r)
+	assert.Equal(t, "GRANT_STALE", *r)
+	assert.Equal(t, "pending", string(w.task(task3).State))
+	notes := w.toldIntents(dave)
+	require.Len(t, notes, 1)
+	assert.Equal(t, "按钮的操作没有执行：你的权限变了，请到系统里处理", notes[0].Title)
+	w.k.Subject = w.subject
 }
