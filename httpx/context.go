@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/gin-gonic/gin"
@@ -103,6 +104,39 @@ func (c *Context) Bytes(status int, mediaType string, body []byte) error {
 	}
 	c.gin.Data(status, mediaType, body)
 	return nil
+}
+
+// Download streams size bytes as a file the user saves, named fileName: the headers keep the content from running in
+// the application's origin whatever it is (an uploaded HTML or SVG): Content-Disposition attachment (RFC 5987 file
+// name), X-Content-Type-Options nosniff, Content-Security-Policy sandbox, no caching (assembly protocol 12's strict
+// downloads). Errors before the first byte still answer problem JSON (return them instead of calling Download).
+func (c *Context) Download(mediaType, fileName string, size int64, body io.Reader) error {
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	h := c.gin.Writer.Header()
+	h.Set("Content-Disposition", "attachment; filename*=UTF-8''"+rfc5987(fileName))
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Content-Security-Policy", "sandbox; default-src 'none'")
+	h.Set("Cache-Control", "no-store")
+	c.gin.DataFromReader(http.StatusOK, size, mediaType, body, nil)
+	return nil
+}
+
+// rfc5987 encodes a file name for filename*= (RFC 5987): unreserved characters as they are, the rest percent-encoded.
+func rfc5987(s string) string {
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	for _, ch := range []byte(s) {
+		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || strings.IndexByte("-._~", ch) >= 0 {
+			b.WriteByte(ch)
+			continue
+		}
+		b.WriteByte('%')
+		b.WriteByte(hex[ch>>4])
+		b.WriteByte(hex[ch&15])
+	}
+	return b.String()
 }
 
 // NoContent writes an empty response with the status.

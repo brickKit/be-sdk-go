@@ -34,6 +34,7 @@
 | `sessionpb/` | `be.session.v1` 的生成代码（`make gen`），身份成员实现 `SessionService` 时用 | P8.28 |
 | `reserve/` | 预占的参与方：分支的状态机（`lifecycle.go` 的 `Decide`，对协议向量）、命令与到期作业（`reserve.go`）；组件只写占用、归还、消耗与事件 | 第 16 章 |
 | `flow/` | 流程内核：流程定义、实例与任务、按岗位或个人分配（员工投影的目录 `employees.go`）、以人为单位的职责分离、唯一决定（纯函数 `decide.go` 对向量）、取代与撤回、放行核对、标准路由与重新解析、心跳（`routes.go`）、任务投影与通知意图的发布（`instance.go`、`intents.go`） | 第 17、18 章 |
+| `storage/` | 存储端口：属主自己的桶与前缀上的条件放入（先探测）、条件复制（重写元数据）、读取与元数据、带长度与类型的预签名上传、强制保存的预签名下载（浏览器可达的地址 `OBJECT_STORE_PUBLIC_URL`）、删除与列举、错误分类（`internal/s3sig` 的 SigV4） | 第 19 章 |
 | `notify/` | 通知意图的发送方一侧：共享意图契约、按协议的 schema 核对、经发件表发到发送方自己的流；流程内核的审批待办意图在 `flow/intents.go` | 第 18 章 |
 | `extcmd/` | 对外命令：命令的写入与幂等、状态表（`state.go`，纯函数）、发送与查询的作业（`commands.go`）、整套恢复的外部对账（`reconcile.go` 的匹配是纯函数，`reconcileserver.go` 是 `ReconcileService`） | 第 13 章 |
 | `recovery/` | 整套恢复的核对 `CheckService`：组件的登记（`checks.go`）、SDK 自带的检查（`builtin.go`）、服务（`server.go`）；单号的读取与提升在 `db/docno.go` | 第 14 章 |

@@ -48,6 +48,7 @@ const (
 	ReasonAuditCapacityExhausted   = "AUDIT_CAPACITY_EXHAUSTED"
 	// the flow kernel's decision (protocol chapter 17, P17.10)
 	ReasonTaskNotPending       = "TASK_NOT_PENDING"
+	ReasonUploadIncomplete     = "UPLOAD_INCOMPLETE"
 	ReasonVersionConflict      = "VERSION_CONFLICT"
 	ReasonNotAssignee          = "NOT_ASSIGNEE"
 	ReasonSelfApproval         = "SELF_APPROVAL"
@@ -121,6 +122,7 @@ func init() {
 		{ReasonResultUnknown, DeadlineExceeded, 0, RetryQueryFirst, "The result is not known yet; query it"},
 		{ReasonAuditCapacityExhausted, Unavailable, 0, RetryYes, "Audited operations are paused until the audit backlog drains"},
 		{ReasonTaskNotPending, FailedPrecondition, 409, RetryNo, "The task is not pending, or its instance has ended"},
+		{ReasonUploadIncomplete, FailedPrecondition, 409, RetryYes, "The upload has not arrived yet; confirm it once it has"},
 		{ReasonVersionConflict, Aborted, 0, RetryNo, "The record changed since that version"},
 		{ReasonNotAssignee, PermissionDenied, 0, RetryNo, "You are not a candidate of this task"},
 		{ReasonSelfApproval, PermissionDenied, 0, RetryNo, "The one who started it does not decide it"},

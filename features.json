@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.126",
+  "protocol": "3.0.0-alpha.127",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -718,6 +718,27 @@
         {
           "rule": "P18.10",
           "reason": "审批待办的意图经真实的通知组件写成站内消息、任务决定后撤回：在装配项目的格里验证（C8 的 P6）"
+        }
+      ]
+    },
+    "storage-port": {
+      "status": "verified",
+      "evidence": [
+        "storage.TestPutHeadGetDeleteList",
+        "storage.TestCopyOnlyWhenAbsent",
+        "storage.TestPresignedForThePublicAddress",
+        "storage.TestPresignedUpload",
+        "storage.TestPresignedDownload",
+        "storage.TestErrorClasses"
+      ],
+      "pending": [
+        {
+          "rule": "P19.3",
+          "reason": "不遵守条件放入的存储被拒绝：本机的 RustFS 遵守，退化的路径没有对着真实的不遵守的存储测过"
+        },
+        {
+          "rule": "P19.4",
+          "reason": "退回“读源、条件放入”的路径：RustFS 遵守服务端复制的条件，这条路径没有对着真实的存储走过"
         }
       ]
     }
