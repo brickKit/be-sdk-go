@@ -756,12 +756,6 @@
         "flow.TestInteractiveActions",
         "flow.TestUseActions",
         "runtime.TestSubjectIsTheMembersOwnView"
-      ],
-      "pending": [
-        {
-          "rule": "P20.8",
-          "reason": "经真实的渠道成员（integration/im-dingtalk）与通知组件，在 IM 里点同意批准采购订单：在装配项目的格里验证（C10 的 P6）"
-        }
       ]
     }
   }
