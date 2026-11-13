@@ -73,6 +73,25 @@ type Resource struct {
 	ViewOperation string
 	Dimensions    map[string]Dimension // all of them; none is an explicit empty map
 	Fields        map[string]Field     // every field that may be output
+	// AttachmentCategories are the kinds of attachment its records may carry (security 09a; assembly protocol 12): they
+	// reach infra/attachment through the authorization member's catalog. None: its records carry no attachment.
+	AttachmentCategories map[string]AttachmentCategory
+}
+
+// Sensitivities of an attachment category (assembly protocol 12): a strict one is never given a presigned download.
+const (
+	Normal = "normal"
+	Strict = "strict"
+)
+
+// AttachmentCategory declares one kind of attachment (security 09a's AttachmentCategory).
+type AttachmentCategory struct {
+	Field          string   // the resource's field the owner judges reading and writing this category by
+	MaxBytes       int64    // within infra/attachment's own limit
+	AllowedTypes   []string // content types, as the server detects them
+	Sensitivity    string   // Normal or Strict
+	RetentionClass string   // protocol 11's retention class
+	Version        string   // an attachment keeps the version of its category at its creation
 }
 
 // Operation declares one operation (security 09a's operation definition). The zero values of the flags are the
@@ -154,6 +173,18 @@ func (d *Definitions) Validate() error {
 				if !slices.Contains(queryUses, q) {
 					problems = append(problems, fmt.Sprintf("%s.%s: query use %q", r.Type, name, q))
 				}
+			}
+		}
+		for name, c := range r.AttachmentCategories {
+			switch {
+			case !keyRe.MatchString(name):
+				problems = append(problems, fmt.Sprintf("%s: attachment category %q is not a key", r.Type, name))
+			case r.Fields[c.Field].Class == "":
+				problems = append(problems, fmt.Sprintf("%s: attachment category %s: field %q is not a field of it", r.Type, name, c.Field))
+			case c.MaxBytes <= 0 || len(c.AllowedTypes) == 0 || c.Version == "" || !keyRe.MatchString(c.RetentionClass):
+				problems = append(problems, fmt.Sprintf("%s: attachment category %s needs a size limit, its types, a retention class and a version", r.Type, name))
+			case c.Sensitivity != Normal && c.Sensitivity != Strict:
+				problems = append(problems, fmt.Sprintf("%s: attachment category %s: sensitivity %q", r.Type, name, c.Sensitivity))
 			}
 		}
 		d.resources[r.Type] = r
@@ -251,7 +282,16 @@ func (r Resource) Record() map[string]any {
 		}
 		fields[name] = m
 	}
-	return map[string]any{"type": r.Type, "view_operation": r.ViewOperation, "dimensions": dims, "fields": fields}
+	out := map[string]any{"type": r.Type, "view_operation": r.ViewOperation, "dimensions": dims, "fields": fields}
+	if len(r.AttachmentCategories) > 0 {
+		cats := map[string]any{}
+		for name, c := range r.AttachmentCategories {
+			cats[name] = map[string]any{"field": c.Field, "max_bytes": c.MaxBytes, "allowed_types": keySet(c.AllowedTypes),
+				"sensitivity": c.Sensitivity, "retention_class": c.RetentionClass, "version": c.Version}
+		}
+		out["attachment_categories"] = cats
+	}
+	return out
 }
 
 // Digest is the resource definition's digest (P8.8).

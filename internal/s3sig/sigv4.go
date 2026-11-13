@@ -162,3 +162,40 @@ func (s *Signer) Request(secret string, when time.Time, method, bucket, key, que
 	}
 	return u, out
 }
+
+// Presign is a request that needs no credentials to use, valid for expires: the method on the object, the headers
+// the user must send exactly as given (lowercase names; host is always signed), and extra query parameters (the
+// response-* overrides of a GET). The storage port's presigned upload signs content-length and content-type; its
+// presigned download sets response-content-disposition (be-protocol P19.6, P19.7).
+func (s *Signer) Presign(secret, method, bucket, key string, expires time.Duration, when time.Time,
+	headers map[string]string, query map[string]string) string {
+	amz, date := when.UTC().Format("20060102T150405Z"), when.UTC().Format("20060102")
+	path := s.path(bucket, key)
+	signed := map[string]string{"host": s.host}
+	for n, v := range headers {
+		signed[n] = v
+	}
+	names := make([]string, 0, len(signed))
+	for n := range signed {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	params := map[string]string{"X-Amz-Algorithm": sigAlgorithm,
+		"X-Amz-Credential": s.access + "/" + date + "/" + s.region + "/s3/aws4_request", "X-Amz-Date": amz,
+		"X-Amz-Expires": fmt.Sprint(int64(expires / time.Second)), "X-Amz-SignedHeaders": strings.Join(names, ";")}
+	for n, v := range query {
+		params[n] = v
+	}
+	keys := make([]string, 0, len(params))
+	for n := range params {
+		keys = append(keys, n)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, n := range keys {
+		parts[i] = Escape(n, false) + "=" + Escape(params[n], false)
+	}
+	q := strings.Join(parts, "&")
+	sig, _, _ := s.sign(secret, when, method, path, q, signed, unsignedBody)
+	return s.scheme + "://" + s.host + path + "?" + q + "&X-Amz-Signature=" + sig
+}
