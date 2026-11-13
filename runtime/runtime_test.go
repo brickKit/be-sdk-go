@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/brickKit/be-sdk-go/v3/authz"
 	"github.com/brickKit/be-sdk-go/v3/calls"
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/sectest"
@@ -54,4 +55,21 @@ func TestConfiguredAddresses(t *testing.T) { // P4.26
 	assert.Equal(t, "passthrough:///test-probe-go2-3-1-0:9602", conn.Target(), "the $endpoint form is dialled by host and port, resolved per connection (P4.28)")
 	same, _ := rt.GRPCAt("test/probe-go2", "test-probe-go2-3-1-0:9602")
 	assert.Same(t, conn, same, "one connection per component and address, kept for the member's life")
+}
+
+func TestSubjectIsTheMembersOwnView(t *testing.T) { // P20.8
+	_, ok := New(Parts{}).Subject("u1")
+	assert.False(t, ok, "a member without an authorization view has no subject")
+	want := &authz.Subject{}
+	rt := New(Parts{Subject: func(p string) *authz.Subject {
+		if p == "u1" {
+			return want
+		}
+		return nil
+	}})
+	s, ok := rt.Subject("u1")
+	assert.True(t, ok)
+	assert.Same(t, want, s)
+	_, ok = rt.Subject("u2")
+	assert.False(t, ok, "a nil subject is no subject")
 }

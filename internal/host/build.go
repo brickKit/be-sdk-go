@@ -168,7 +168,13 @@ func Build(ctx context.Context, def component.Definition, values *config.Values,
 	}
 	rt := runtime.New(runtime.Parts{Member: member, Config: values, Logger: m.Logger, Metrics: m.Registry,
 		Tracer: tp.Tracer(def.ID), Addresses: sh.Addresses, DB: sh.DB, Outbound: m.Outbound, Events: producer,
-		Work: m.runner, Audit: auditor, Evidence: writer, External: external, Tiering: catalog})
+		Work: m.runner, Audit: auditor, Evidence: writer, External: external, Tiering: catalog,
+		Subject: func(principal string) *authz.Subject {
+			if m.holder == nil {
+				return nil
+			}
+			return &authz.Subject{Principal: principal, Defs: m.Def.Authz, Holder: m.holder, At: time.Now()}
+		}})
 	if m.Module, err = newModule(def, rt); err != nil {
 		return nil, fmt.Errorf("the module could not be built: %w", err)
 	}

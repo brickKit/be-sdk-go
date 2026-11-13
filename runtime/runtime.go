@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/brickKit/be-sdk-go/v3/authz"
 	"github.com/brickKit/be-sdk-go/v3/audit"
 	"github.com/brickKit/be-sdk-go/v3/calls"
 	"github.com/brickKit/be-sdk-go/v3/config"
@@ -50,6 +51,7 @@ type Runtime struct {
 
 	addresses config.Source // where the platform's *_ENDPOINT values are looked up
 	calls     *calls.Member
+	subject   func(principal string) *authz.Subject
 }
 
 // Parts are what the launcher or the shell gives a module.
@@ -68,13 +70,25 @@ type Parts struct {
 	Evidence  *evidence.Writer
 	External  *extcmd.Commands
 	Tiering   *tiering.Catalog
+	// Subject builds a principal's authorization on the member's own view (nil: the member has no view).
+	Subject func(principal string) *authz.Subject
 }
 
 // New is used by the launcher and the shell.
 func New(p Parts) *Runtime {
 	return &Runtime{Member: p.Member, Config: p.Config, Logger: p.Logger, Metrics: p.Metrics, Tracer: p.Tracer, DB: p.DB,
 		Events: p.Events, Work: p.Work, Audit: p.Audit, Evidence: p.Evidence, External: p.External, Tiering: p.Tiering, addresses: p.Addresses,
-		calls: p.Outbound}
+		calls: p.Outbound, subject: p.Subject}
+}
+
+// Subject is a principal's authorization on the member's own view, for work without a request: an action taken from
+// an event as the principal (be-protocol P20.8). ok=false: the member has no authorization view.
+func (r *Runtime) Subject(principal string) (*authz.Subject, bool) {
+	if r.subject == nil {
+		return nil, false
+	}
+	s := r.subject(principal)
+	return s, s != nil
 }
 
 // RecoveryPhase is the full recovery's phase the member started in (be-protocol P1.22, P1.23); empty: running. A

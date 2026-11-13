@@ -753,7 +753,9 @@
       "status": "verified",
       "evidence": [
         "channel.TestTheProtocolsVector",
-        "flow.TestInteractiveActions"
+        "flow.TestInteractiveActions",
+        "flow.TestUseActions",
+        "runtime.TestSubjectIsTheMembersOwnView"
       ],
       "pending": [
         {

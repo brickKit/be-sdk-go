@@ -23,6 +23,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/notify"
 	"github.com/brickKit/be-sdk-go/v3/reqctx"
+	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -32,6 +33,22 @@ const ActionSourcesKey = "FLOW_ACTION_SOURCES"
 // Keys are the configuration keys of a component that runs the kernel.
 func Keys() []config.Key {
 	return []config.Key{{Name: ActionSourcesKey, Type: config.String}}
+}
+
+// UseActions configures the kernel's action sources from FLOW_ACTION_SOURCES and its principals' authorization from
+// the runtime (P17.19, P17.20): a component that runs the kernel calls it in New, adds Keys() to its keys and
+// ActionSubs() to its subscriptions.
+func (k *Kernel) UseActions(rt *runtime.Runtime) error {
+	src, err := ParseActionSources(rt.Config.String(ActionSourcesKey))
+	if err != nil {
+		return err
+	}
+	k.ActionSources = src
+	k.Subject = func(p string) *sdkauthz.Subject {
+		s, _ := rt.Subject(p)
+		return s
+	}
+	return nil
 }
 
 // ParseActionSources reads FLOW_ACTION_SOURCES: comma-separated component IDs; empty: none. A malformed or repeated
@@ -102,7 +119,11 @@ func (k *Kernel) grants(ctx context.Context, tx db.Tx, t Task, cands []string, e
 	}
 	out := map[string]notify.Grant{}
 	for _, p := range cands {
-		sv, err := k.Subject(p).SecurityVersion(d.Operation)
+		subj := k.Subject(p)
+		if subj == nil { // no authorization view: no grant, the link still works
+			continue
+		}
+		sv, err := subj.SecurityVersion(d.Operation)
 		if err != nil {
 			continue
 		}
@@ -183,6 +204,9 @@ func (k *Kernel) onAction(ctx context.Context, tx db.Tx, src string, e events.Re
 	o := channel.Take(probe)
 	if o.Answer == channel.Executed { // the grant's principal: its security version, then the kernel's decision
 		subj := k.Subject(g.principal)
+		if subj == nil {
+			return errRetry{reason: channel.ViewUnprovable}
+		}
 		d, err := k.taskDefinition(ctx, tx, g.task)
 		if err != nil {
 			return err
