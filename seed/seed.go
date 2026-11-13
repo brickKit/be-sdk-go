@@ -162,6 +162,9 @@ func Accounts(iam, password string, users ...string) (map[string]Account, error)
 // probe: when its read checks the operation first and answers 404 without the grant, wait with UntilGranted on that
 // read until it answers 200.
 func (c Client) WaitGranted(method, path string, timeout time.Duration) error {
+	if method == "GET" || method == "HEAD" { // a read never answers 400 for its body: it would wait out the timeout
+		return fmt.Errorf("WaitGranted %s %s: a read; wait with UntilGranted until it answers 200", method, path)
+	}
 	deadline := time.Now().Add(timeout)
 	for {
 		code, out, err := c.Do(method, path, map[string]any{})

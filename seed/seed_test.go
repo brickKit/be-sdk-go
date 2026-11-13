@@ -285,3 +285,16 @@ func TestAProtectedChangeIsConfirmedWithTheOwnersKey(t *testing.T) {
 	assert.Equal(t, "unit-new", unit, "confirmed with the owner's signature, then active")
 	assert.True(t, p.confirmed)
 }
+
+// A read never answers 400 for an empty body: WaitGranted on one waits out its timeout and blames the grant (C10:
+// integration/im-dingtalk 3.0.1's seed). It refuses one at once and names UntilGranted.
+func TestWaitGrantedRefusesARead(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++ }))
+	defer srv.Close()
+	for _, m := range []string{"GET", "HEAD"} {
+		err := NewClient(srv.URL, "tok").WaitGranted(m, "/api/x", 5*time.Second)
+		require.ErrorContains(t, err, "UntilGranted")
+	}
+	assert.Equal(t, 0, calls, "nothing sent")
+}
