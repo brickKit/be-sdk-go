@@ -49,7 +49,7 @@ func TestTheReplayIsTheRecoveryToolsOnly(t *testing.T) {
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "rpowner", "")
 	grpcPort := freePort(t)
-	def := component.Definition{ID: "demo/rpowner", Version: "3.0.0", Recovery: "demo.rp.recover", GRPCPort: grpcPort, Replay: "demo.rp.replay",
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/rpowner", Version: "3.0.0", Recovery: "demo.rp.recover", GRPCPort: grpcPort, Replay: "demo.rp.replay",
 		Authz:      sectest.Defs("demo/rpowner", "demo.rp", "demo.rp.replay", "demo.rp.recover"),
 		Migrations: fstest.MapFS{"0001_replayed.up.sql": {Data: []byte("CREATE TABLE replayed (id uuid PRIMARY KEY);")}},
 		New:        func(rt *runtime.Runtime) (component.Module, error) { return &replayer{rt: rt}, nil }}
@@ -104,7 +104,7 @@ func TestTheRecoveryChecksAreTheRecoveryToolsOnly(t *testing.T) {
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "rchk", "")
 	grpcPort := freePort(t)
-	def := component.Definition{ID: "demo/rchk", Version: "3.0.0", GRPCPort: grpcPort, ExternalCommands: true,
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/rchk", Version: "3.0.0", GRPCPort: grpcPort, ExternalCommands: true,
 		Recovery: "demo.rchk.recover", Authz: sectest.Defs("demo/rchk", "demo.rchk", "demo.rchk.recover"),
 		Migrations: noMigrations(),
 		New:        func(rt *runtime.Runtime) (component.Module, error) { return &payer{rt: rt}, nil }}

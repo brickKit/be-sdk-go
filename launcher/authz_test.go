@@ -25,13 +25,25 @@ func (stray) Routes(r *httpx.Routes) error {
 }
 
 func TestARouteWithAnUndeclaredOperationStopsTheStart(t *testing.T) { // P8.7, CK-AZ-01
-	def := component.Definition{ID: "demo/alpha", Version: "3.0.0", Authz: sectest.Defs("demo/alpha", "demo.alpha", "demo.alpha.read"),
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/alpha", Version: "3.0.0", Authz: sectest.Defs("demo/alpha", "demo.alpha", "demo.alpha.read"),
 		New: func(*runtime.Runtime) (component.Module, error) { return stray{}, nil }}
 	var out syncBuffer
 	code := Run(context.Background(), def, Options{Env: env(secured(t, def, map[string]string{"COMPONENT_ID": "demo/alpha",
 		"COMPONENT_VERSION": "3.0.0", "PORT": strconv.Itoa(freePort(t))})), Stdout: &out, Stderr: &out})
 	assert.Equal(t, ExitFailure, code)
 	assert.Contains(t, out.String(), "not declared: demo.alpha.export")
+}
+
+// P11.11: a user-surface route outside the component's public prefix stops the start (the edge routes by prefix and
+// could not reach it); demo/alpha's default prefix is /api/alpha.
+func TestARouteOutsideThePublicPrefixStopsTheStart(t *testing.T) {
+	def := component.Definition{ID: "demo/alpha", Version: "3.0.0", Authz: sectest.Defs("demo/alpha", "demo.alpha", "demo.alpha.export"),
+		New: func(*runtime.Runtime) (component.Module, error) { return stray{}, nil }}
+	var out syncBuffer
+	code := Run(context.Background(), def, Options{Env: env(secured(t, def, map[string]string{"COMPONENT_ID": "demo/alpha",
+		"COMPONENT_VERSION": "3.0.0", "PORT": strconv.Itoa(freePort(t))})), Stdout: &out, Stderr: &out})
+	assert.Equal(t, ExitFailure, code)
+	assert.Contains(t, out.String(), "the route GET /api/x is not under the component's public prefix /api/alpha")
 }
 
 func TestProtectedRoutesNeedTheSecurityConfiguration(t *testing.T) {

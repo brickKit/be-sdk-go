@@ -44,7 +44,7 @@ func (s *shape) Routes(r *httpx.Routes) error {
 }
 
 func dbDef(id, migration string) component.Definition {
-	return component.Definition{ID: id, Version: "0.1.0", Recovery: "demo.shape.recover", Authz: sectest.Defs(id, "demo.shape", "demo.shape.read", "demo.shape.recover"),
+	return component.Definition{PublicPrefix: "/api", ID: id, Version: "0.1.0", Recovery: "demo.shape.recover", Authz: sectest.Defs(id, "demo.shape", "demo.shape.read", "demo.shape.recover"),
 		Migrations: fstest.MapFS{"0001_items.up.sql": {Data: []byte(migration)}},
 		New:        func(rt *runtime.Runtime) (component.Module, error) { return &shape{db: rt.DB}, nil }}
 }

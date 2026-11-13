@@ -3,6 +3,7 @@ package flow
 import (
 	"context"
 	"errors"
+	comp "github.com/brickKit/be-sdk-go/v3/component"
 	"time"
 
 	sdkauthz "github.com/brickKit/be-sdk-go/v3/authz"
@@ -17,15 +18,23 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// RoutePrefix is where the standard routes are (P17.14), under the component's own prefix.
-const RoutePrefix = "/be/flow/"
+// RoutePrefix is where the standard routes are (P17.14) under the component's public prefix, which for a flow
+// manager is the default /api/<name> (P11.11).
+func RoutePrefix(component string) string { return comp.DefaultPrefix(component) + "/flow/" }
+
+// DecisionPath is a task's decision entry on its component (P17.14): the worklist derives it from the publisher,
+// never from the projection.
+func DecisionPath(component, task string) string {
+	return RoutePrefix(component) + "tasks/" + task + "/decisions"
+}
 
 // Routes registers the standard routes (P17.14): the decision, reading a task, the paused tasks (the exception entry).
 // The host adds them after the module's own routes, as it does the tiering's.
 func (k *Kernel) Routes(r *httpx.Routes) {
-	r.Add(httpx.Route{Method: "POST", Path: RoutePrefix + "tasks/:id/decisions", Operation: k.Operation, Handle: k.decideRoute})
-	r.Add(httpx.Route{Method: "GET", Path: RoutePrefix + "tasks/:id", Operation: k.Operation, Handle: k.getRoute})
-	r.Add(httpx.Route{Method: "GET", Path: RoutePrefix + "tasks", Operation: k.ManageOperation, Handle: k.pausedRoute})
+	p := RoutePrefix(k.Component)
+	r.Add(httpx.Route{Method: "POST", Path: p + "tasks/:id/decisions", Operation: k.Operation, Handle: k.decideRoute})
+	r.Add(httpx.Route{Method: "GET", Path: p + "tasks/:id", Operation: k.Operation, Handle: k.getRoute})
+	r.Add(httpx.Route{Method: "GET", Path: p + "tasks", Operation: k.ManageOperation, Handle: k.pausedRoute})
 }
 
 func (k *Kernel) decideRoute(c *httpx.Context) error {

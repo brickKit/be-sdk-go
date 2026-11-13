@@ -46,7 +46,7 @@ func (a *auditor) Routes(r *httpx.Routes) error {
 func TestTheAuditTransferRunsInTheRecoveryPhases(t *testing.T) {
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "audph", "")
-	def := component.Definition{ID: "demo/audph", Version: "3.0.0", GRPCPort: portNow(), Recovery: "demo.aud.recover",
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/audph", Version: "3.0.0", GRPCPort: portNow(), Recovery: "demo.aud.recover",
 		Authz: sectest.Defs("demo/audph", "demo.aud", "demo.aud.change", "demo.aud.recover"), Migrations: noMigrations(),
 		New: func(rt *runtime.Runtime) (component.Module, error) { return &auditor{rt: rt}, nil }}
 	vars := pgtest.MemberEnv(host, port, "audph")

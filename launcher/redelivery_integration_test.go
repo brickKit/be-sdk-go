@@ -150,12 +150,12 @@ func TestRedeliveryAfterTheConsumersDatabaseWentBack(t *testing.T) {
 			consEnv := pgtest.MemberEnv(host, port, "rdcons")
 			consEnv["BUS_URL"] = busURL
 			consEnv["DEMO_RDPROD_GRPC_ENDPOINT"] = "127.0.0.1:" + strconv.Itoa(grpcPort)
-			prodDef := component.Definition{ID: "demo/rdprod", Version: "3.0.0", Recovery: "demo.redeliv.recover", Streams: []events.Stream{redeliv},
+			prodDef := component.Definition{PublicPrefix: testPrefix, ID: "demo/rdprod", Version: "3.0.0", Recovery: "demo.redeliv.recover", Streams: []events.Stream{redeliv},
 				Resend: "demo.redeliv.resend", GRPCPort: grpcPort,
 				Authz:      sectest.Defs("demo/rdprod", "demo.redeliv", "demo.redeliv.create", "demo.redeliv.resend", "demo.redeliv.recover"),
 				Migrations: fstest.MapFS{"0001_none.up.sql": {Data: []byte("SELECT 1;")}},
 				New:        func(rt *runtime.Runtime) (component.Module, error) { return &rdProducer{rt: rt}, nil }}
-			consDef := component.Definition{ID: "demo/rdcons", Version: "3.0.0", Recovery: "demo.rseen.recover", GRPCPort: portNow(), Subscribes: true,
+			consDef := component.Definition{PublicPrefix: testPrefix, ID: "demo/rdcons", Version: "3.0.0", Recovery: "demo.rseen.recover", GRPCPort: portNow(), Subscribes: true,
 				Authz: sectest.Defs("demo/rdcons", "demo.rseen", "demo.rseen.read", "demo.rseen.recover"),
 				Migrations: fstest.MapFS{"0001_rseen.up.sql": {Data: []byte(`CREATE TABLE rseen (event_id uuid PRIMARY KEY);
 					CREATE TABLE repaired (source text NOT NULL, partition int NOT NULL);`)}},

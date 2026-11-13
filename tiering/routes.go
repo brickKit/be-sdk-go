@@ -14,8 +14,8 @@ import (
 // class's declared operations, and an export's status for its requester under the class reader's operation. Every
 // component with classes has the same routes; none writes its own.
 
-// RoutePrefix is where the routes are, under the component's own prefix.
-const RoutePrefix = "/be/tiering/"
+// RouteBase is where the routes are under the component's public prefix (P15.40, P11.11).
+func RouteBase(prefix string) string { return prefix + "/tiering/" }
 
 type scopeBody struct {
 	ScopeKind string `json:"scope_kind"`
@@ -35,14 +35,14 @@ func subjectOf(c *httpx.Context) (*authz.Subject, error) {
 // Routes registers the administration routes of every class (holds and approvals where the class declares their
 // operations) and the export status of every class with a reader: register the readers first (in the module's
 // constructor).
-func (c *Catalog) Routes(r *httpx.Routes) {
+func (c *Catalog) Routes(r *httpx.Routes, prefix string) {
 	names := make([]string, 0, len(c.Classes))
 	for name := range c.Classes {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		cl, base := c.Classes[name], RoutePrefix+name
+		cl, base := c.Classes[name], RouteBase(prefix)+name
 		if cl.HoldOperation != "" {
 			r.POST(base+"/holds", cl.HoldOperation, func(hc *httpx.Context) error {
 				var b scopeBody

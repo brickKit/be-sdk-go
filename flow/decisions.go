@@ -309,5 +309,5 @@ func (k *Kernel) DecideDocument(ctx context.Context, subj *sdkauthz.Subject, key
 		return Task{}, err
 	}
 	return k.Decide(ctx, subj, idem.Request{Principal: me, Key: key, Operation: k.Operation, Body: body,
-		Target: "POST " + RoutePrefix + "tasks/" + task + "/decisions"}, task, DecisionIn{Version: version, Decision: c, Comment: comment})
+		Target: "POST " + DecisionPath(k.Component, task)}, task, DecisionIn{Version: version, Decision: c, Comment: comment})
 }

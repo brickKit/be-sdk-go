@@ -141,12 +141,12 @@ func TestEventsFlowBetweenComponentsOnBothTransports(t *testing.T) {
 			maps.Copy(prodEnv, s3test.Env(t, "demo-evprod/")) // the producer's own prefix; the consumer holds no credentials
 			consEnv := pgtest.MemberEnv(host, port, "evcons")
 			consEnv["BUS_URL"] = busURL
-			prodDef := component.Definition{ID: "demo/evprod", Version: "3.0.0", Recovery: "demo.things.recover", Streams: []events.Stream{things},
+			prodDef := component.Definition{PublicPrefix: testPrefix, ID: "demo/evprod", Version: "3.0.0", Recovery: "demo.things.recover", Streams: []events.Stream{things},
 				Resend: "demo.things.resend", GRPCPort: freePort(t),
 				Authz:      sectest.Defs("demo/evprod", "demo.things", "demo.things.read", "demo.things.create", "demo.things.resend", "demo.things.recover"),
 				Migrations: fstest.MapFS{"0001_things.up.sql": {Data: []byte("CREATE TABLE things (id uuid PRIMARY KEY);")}},
 				New:        func(rt *runtime.Runtime) (component.Module, error) { return &producer{rt: rt}, nil }}
-			consDef := component.Definition{ID: "demo/evcons", Version: "3.0.0", Recovery: "demo.seen.recover", GRPCPort: portNow(), Subscribes: true,
+			consDef := component.Definition{PublicPrefix: testPrefix, ID: "demo/evcons", Version: "3.0.0", Recovery: "demo.seen.recover", GRPCPort: portNow(), Subscribes: true,
 				Authz:      sectest.Defs("demo/evcons", "demo.seen", "demo.seen.read", "demo.seen.recover"),
 				Migrations: fstest.MapFS{"0001_seen.up.sql": {Data: []byte("CREATE TABLE seen (event_id uuid PRIMARY KEY, record_id text NOT NULL, size int NOT NULL);")}},
 				New:        func(rt *runtime.Runtime) (component.Module, error) { return &consumer{rt: rt}, nil }}

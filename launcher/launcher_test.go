@@ -66,7 +66,7 @@ func (d *demo) Start(context.Context) error { d.started.Store(true); return nil 
 func (d *demo) Stop(context.Context) error  { d.stopped.Store(true); return nil }
 
 func definition(d *demo) component.Definition {
-	return component.Definition{ID: "demo/alpha", Version: "3.0.0", Capabilities: []string{"core"},
+	return component.Definition{PublicPrefix: testPrefix, ID: "demo/alpha", Version: "3.0.0", Capabilities: []string{"core"},
 		Authz: sectest.Defs("demo/alpha", "demo.alpha", "demo.alpha.read"),
 		Keys:  []config.Key{{Name: "GREETING", Type: config.String, Default: "hello"}},
 		New:   func(*runtime.Runtime) (component.Module, error) { return d, nil }}
@@ -253,3 +253,6 @@ func TestResponsesAreNotHeldBackOnAKeptAliveConnection(t *testing.T) { // P1.19
 	close(d.release)
 	assert.Equal(t, ExitOK, <-done)
 }
+
+// testPrefix is the test components' public prefix (be-protocol P11.11): their routes are /api/<thing>.
+const testPrefix = "/api"

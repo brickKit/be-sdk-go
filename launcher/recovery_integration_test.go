@@ -89,12 +89,12 @@ func TestRecoveryPhases(t *testing.T) {
 	prodEnv["BUS_URL"], prodEnv["IMPLEMENTATION_INSTANCE"] = busURL, ids.New().String()
 	consEnv := pgtest.MemberEnv(host, port, "rccons")
 	consEnv["BUS_URL"] = busURL
-	prodDef := component.Definition{ID: "demo/rcprod", Version: "3.0.0", Recovery: "demo.redeliv.recover", Streams: []events.Stream{redeliv},
+	prodDef := component.Definition{PublicPrefix: testPrefix, ID: "demo/rcprod", Version: "3.0.0", Recovery: "demo.redeliv.recover", Streams: []events.Stream{redeliv},
 		Resend: "demo.redeliv.resend", GRPCPort: freePort(t),
 		Authz:      sectest.Defs("demo/rcprod", "demo.redeliv", "demo.redeliv.create", "demo.redeliv.resend", "demo.redeliv.recover"),
 		Migrations: fstest.MapFS{"0001_ticks.up.sql": {Data: []byte("CREATE TABLE ticks (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY);")}},
 		New:        func(rt *runtime.Runtime) (component.Module, error) { return &rcProducer{rdProducer{rt: rt}}, nil }}
-	consDef := component.Definition{ID: "demo/rccons", Version: "3.0.0", Recovery: "demo.rseen.recover", GRPCPort: portNow(), Subscribes: true,
+	consDef := component.Definition{PublicPrefix: testPrefix, ID: "demo/rccons", Version: "3.0.0", Recovery: "demo.rseen.recover", GRPCPort: portNow(), Subscribes: true,
 		Authz: sectest.Defs("demo/rccons", "demo.rseen", "demo.rseen.read", "demo.rseen.recover"),
 		Migrations: fstest.MapFS{"0001_rseen.up.sql": {Data: []byte(`CREATE TABLE rseen (event_id uuid PRIMARY KEY);
 			CREATE TABLE repaired (source text NOT NULL, partition int NOT NULL);`)}},

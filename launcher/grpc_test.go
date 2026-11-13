@@ -35,7 +35,7 @@ func (s *system) Services(r *grpcx.Services) error {
 func TestServesTheSystemSurfaceAndStopsItGracefully(t *testing.T) {
 	port, grpcPort := freePort(t), freePort(t)
 	s := &system{release: make(chan struct{})}
-	def := component.Definition{ID: "demo/system", Version: "3.0.0", GRPCPort: grpcPort,
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/system", Version: "3.0.0", GRPCPort: grpcPort,
 		Authz: sectest.Defs("demo/system", "demo.system", "demo.system.say"),
 		New:   func(*runtime.Runtime) (component.Module, error) { return s, nil }}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -75,7 +75,7 @@ func TestServesTheSystemSurfaceAndStopsItGracefully(t *testing.T) {
 }
 
 func TestSystemModuleWithoutGRPCPortFails(t *testing.T) {
-	def := component.Definition{ID: "demo/system", Version: "3.0.0", Authz: sectest.Defs("demo/system", "demo.system", "demo.system.say"),
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/system", Version: "3.0.0", Authz: sectest.Defs("demo/system", "demo.system", "demo.system.say"),
 		New: func(*runtime.Runtime) (component.Module, error) { return &system{}, nil }}
 	var out syncBuffer
 	code := Run(context.Background(), def, Options{Env: env(secured(t, def, map[string]string{"COMPONENT_ID": "demo/system",

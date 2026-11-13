@@ -12,7 +12,7 @@ import (
 )
 
 func TestConfigSchemaDeclaresWhatTheSDKReads(t *testing.T) {
-	def := component.Definition{ID: "demo/alpha", Version: "3.0.0",
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/alpha", Version: "3.0.0",
 		Keys:       []config.Key{{Name: "GREETING", Type: config.String, Required: true}},
 		Migrations: fstest.MapFS{"0001_x.up.sql": {Data: []byte("CREATE TABLE x (id int)")}},
 		Streams:    []events.Stream{{Name: "demo.alpha", Partitions: 4}}}
@@ -31,13 +31,13 @@ func TestConfigSchemaDeclaresWhatTheSDKReads(t *testing.T) {
 	assert.Contains(t, s["required"], "GREETING")
 	assert.Contains(t, s["required"], "BUS_URL")
 
-	bare := ConfigSchema(component.Definition{ID: "demo/beta", Version: "3.0.0"}, nil)["properties"].(map[string]any)
+	bare := ConfigSchema(component.Definition{PublicPrefix: testPrefix, ID: "demo/beta", Version: "3.0.0"}, nil)["properties"].(map[string]any)
 	assert.NotContains(t, bare, "PG_OWNER_PASSWORD", "no database, no migrate keys")
 	assert.NotContains(t, bare, "BUS_URL", "no streams, no bus")
 }
 
 func TestManifestProblemsNamesEveryDifference(t *testing.T) {
-	def := component.Definition{ID: "demo/beta", Version: "3.0.0",
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/beta", Version: "3.0.0",
 		Keys: []config.Key{{Name: "GREETING", Type: config.String, Required: true}}}
 	ok := []byte("metadata:\n  id: demo/beta\n  name: Beta\n  version: 3.0.0\n" + ConfigSchemaYAML(def, nil))
 	assert.Empty(t, ManifestProblems(ok, def, nil), "the generated block matches itself")
@@ -57,12 +57,12 @@ configSchema:
 	assert.Contains(t, got, "EXTRA: declared, but nothing reads it")
 	assert.Contains(t, got, "GREETING: not declared")
 	assert.Contains(t, got, `metadata.version: "3.0.1", the code is "3.0.0"`)
-	assert.Contains(t, ManifestProblems(ok, component.Definition{ID: "demo/gamma", Version: "3.0.0", Keys: def.Keys}, nil),
+	assert.Contains(t, ManifestProblems(ok, component.Definition{PublicPrefix: testPrefix, ID: "demo/gamma", Version: "3.0.0", Keys: def.Keys}, nil),
 		`metadata.id: "demo/beta", the code is "demo/gamma"`)
 }
 
 func TestManifestProblemsNamesTheSystemSurfacesPort(t *testing.T) {
-	def := component.Definition{ID: "demo/beta", Version: "3.0.0", GRPCPort: 9250}
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/beta", Version: "3.0.0", GRPCPort: 9250}
 	head := "metadata:\n  id: demo/beta\n  version: 3.0.0\n" + ConfigSchemaYAML(def, nil)
 	declared := head + "deployment:\n  port: 8250\n  extraPorts:\n    - name: grpc\n      port: 9250\n      protocol: grpc\n"
 	assert.Empty(t, ManifestProblems([]byte(declared), def, nil), "the system surface's port, named grpc")
@@ -71,7 +71,7 @@ func TestManifestProblemsNamesTheSystemSurfacesPort(t *testing.T) {
 		"deployment.extraPorts: no port named grpc, the code serves its system surface on 9250")
 	other := head + "deployment:\n  extraPorts:\n    - name: grpc\n      port: 9251\n      protocol: grpc\n"
 	assert.Contains(t, ManifestProblems([]byte(other), def, nil), "deployment.extraPorts: grpc is 9251, the code serves 9250")
-	none := component.Definition{ID: "demo/beta", Version: "3.0.0"}
+	none := component.Definition{PublicPrefix: testPrefix, ID: "demo/beta", Version: "3.0.0"}
 	assert.Contains(t, ManifestProblems([]byte(strings.Replace(declared, ConfigSchemaYAML(def, nil), ConfigSchemaYAML(none, nil), 1)), none, nil),
 		"deployment.extraPorts: grpc is declared, the code serves no system surface")
 }

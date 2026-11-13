@@ -380,11 +380,22 @@ func (m *Member) userSurface(member obs.Member, values *config.Values, sh Shared
 	if err := m.Module.Routes(&routes); err != nil {
 		return fmt.Errorf("the module's routes could not be registered: %w", err)
 	}
+	prefix := m.Def.Prefix()
 	if rt.Tiering != nil { // holds, approvals and export status of the classes (P15.40)
-		rt.Tiering.Routes(&routes)
+		rt.Tiering.Routes(&routes, prefix)
 	}
 	if fo, ok := m.Module.(flow.Owner); ok && fo.FlowKernel() != nil { // the flow kernel's standard routes (P17.14)
+		if prefix != component.DefaultPrefix(m.Def.ID) {
+			return fmt.Errorf("a flow manager's public prefix is %s, not %s: the worklist derives the decision "+
+				"entry from the component (be-protocol P11.11, P17.14)", component.DefaultPrefix(m.Def.ID), prefix)
+		}
 		fo.FlowKernel().Routes(&routes)
+	}
+	for _, r := range routes.List() { // every user-surface route under the public prefix (P11.11)
+		if !component.UnderPrefix(prefix, r.Path) {
+			return fmt.Errorf("the route %s %s is not under the component's public prefix %s (be-protocol P11.11)",
+				r.Method, r.Path, prefix)
+		}
 	}
 	var ops []string
 	for _, r := range routes.List() {

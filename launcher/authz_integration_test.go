@@ -159,7 +159,7 @@ func call(t *testing.T, method, url, bearer string) (int, string) {
 func TestOthersSeeNothingAndFieldsFollowTheSegments(t *testing.T) { // T2.8 acceptance, CK-AZ-05, P8.15-P8.16, CK-ID-05
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "ledger", "")
-	def := component.Definition{ID: "demo/ledger", Version: "3.0.0", Authz: ledgerDefs, Recovery: "demo.entry.recover", GRPCPort: portNow(),
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/ledger", Version: "3.0.0", Authz: ledgerDefs, Recovery: "demo.entry.recover", GRPCPort: portNow(),
 		Migrations: fstest.MapFS{"0001_entries.up.sql": {Data: []byte(`CREATE TABLE entries (id uuid PRIMARY KEY,
 			owner_id uuid NOT NULL, amount numeric NOT NULL, cost numeric NOT NULL, note text NOT NULL);`)}},
 		New: func(rt *runtime.Runtime) (component.Module, error) { return &ledger{rt: rt}, nil }}

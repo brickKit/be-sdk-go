@@ -270,7 +270,7 @@ func (w *world) task(id string) flow.Task {
 func (w *world) decide(who, task, key string, version int64, c flow.Choice) (flow.Task, error) {
 	body := []byte(`{"decision":"` + string(c) + `"}`)
 	return w.k.Decide(w.ctx, w.subject(who), idem.Request{Principal: who, Key: key, Operation: "demo.flow.use", Body: body,
-		Target: "POST /be/flow/tasks/" + task + "/decisions"}, task, flow.DecisionIn{Version: version, Decision: c})
+		Target: "POST " + flow.DecisionPath(w.k.Component, task)}, task, flow.DecisionIn{Version: version, Decision: c})
 }
 
 func reason(err error) string {

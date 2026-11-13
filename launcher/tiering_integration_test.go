@@ -44,7 +44,7 @@ func tierClass() tiering.Class {
 func TestTheMigrateEntryInstallsTheBarrier(t *testing.T) {
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "tierl", "")
-	def := component.Definition{ID: "demo/tierl", Version: "3.0.0", GRPCPort: portNow(), Recovery: "demo.tierl.recover",
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/tierl", Version: "3.0.0", GRPCPort: portNow(), Recovery: "demo.tierl.recover",
 		Authz: sectest.Defs("demo/tierl", "demo.tierl", "demo.tierl.recover", "demo.tierl.hold", "demo.tierl.approve"),
 		Migrations: fstest.MapFS{"0001_notes.up.sql": {Data: []byte("CREATE TABLE notes (id uuid PRIMARY KEY, " +
 			"closed_at timestamptz, created_at timestamptz NOT NULL); CREATE TABLE note_lines (id uuid PRIMARY KEY, " +
@@ -88,7 +88,7 @@ func TestTheMigrateEntryInstallsTheBarrier(t *testing.T) {
 func TestAComponentWithClassesServes(t *testing.T) {
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "tiers", "")
-	def := component.Definition{ID: "demo/tiers", Version: "3.0.0", GRPCPort: portNow(), Recovery: "demo.tierl.recover",
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/tiers", Version: "3.0.0", GRPCPort: portNow(), Recovery: "demo.tierl.recover",
 		Replay: "demo.tierl.replay",
 		Authz: sectest.Defs("demo/tiers", "demo.tierl", "demo.tierl.recover", "demo.tierl.replay", "demo.tierl.hold",
 			"demo.tierl.approve"),
@@ -126,9 +126,9 @@ func TestAComponentWithClassesServes(t *testing.T) {
 		return resp.StatusCode, string(b)
 	}
 	hold := `{"scope_kind": "class", "scope": "demo.notes", "source": "legal", "reason": "a court order"}`
-	code, body := send("/be/tiering/demo.notes/holds", w.Bearer(sectest.Bob), hold)
+	code, body := send("/api/tiering/demo.notes/holds", w.Bearer(sectest.Bob), hold)
 	assert.True(t, code == http.StatusForbidden || code == http.StatusNotFound, "bob holds no hold operation: %d %s", code, body)
-	code, body = send("/be/tiering/demo.notes/holds", w.Bearer(sectest.Alice), hold)
+	code, body = send("/api/tiering/demo.notes/holds", w.Bearer(sectest.Alice), hold)
 	require.Equal(t, http.StatusCreated, code, body)
 	var created struct{ ID string }
 	require.NoError(t, json.Unmarshal([]byte(body), &created))
@@ -136,13 +136,13 @@ func TestAComponentWithClassesServes(t *testing.T) {
 	require.NoError(t, admin.QueryRow(context.Background(), "SELECT count(*) FROM tiers.be_tier_hold WHERE id = $1 "+
 		"AND authorized_by = $2 AND released_at IS NULL", created.ID, sectest.Alice).Scan(&held))
 	assert.Equal(t, 1, held)
-	code, body = send("/be/tiering/demo.notes/holds/"+created.ID+"/lift", w.Bearer(sectest.Alice), "")
+	code, body = send("/api/tiering/demo.notes/holds/"+created.ID+"/lift", w.Bearer(sectest.Alice), "")
 	assert.Equal(t, http.StatusNoContent, code, body)
-	code, body = send("/be/tiering/demo.notes/approvals", w.Bearer(sectest.Alice),
+	code, body = send("/api/tiering/demo.notes/approvals", w.Bearer(sectest.Alice),
 		`{"scope_kind": "class", "scope": "demo.notes", "reason": "the retention has run"}`)
 	require.Equal(t, http.StatusCreated, code, body)
 	require.NoError(t, json.Unmarshal([]byte(body), &created))
-	code, body = send("/be/tiering/demo.notes/approvals/"+created.ID+"/withdraw", w.Bearer(sectest.Alice), "")
+	code, body = send("/api/tiering/demo.notes/approvals/"+created.ID+"/withdraw", w.Bearer(sectest.Alice), "")
 	assert.Equal(t, http.StatusNoContent, code, body)
 	stop()
 }

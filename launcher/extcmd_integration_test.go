@@ -46,7 +46,7 @@ func TestTheExternalCommandsAreTheSDKs(t *testing.T) {
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "payer", "")
 	built := make(chan *payer, 1)
-	def := component.Definition{ID: "demo/payer", Version: "3.0.0", ExternalCommands: true, GRPCPort: freePort(t),
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/payer", Version: "3.0.0", ExternalCommands: true, GRPCPort: freePort(t),
 		Recovery: "demo.payment.recover", Authz: sectest.Defs("demo/payer", "demo.payment", "demo.payment.recover"),
 		Migrations: noMigrations(),
 		New: func(rt *runtime.Runtime) (component.Module, error) {
@@ -97,7 +97,7 @@ func TestExternalCommandsOnlyQueryWhileVerifying(t *testing.T) {
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "payerv", "")
 	built := make(chan *payer, 1)
-	def := component.Definition{ID: "demo/payerv", Version: "3.0.0", ExternalCommands: true, GRPCPort: freePort(t),
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/payerv", Version: "3.0.0", ExternalCommands: true, GRPCPort: freePort(t),
 		Recovery: "demo.payment.recover", Authz: sectest.Defs("demo/payerv", "demo.payment", "demo.payment.recover"),
 		Migrations: noMigrations(),
 		New: func(rt *runtime.Runtime) (component.Module, error) {

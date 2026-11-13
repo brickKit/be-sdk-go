@@ -5,6 +5,7 @@ package component
 import (
 	"context"
 	"io/fs"
+	"strings"
 
 	"github.com/brickKit/be-sdk-go/v3/authz"
 	"github.com/brickKit/be-sdk-go/v3/config"
@@ -18,7 +19,11 @@ import (
 // Definition describes a component. Build it in the component's root package and pass it to launcher.Main (single
 // run) or list it in a shell.
 type Definition struct {
-	ID           string // component ID, e.g. erp/sales
+	ID string // component ID, e.g. erp/sales
+	// PublicPrefix is the component's public path prefix (be-protocol P11.11): every user-surface route is under it,
+	// and so are the SDK's standard routes (the flow kernel's, the tiering's). Empty: DefaultPrefix(ID). A component
+	// that runs the flow kernel keeps the default.
+	PublicPrefix string
 	Version      string // the version this code is; checked against COMPONENT_VERSION at start
 	Keys         []config.Key
 	Capabilities []string
@@ -86,4 +91,28 @@ type Starter interface {
 // leases). The context ends at the stop deadline.
 type Stopper interface {
 	Stop(ctx context.Context) error
+}
+
+// DefaultPrefix is a component's default public prefix (P11.11): /api/ and the part of its ID after the slash
+// (erp/purchase: /api/purchase).
+func DefaultPrefix(id string) string {
+	name := id
+	if i := strings.Index(id, "/"); i >= 0 {
+		name = id[i+1:]
+	}
+	return "/api/" + name
+}
+
+// Prefix is the component's public prefix: PublicPrefix, or the default.
+func (d Definition) Prefix() string {
+	if d.PublicPrefix != "" {
+		return d.PublicPrefix
+	}
+	return DefaultPrefix(d.ID)
+}
+
+// UnderPrefix says whether a route path is under a public prefix, by path segments (/api/sales never takes
+// /api/salesman).
+func UnderPrefix(prefix, path string) bool {
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }

@@ -60,7 +60,7 @@ func lateProxy(t *testing.T, target string, delay time.Duration) int {
 }
 
 func subscriber() component.Definition {
-	return component.Definition{ID: "demo/evcons", Version: "3.0.0", Recovery: "demo.seen.recover", GRPCPort: portNow(), Subscribes: true,
+	return component.Definition{PublicPrefix: testPrefix, ID: "demo/evcons", Version: "3.0.0", Recovery: "demo.seen.recover", GRPCPort: portNow(), Subscribes: true,
 		Authz:      sectest.Defs("demo/evcons", "demo.seen", "demo.seen.read", "demo.seen.recover"),
 		Migrations: fstest.MapFS{"0001_seen.up.sql": {Data: []byte("CREATE TABLE IF NOT EXISTS seen (event_id uuid PRIMARY KEY, record_id text NOT NULL, size int NOT NULL);")}},
 		New:        func(rt *runtime.Runtime) (component.Module, error) { return &consumer{rt: rt}, nil }}

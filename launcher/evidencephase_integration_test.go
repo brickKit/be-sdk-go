@@ -46,7 +46,7 @@ func (a *recorder) Routes(r *httpx.Routes) error {
 func TestTheEvidenceTransferRunsInTheRecoveryPhases(t *testing.T) {
 	host, port := pgtest.EnsureDatabase(t, pgtest.Database)
 	pgtest.Member(t, "evph", "")
-	def := component.Definition{ID: "demo/evph", Version: "3.0.0", GRPCPort: portNow(), Recovery: "demo.evp.recover",
+	def := component.Definition{PublicPrefix: testPrefix, ID: "demo/evph", Version: "3.0.0", GRPCPort: portNow(), Recovery: "demo.evp.recover",
 		Authz: sectest.Defs("demo/evph", "demo.evp", "demo.evp.change", "demo.evp.recover"), Migrations: noMigrations(),
 		New: func(rt *runtime.Runtime) (component.Module, error) { return &recorder{rt: rt}, nil }}
 	vars := pgtest.MemberEnv(host, port, "evph")

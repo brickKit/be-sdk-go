@@ -48,7 +48,7 @@ func (g *greeter) Routes(r *httpx.Routes) error {
 func opKey(id string) string { return strings.ReplaceAll(id, "/", ".") + ".greeting.read" }
 
 func def(id, version string) component.Definition {
-	return component.Definition{ID: id, Version: version, Authz: sectest.Defs(id, strings.ReplaceAll(id, "/", ".")+".greeting", opKey(id)),
+	return component.Definition{PublicPrefix: "/api", ID: id, Version: version, Authz: sectest.Defs(id, strings.ReplaceAll(id, "/", ".")+".greeting", opKey(id)),
 		Keys: []config.Key{{Name: "GREETING", Type: config.String, Required: true}},
 		New: func(rt *runtime.Runtime) (component.Module, error) {
 			return &greeter{id: id, greeting: rt.Config.String("GREETING")}, nil
