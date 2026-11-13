@@ -55,7 +55,14 @@ type Request struct {
 	// Credential is an external product's own API credential, the Authorization header's value (Casdoor's client
 	// credentials as Basic): never in the URL, where access logs keep it, and never logged. Not with ForwardUser.
 	Credential string
+	// Headers are an external product's own headers (DingTalk's x-acs-dingtalk-access-token): sent as they are,
+	// never logged; not the protocol's own headers.
+	Headers map[string]string
 }
+
+// ErrNotSent wraps a failure where the connection failed before the request was sent: an external command may be
+// sent again safely (be-protocol P13.5: not reached), which a failure after sending (a read timeout) may not.
+var ErrNotSent = errors.New("calls: the request was not sent")
 
 // HTTP returns the client for a dependency's user surface at base (its *_ENDPOINT URL).
 func (m *Member) HTTP(id, base string) *HTTP {
@@ -133,6 +140,9 @@ func (h *HTTP) attempt(ctx context.Context, req Request, body []byte, contentTyp
 	if auth != "" {
 		hr.Header.Set("Authorization", auth)
 	}
+	for k, v := range req.Headers {
+		hr.Header.Set(k, v)
+	}
 	obs.Propagator.Inject(ctx, propagation.HeaderCarrier(hr.Header))
 
 	resp, err := h.client.Do(hr)
@@ -176,7 +186,7 @@ func transportResult(ctx context.Context, err error) Result {
 	}
 	var op *net.OpError
 	if errors.As(err, &op) && op.Op == "dial" {
-		return Result{Err: err, Code: errs.Unavailable, ConnectFailed: true}
+		return Result{Err: fmt.Errorf("%w: %w", ErrNotSent, err), Code: errs.Unavailable, ConnectFailed: true}
 	}
 	return Result{Err: err, Code: errs.Unavailable}
 }

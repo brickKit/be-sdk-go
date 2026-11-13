@@ -115,3 +115,23 @@ func TestAnExternalCredentialGoesInTheHeader(t *testing.T) {
 		Request{Method: "GET", Path: "/x", Credential: "Basic x", ForwardUser: true}, nil)
 	assert.ErrorContains(t, err, "both")
 }
+
+// An external product's own headers are sent; a connection that fails before sending is told apart (ErrNotSent) from
+// one that fails after (be-protocol P13.5).
+func TestExternalHeadersAndNotSent(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("x-acs-dingtalk-access-token")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	m, err := NewMember(nil)
+	require.NoError(t, err)
+	require.NoError(t, m.HTTP("dingtalk", srv.URL).Do(withDeadline(t, 2e9),
+		Request{Method: "POST", Path: "/x", Body: map[string]string{}, Headers: map[string]string{"x-acs-dingtalk-access-token": "t"}}, nil))
+	assert.Equal(t, "t", got)
+	url := srv.URL
+	srv.Close() // nothing listens any more: the dial fails
+	err = m.HTTP("dingtalk2", url).Do(withDeadline(t, 2e9), Request{Method: "POST", Path: "/x", Body: map[string]string{}}, nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotSent)
+}

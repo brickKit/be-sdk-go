@@ -38,6 +38,10 @@ const (
 	Registered     = "registered"      // Result: a person's verified outcome of a manual command
 )
 
+// WhyExpired is the reason of a command failed at its local abandon time (P13.14): an adapter's settle hook tells an
+// expiry from a failure by it.
+const WhyExpired = "past the local abandon time: expired"
+
 // Parameters (the assembly project's protocol 10).
 const (
 	WarnAfter   = time.Hour      // unknown this long: alert
@@ -121,7 +125,7 @@ func Step(f Facts, e Event, c Capabilities, now time.Time) (string, string) {
 		return s, "a terminal state absorbs every later result"
 	}
 	if f.AbandonAt != nil && now.After(*f.AbandonAt) && (s == Prepared || s == RetryWait || s == Unknown) {
-		return Failed, "past the local abandon time: expired" // P13.14: not sent, queried or awaited any more
+		return Failed, WhyExpired // P13.14: not sent, queried or awaited any more
 	}
 	past := f.ResendDeadline != nil && now.After(*f.ResendDeadline)
 	switch {
