@@ -2,6 +2,7 @@ package calls
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -129,8 +130,13 @@ func TestExternalHeadersAndNotSent(t *testing.T) {
 	require.NoError(t, m.HTTP("dingtalk", srv.URL).Do(withDeadline(t, 2e9),
 		Request{Method: "POST", Path: "/x", Body: map[string]string{}, Headers: map[string]string{"x-acs-dingtalk-access-token": "t"}}, nil))
 	assert.Equal(t, "t", got)
-	url := srv.URL
-	srv.Close() // nothing listens any more: the dial fails
+	srv.Close()
+	// An address this member never connected to (a kept-alive connection to the closed server would fail after
+	// sending, with EOF: not ErrNotSent), where nothing listens: the dial fails.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	url := "http://" + l.Addr().String()
+	require.NoError(t, l.Close())
 	err = m.HTTP("dingtalk2", url).Do(withDeadline(t, 2e9), Request{Method: "POST", Path: "/x", Body: map[string]string{}}, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrNotSent)
