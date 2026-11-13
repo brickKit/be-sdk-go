@@ -1,7 +1,7 @@
 {
   "sdk": "go",
   "module": "github.com/brickKit/be-sdk-go/v3",
-  "protocol": "3.0.0-alpha.128",
+  "protocol": "3.0.0-alpha.129",
   "description": "Go SDK 的功能矩阵：be-protocol capabilities.json 中 owner 为 sdk 的每项能力的状态（含义见 be-protocol 的阅读说明）。 evidence 写作“包目录.测试名”。",
   "features": {
     "lifecycle": {
@@ -587,7 +587,8 @@
         "extcmd.TestReconcileByQueries",
         "extcmd.TestReconcileByListing",
         "launcher.TestExternalCommandsOnlyQueryWhileVerifying",
-        "launcher.TestTheRecoveryChecksAreTheRecoveryToolsOnly"
+        "launcher.TestTheRecoveryChecksAreTheRecoveryToolsOnly",
+        "extcmd.TestTheLocalAbandonTimeAndTheSettleHook"
       ]
     },
     "recovery-checks": {
@@ -712,7 +713,8 @@
         "notify.TestAnIntentGoesOnTheSendersStream",
         "notify.TestAnIntentOutsideTheContractIsNotEmitted",
         "notify.TestAWithdrawIntent",
-        "flow.TestTheTasksNotificationIntents"
+        "flow.TestTheTasksNotificationIntents",
+        "flow.TestInteractiveActions"
       ],
       "pending": [
         {
@@ -744,6 +746,19 @@
         {
           "rule": "P19.4",
           "reason": "退回“读源、条件放入”的路径：RustFS 遵守服务端复制的条件，这条路径没有对着真实的存储走过"
+        }
+      ]
+    },
+    "flow-actions": {
+      "status": "verified",
+      "evidence": [
+        "channel.TestTheProtocolsVector",
+        "flow.TestInteractiveActions"
+      ],
+      "pending": [
+        {
+          "rule": "P20.8",
+          "reason": "经真实的渠道成员（integration/im-dingtalk）与通知组件，在 IM 里点同意批准采购订单：在装配项目的格里验证（C10 的 P6）"
         }
       ]
     }

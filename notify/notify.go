@@ -75,6 +75,22 @@ type Intent struct {
 	ExpiresAt   string            `json:"expires_at,omitempty"`
 	CollapseKey string            `json:"collapse_key,omitempty"`
 	CollapseSeq int64             `json:"collapse_seq,omitempty"`
+	// Actions are the action grants by principal recipient (P18.11, chapter 20: not secrets), with the channel members
+	// that take their actions (the sender's FLOW_ACTION_SOURCES).
+	Actions        map[string]Grant `json:"actions,omitempty"`
+	ActionChannels []string         `json:"action_channels,omitempty"`
+}
+
+// Grant is one principal's action grant in an intent (P18.11, P20.5): its id and the actions it allows.
+type Grant struct {
+	ID      string   `json:"grant_id"`
+	Actions []Choice `json:"actions"`
+}
+
+// Choice is an action with its label on the button.
+type Choice struct {
+	Action string `json:"action"`
+	Label  string `json:"label"`
 }
 
 // Emitter is the runtime's events (rt.Events).
@@ -82,8 +98,11 @@ type Emitter interface {
 	Emit(ctx context.Context, tx db.Tx, stream string, e events.Event) (string, error)
 }
 
-// Stream is a component's stream (P18.2): erp/purchase publishes on erp.purchase.
-func Stream(component string) string { return strings.ReplaceAll(component, "/", ".") }
+// Stream is a component's stream (P18.2): erp/purchase publishes on erp.purchase, integration/im-dingtalk on
+// integration.im_dingtalk (a stream name has no "-", chapter 06).
+func Stream(component string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(component, "/", "."), "-", "_")
+}
 
 // Type is the intent's event type of a component (P18.2).
 func Type(component string) string { return Stream(component) + Suffix }

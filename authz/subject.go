@@ -66,6 +66,13 @@ func (s *Subject) Check(ctx context.Context, op string, facts Facts) (context.Co
 	return ctx, d, d.Err()
 }
 
+// SecurityVersion is the subject's security version in the view an operation is decided on (P8.25, P8.27; 0 when the
+// view has none): an action grant records it at issue, and a later one makes the grant stale (P20.8).
+func (s *Subject) SecurityVersion(op string) (int64, error) {
+	_, _, _, g, err := s.grant(context.Background(), op)
+	return g.SecurityVersion, err
+}
+
 // Decider takes the subject's grant for an operation once and answers a function deciding each record of many by
 // its facts (P8.15): for records read outside SQL, as the cold rows of an archive (be-protocol P15.26).
 func (s *Subject) Decider(ctx context.Context, op string) (context.Context, func(Facts) Decision, error) {

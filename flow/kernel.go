@@ -124,6 +124,13 @@ type Kernel struct {
 	Hooks
 	Directory Directory // nil: no employee component; a position rule answers no_assignee
 	Audit     Auditor   // nil: no audit (tests)
+	// ActionSources are the channel members whose actions the component takes (FLOW_ACTION_SOURCES, P17.19, P17.20):
+	// with none, no action grant is issued. Subject is the authorization of a principal on the component's own view
+	// (the runtime's), needed with them: an action arrives without a request.
+	ActionSources []string
+	Subject       func(principal string) *sdkauthz.Subject
+	// ActionLabels are the buttons' labels by decision, in the deployment's language; nil: 同意, 驳回.
+	ActionLabels map[Choice]string
 
 	DB     *db.DB
 	Events interface {
@@ -139,6 +146,9 @@ func (k *Kernel) Check() error {
 	if k.Component == "" || k.Stream == "" || k.TaskEvent == "" || k.HeartbeatEvent == "" || k.Operation == "" ||
 		k.ManageOperation == "" || k.Document == nil || k.Ended == nil || k.DB == nil || k.Events == nil {
 		return errors.New("flow: the kernel needs its component, stream, event types, operations, hooks, database and events")
+	}
+	if len(k.ActionSources) > 0 && k.Subject == nil {
+		return errors.New("flow: action sources need the subject of a principal (the runtime's authorization)")
 	}
 	k.defs = map[string]Definition{}
 	types := map[string]string{}

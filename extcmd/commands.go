@@ -52,6 +52,7 @@ type Command struct {
 	ID, Requester, Reference, Operation string
 	Params                              map[string]any
 	ExpiresAt                           *time.Time
+	AbandonAt                           *time.Time // P13.14: the local abandon time, nil when the command has none
 	ExternalID                          string
 }
 
@@ -95,6 +96,9 @@ type Commands struct {
 	Evidence  *evidence.Writer // the issue records of irrevocable commands; nil: irrevocable ones are never sent
 	QueryOnly bool             // EXTERNAL_COMMANDS_QUERY_ONLY (P13.10): query, never send
 	Log       *slog.Logger
+	// OnSettled runs in the transaction that takes a command to a final state (succeeded, failed, rejected): the
+	// adapter's result fact goes out with it (protocol 10's business facts, once per command). Nil: nothing.
+	OnSettled func(ctx context.Context, tx db.Tx, cmd Command, state, why string) error
 }
 
 func (c *Commands) log() *slog.Logger {
@@ -109,12 +113,22 @@ func (c *Commands) log() *slog.Logger {
 // parameters it answers IDEMPOTENCY_KEY_REUSED and writes nothing. The job sends it after the commit.
 func (c *Commands) Request(ctx context.Context, tx db.Tx, requester, reference, operation string, params map[string]any,
 	expiresAt *time.Time) (Command, string, error) {
+	return c.RequestUntil(ctx, tx, requester, reference, operation, params, expiresAt, nil)
+}
+
+// RequestUntil is Request with a local abandon time (P13.14): past it the command is not sent, queried or awaited
+// any more and fails as expired. For commands that do not matter late (notifications); never an irrevocable one.
+func (c *Commands) RequestUntil(ctx context.Context, tx db.Tx, requester, reference, operation string,
+	params map[string]any, expiresAt, abandonAt *time.Time) (Command, string, error) {
 	if c == nil || c.Adapter == nil {
 		return Command{}, "", errs.New(errs.ReasonCapabilityUnsupported, "this member sends no external commands")
 	}
 	caps, ok := c.Ops[operation]
 	if !ok {
 		return Command{}, "", errs.New(errs.ReasonRequestInvalid, "no such external operation: "+operation)
+	}
+	if abandonAt != nil && caps.Irrevocable {
+		return Command{}, "", errs.New(errs.ReasonRequestInvalid, "an irrevocable command has no abandon time (P13.14)")
 	}
 	raw, err := canon.Encode(params)
 	if err != nil {
@@ -125,11 +139,11 @@ func (c *Commands) Request(ctx context.Context, tx db.Tx, requester, reference, 
 		return Command{}, "", err
 	}
 	cmd := Command{ID: ids.New().String(), Requester: requester, Reference: reference, Operation: operation, Params: params,
-		ExpiresAt: expiresAt}
+		ExpiresAt: expiresAt, AbandonAt: abandonAt}
 	tag, err := tx.Exec(ctx, `INSERT INTO be_external_command (id, requester, reference, operation, params, params_digest,
-		irrevocable, state, reason, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, 'prepared', 'requested', $8)
+		irrevocable, state, reason, expires_at, abandon_at) VALUES ($1, $2, $3, $4, $5, $6, $7, 'prepared', 'requested', $8, $9)
 		ON CONFLICT (requester, reference) DO NOTHING`, cmd.ID, requester, reference, operation, raw, digest,
-		caps.Irrevocable, expiresAt)
+		caps.Irrevocable, expiresAt, abandonAt)
 	if err != nil {
 		return Command{}, "", err
 	}
@@ -199,11 +213,12 @@ func (c *Commands) load(ctx context.Context, tx db.Tx, id string) (*row, error) 
 	var raw []byte
 	var external *string
 	err := tx.QueryRow(ctx, `SELECT id::text, requester, reference, operation, params, state, external_id, expires_at,
-			resend_deadline, first_reached_at, last_reached_at, unknown_since, accepted_since, unrecorded_until,
+			resend_deadline, first_reached_at, last_reached_at, unknown_since, accepted_since, unrecorded_until, abandon_at,
 			(SELECT count(*) FROM be_external_attempt a WHERE a.command = c.id), now()
 		FROM be_external_command c WHERE id = $1 AND next_at <= now() FOR UPDATE SKIP LOCKED`, id).Scan(
 		&r.ID, &r.Requester, &r.Reference, &r.Operation, &raw, &r.State, &external, &r.Facts.ExpiresAt, &r.ResendDeadline,
-		&r.FirstReached, &r.LastReached, &r.UnknownSince, &r.AcceptedSince, &r.UnrecordedUntil, &r.attempts, &r.now)
+		&r.FirstReached, &r.LastReached, &r.UnknownSince, &r.AcceptedSince, &r.UnrecordedUntil, &r.Facts.AbandonAt,
+		&r.attempts, &r.now)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errNotDue
 	}
@@ -213,7 +228,7 @@ func (c *Commands) load(ctx context.Context, tx db.Tx, id string) (*row, error) 
 	if external != nil {
 		r.ExternalID = *external
 	}
-	r.Command.ExpiresAt = r.Facts.ExpiresAt
+	r.Command.ExpiresAt, r.Command.AbandonAt = r.Facts.ExpiresAt, r.Facts.AbandonAt
 	if err := json.Unmarshal(raw, &r.Params); err != nil {
 		return nil, err
 	}
@@ -230,6 +245,11 @@ func (c *Commands) process(ctx context.Context, id string) error {
 		send, query = false, false
 		if r, err = c.load(ctx, tx, id); err != nil {
 			return err
+		}
+		if r.Facts.AbandonAt != nil && r.now.After(*r.Facts.AbandonAt) { // P13.14: before any send or query
+			if next, why := Step(r.Facts, Event{Kind: Claim}, r.caps, r.now); next == Failed {
+				return c.set(ctx, tx, r, Failed, why, r.now)
+			}
 		}
 		switch r.State {
 		case Prepared, RetryWait:
@@ -280,13 +300,24 @@ func (c *Commands) set(ctx context.Context, tx db.Tx, r *row, state, why string,
 		c.log().Info("an external command moved", "event", "external_command_state", "command", r.ID,
 			"operation", r.Operation, "from", r.State, "to", state, "why", why)
 	}
+	// a command waiting to be sent or queried is due at its abandon time at the latest (P13.14)
+	if a := r.Facts.AbandonAt; a != nil && (state == Prepared || state == RetryWait || state == Unknown) && a.Before(next) {
+		next = *a
+	}
 	_, err := tx.Exec(ctx, `UPDATE be_external_command SET state = $2, reason = $3, next_at = $4, updated_at = now(),
 		unknown_since = CASE WHEN $2 = 'unknown' THEN coalesce(unknown_since, now()) ELSE NULL END,
 		accepted_since = CASE WHEN $2 = 'accepted' THEN coalesce(accepted_since, now()) ELSE NULL END,
 		settled_at = CASE WHEN $2 IN ('succeeded', 'failed', 'rejected') THEN now() END WHERE id = $1`,
 		r.ID, state, why, next)
+	if err != nil {
+		return err
+	}
+	settles := terminal(state) && !terminal(r.State)
 	r.State = state
-	return err
+	if settles && c.OnSettled != nil {
+		return c.OnSettled(ctx, tx, r.Command, state, why)
+	}
+	return nil
 }
 
 func backoff(attempts int) time.Duration {
@@ -478,14 +509,18 @@ func (c *Commands) Register(ctx context.Context, tx db.Tx, id, result, why strin
 	if result != Succeeded && result != Failed && result != Rejected && result != Sending {
 		return errs.New(errs.ReasonRequestInvalid, "a manual command is registered succeeded, failed, rejected or sending")
 	}
-	var state string
-	if err := tx.QueryRow(ctx, "SELECT state FROM be_external_command WHERE id = $1 FOR UPDATE", id).Scan(&state); err != nil {
+	r := &row{Command: Command{ID: id}}
+	var raw []byte
+	if err := tx.QueryRow(ctx, `SELECT state, requester, reference, operation, params FROM be_external_command
+		WHERE id = $1 FOR UPDATE`, id).Scan(&r.Facts.State, &r.Requester, &r.Reference, &r.Operation, &raw); err != nil {
 		return err
 	}
-	if state != Manual {
+	if err := json.Unmarshal(raw, &r.Params); err != nil {
+		return err
+	}
+	if state := r.Facts.State; state != Manual {
 		return errs.New(errs.ReasonRequestInvalid, "only a manual command is registered (it is "+state+")")
 	}
-	r := &row{Command: Command{ID: id}, Facts: Facts{State: state}}
 	if err := tx.QueryRow(ctx, "SELECT now()").Scan(&r.now); err != nil {
 		return err
 	}

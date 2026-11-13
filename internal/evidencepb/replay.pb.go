@@ -85,7 +85,8 @@ type ReplayResponse struct {
 	// object the change refers to no longer exists (nothing done, for review); unsupported: this owner has no replay
 	// for the record's category (nothing done, for review). For a category whose effect lies outside the recovery group
 	// (P12.20: checked, not re-executed): consistent: the effect still holds there; inconsistent: it does not, or could
-	// not be asked (for review; detail says why).
+	// not be asked (for review; detail says why). deferred: what the re-execution depends on has not arrived yet
+	// (nothing done); the recovery tool asks again once the authorization member applied its sources (P12.22).
 	Outcome       string `protobuf:"bytes,1,opt,name=outcome,proto3" json:"outcome,omitempty"`
 	Detail        string `protobuf:"bytes,2,opt,name=detail,proto3" json:"detail,omitempty"`
 	unknownFields protoimpl.UnknownFields

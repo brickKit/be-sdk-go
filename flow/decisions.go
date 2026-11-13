@@ -118,7 +118,9 @@ func (k *Kernel) decideIn(ctx context.Context, tx db.Tx, subj *sdkauthz.Subject,
 		s.Self = person == i.InitiatorPerson || person == initiatorNow
 	}
 	s.Self = s.Self || me == i.Initiator
-	_, _, err = subj.Check(ctx, d.Operation, facts)
+	if _, _, err = subj.Check(ctx, d.Operation, facts); err != nil && Retryable(err) {
+		return Task{}, err // the view cannot decide right now: not a refusal (P20.8)
+	}
 	s.Operation = err == nil
 	if b := i.Assignments[i.Step-1]; kind(d.Steps[i.Step-1], b) == Position && s.Task == Pending {
 		if k.Directory == nil { // the deployment lost its employee directory: nothing proves the holder (P17.8)

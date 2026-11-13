@@ -301,3 +301,55 @@ func TestAnIrrevocableCommandNeedsItsIssueRecord(t *testing.T) {
 	assert.Contains(t, string(st.recs[0].Record), `"external_command_issued"`)
 	assert.Contains(t, string(st.recs[0].Record), `"phase":"intent"`)
 }
+
+// P13.14: a command with a local abandon time is not sent once past it, an unknown one is not queried or left for a
+// person, and either fails as expired; the settle hook runs in the transaction that takes a command to its final
+// state, once.
+func TestTheLocalAbandonTimeAndTheSettleHook(t *testing.T) {
+	w := newWorld(t, "extcmd_abandon", map[string]Capabilities{"pay": {}})
+	var settled []string
+	w.c.OnSettled = func(ctx context.Context, tx db.Tx, c Command, state, why string) error {
+		settled = append(settled, c.Reference+":"+state)
+		return nil
+	}
+	request := func(ref string, abandon time.Time) Command {
+		var cmd Command
+		require.NoError(t, w.d.Tx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+			var err error
+			cmd, _, err = w.c.RequestUntil(ctx, tx, "demo/sales", ref, "pay", amount, nil, &abandon)
+			return err
+		}))
+		return cmd
+	}
+	late := request("late", time.Now().Add(-time.Minute))
+	w.run()
+	assert.Equal(t, Failed, w.state(late.ID), "past its abandon time: not sent")
+	assert.NotContains(t, w.ext.sent(), "late")
+
+	w.ext.classes = []string{"error"} // a read timeout: unknown, and the external system cannot be queried
+	w.ext.queryDown = true
+	lost := request("lost", time.Now().Add(time.Hour))
+	w.run()
+	assert.Equal(t, Unknown, w.state(lost.ID))
+	var next time.Time
+	require.NoError(t, w.admin.QueryRow(context.Background(), "SELECT next_at FROM be_external_command WHERE id = $1",
+		lost.ID).Scan(&next))
+	assert.False(t, next.After(time.Now().Add(time.Hour+time.Second)), "due at its abandon time at the latest")
+	pgtest.Exec(t, w.admin, "UPDATE be_external_command SET abandon_at = now() - interval '1 second' WHERE id = '"+lost.ID+"'")
+	w.due(lost.ID)
+	w.run()
+	assert.Equal(t, Failed, w.state(lost.ID), "unknown past its abandon time: expired, never manual")
+	assert.Equal(t, []string{"lost"}, w.ext.sent(), "not sent again")
+
+	ok := request("ok", time.Now().Add(time.Hour))
+	w.run()
+	assert.Equal(t, Succeeded, w.state(ok.ID))
+	assert.Equal(t, []string{"late:failed", "lost:failed", "ok:succeeded"}, settled, "the hook, once a command")
+
+	err := w.d.Tx(context.Background(), func(ctx context.Context, tx db.Tx) error {
+		_, _, err := (&Commands{DB: w.d, Adapter: w.ext, Ops: map[string]Capabilities{"pay": {Irrevocable: true}}}).
+			RequestUntil(ctx, tx, "demo/sales", "x", "pay", amount, nil, &time.Time{})
+		return err
+	})
+	assert.Error(t, err, "an irrevocable command has no abandon time")
+}

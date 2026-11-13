@@ -49,6 +49,8 @@ const (
 	// the flow kernel's decision (protocol chapter 17, P17.10)
 	ReasonTaskNotPending       = "TASK_NOT_PENDING"
 	ReasonUploadIncomplete     = "UPLOAD_INCOMPLETE"
+	ReasonGrantUsed            = "GRANT_USED"
+	ReasonGrantStale           = "GRANT_STALE"
 	ReasonVersionConflict      = "VERSION_CONFLICT"
 	ReasonNotAssignee          = "NOT_ASSIGNEE"
 	ReasonSelfApproval         = "SELF_APPROVAL"
@@ -123,6 +125,8 @@ func init() {
 		{ReasonAuditCapacityExhausted, Unavailable, 0, RetryYes, "Audited operations are paused until the audit backlog drains"},
 		{ReasonTaskNotPending, FailedPrecondition, 409, RetryNo, "The task is not pending, or its instance has ended"},
 		{ReasonUploadIncomplete, FailedPrecondition, 409, RetryYes, "The upload has not arrived yet; confirm it once it has"},
+		{ReasonGrantUsed, FailedPrecondition, 409, RetryNo, "The action grant already has another action's result"},
+		{ReasonGrantStale, FailedPrecondition, 409, RetryNo, "The account changed since the action grant was issued: act in the system"},
 		{ReasonVersionConflict, Aborted, 0, RetryNo, "The record changed since that version"},
 		{ReasonNotAssignee, PermissionDenied, 0, RetryNo, "You are not a candidate of this task"},
 		{ReasonSelfApproval, PermissionDenied, 0, RetryNo, "The one who started it does not decide it"},

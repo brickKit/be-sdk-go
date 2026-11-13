@@ -21,6 +21,7 @@ type vecCommand struct {
 	UnknownSince   *string `json:"unknown_since"`
 	AcceptedAt     *string `json:"accepted_at"`
 	Unrecorded     *string `json:"unrecorded_until"`
+	AbandonAt      *string `json:"abandon_at"`
 }
 
 type vecCaps struct {
@@ -47,7 +48,7 @@ func (c vecCaps) caps() Capabilities {
 func (c vecCommand) facts(t *testing.T) Facts {
 	return Facts{State: c.State, ResendDeadline: at(t, c.ResendDeadline), ExpiresAt: at(t, c.ExpiresAt),
 		FirstReached: at(t, c.FirstReached), LastReached: at(t, c.LastReached), UnknownSince: at(t, c.UnknownSince),
-		AcceptedSince: at(t, c.AcceptedAt), UnrecordedUntil: at(t, c.Unrecorded)}
+		AcceptedSince: at(t, c.AcceptedAt), UnrecordedUntil: at(t, c.Unrecorded), AbandonAt: at(t, c.AbandonAt)}
 }
 
 // The state table, the resend deadline and the request's digest against be-protocol's vectors (P13.2-P13.8).

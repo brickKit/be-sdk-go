@@ -56,7 +56,15 @@ func (k *Kernel) intend(ctx context.Context, tx db.Tx, t Task) error {
 			in.ExpiresAt = *t.DueAt
 		}
 	}
-	_, err := notify.Emit(ctx, tx, k.Events, in)
+	expires, _ := time.Parse(time.RFC3339Nano, in.ExpiresAt)
+	grants, err := k.grants(ctx, tx, t, cands, expires) // the action grants (P17.19), when the component takes actions
+	if err != nil {
+		return err
+	}
+	if len(grants) > 0 {
+		in.Actions, in.ActionChannels = grants, k.ActionSources
+	}
+	_, err = notify.Emit(ctx, tx, k.Events, in)
 	return err
 }
 

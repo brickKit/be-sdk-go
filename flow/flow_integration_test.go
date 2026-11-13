@@ -18,6 +18,7 @@ import (
 	protocol "github.com/brickKit/be-protocol/v3"
 	"github.com/brickKit/be-sdk-go/v3/audit"
 	"github.com/brickKit/be-sdk-go/v3/authz"
+	"github.com/brickKit/be-sdk-go/v3/channel"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/brickKit/be-sdk-go/v3/events"
@@ -712,4 +713,130 @@ func TestTheTasksNotificationIntents(t *testing.T) {
 	require.Len(t, got, 2)
 	assert.Equal(t, notify.Deliver, got[1].Kind)
 	assert.Equal(t, []notify.Recipient{{Principal: bob}}, got[1].Recipients)
+}
+
+const dingtalk = "integration/im-dingtalk"
+
+// act hands one action event of the channel member to the kernel's subscription, in its own transaction, as the
+// consumer would (P17.20).
+func (w *world) act(a channel.Action, source string) error {
+	w.t.Helper()
+	subs := w.k.ActionSubs()
+	require.Len(w.t, subs, 1)
+	b, _ := json.Marshal(a)
+	return w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error {
+		return subs[0].Handle(ctx, tx, events.Received{Stream: "integration.im_dingtalk", Source: "urn:be:" + source,
+			Type: channel.ActionType(dingtalk), RecordID: a.ID, Data: b})
+	})
+}
+
+func (w *world) action(principal, grant, act string) channel.Action {
+	return channel.Action{ID: ids.New().String(), Channel: dingtalk, Audience: "test/purchase", Principal: principal,
+		GrantID: grant, Action: act, ClickedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+}
+
+func (w *world) grantResult(grant string) (action, result *string) {
+	require.NoError(w.t, w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error {
+		return tx.QueryRow(ctx, `SELECT result_action, result FROM be_flow_action_grant WHERE id = $1`, grant).Scan(&action, &result)
+	}))
+	return
+}
+
+func (w *world) decisions(task string) int {
+	var n int
+	require.NoError(w.t, w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM be_flow_decision WHERE task_id = $1`, task).Scan(&n)
+	}))
+	return n
+}
+
+// told is the in-app intents the kernel wrote to a holder whose action was not carried out (P20.8).
+func (w *world) told(principal string) int {
+	var n int
+	require.NoError(w.t, w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM published WHERE type = 'test.purchase_notification.intent.v1'
+			AND data->>'collapse_key' IS NULL AND data->'recipients'->0->>'principal' = $1`, principal).Scan(&n)
+	}))
+	return n
+}
+
+// P17.19, P17.20, P20.5, P20.7, P20.8: a pending task's intent carries one grant per principal candidate and the
+// channels that take actions; an action on it decides the task once; the refusals in order, audited, recorded and
+// told to the holder when they are the grant's own; a view that cannot decide records nothing.
+func TestInteractiveActions(t *testing.T) {
+	w := newWorld(t, "flow_actions")
+	w.k.ActionSources, w.k.Subject = []string{dingtalk}, w.subject
+
+	doc, task := w.start(oneStep)
+	in := w.intents(task)[0]
+	require.NoError(t, notify.Check(in))
+	assert.Equal(t, []string{dingtalk}, in.ActionChannels)
+	require.Contains(t, in.Actions, alice)
+	require.Contains(t, in.Actions, bob)
+	assert.NotContains(t, in.Actions, eve, "only the candidates (eve is the initiator's person)")
+	ga, gb := in.Actions[alice], in.Actions[bob]
+	assert.Equal(t, []notify.Choice{{Action: "approve", Label: "同意"}, {Action: "reject", Label: "驳回"}}, ga.Actions,
+		"a flow whose rejection needs no comment has both buttons")
+
+	// the refusals before the grant is the holder's: audited, nothing recorded, nobody told
+	other := w.action(alice, ga.ID, "approve")
+	other.Audience = "erp/payment"
+	require.NoError(t, w.act(other, dingtalk))
+	assert.Empty(t, w.aud.denials, "another owner's action is acknowledged silently")
+	require.NoError(t, w.act(w.action(alice, ga.ID, "approve"), "test/impostor"))
+	require.NoError(t, w.act(w.action(alice, ids.New().String(), "approve"), dingtalk))
+	require.NoError(t, w.act(w.action(bob, ga.ID, "approve"), dingtalk))
+	require.NoError(t, w.act(w.action(alice, ga.ID, "delegate"), dingtalk))
+	assert.Equal(t, []string{"not_the_sender", "unknown_grant", "not_the_holder", "action_not_allowed"}, w.aud.denials)
+	a, _ := w.grantResult(ga.ID)
+	assert.Nil(t, a)
+	assert.Equal(t, "pending", string(w.task(task).State))
+
+	// a view that cannot decide: nacked, nothing recorded (P20.8)
+	w.k.Subject = func(p string) *authz.Subject {
+		return &authz.Subject{Principal: p, Defs: defs, Holder: authz.NewHolder("test/purchase", grants{},
+			slog.New(slog.NewTextHandler(io.Discard, nil))), At: time.Now()}
+	}
+	assert.Error(t, w.act(w.action(alice, ga.ID, "approve"), dingtalk), "retried: the event is nacked")
+	a, _ = w.grantResult(ga.ID)
+	assert.Nil(t, a)
+	w.k.Subject = w.subject
+
+	// executed once: the clicked button decides the task as its holder; the same again answers it, the other action
+	// is refused (GRANT_USED)
+	require.NoError(t, w.act(w.action(alice, ga.ID, "approve"), dingtalk))
+	assert.Equal(t, "approved", w.docState(doc))
+	a, r := w.grantResult(ga.ID)
+	require.NotNil(t, a)
+	assert.Equal(t, "approve", *a)
+	assert.Equal(t, "approved", *r)
+	require.NoError(t, w.act(w.action(alice, ga.ID, "approve"), dingtalk))
+	assert.Equal(t, 1, w.decisions(task), "the same action again: one decision")
+	require.NoError(t, w.act(w.action(alice, ga.ID, "reject"), dingtalk))
+	assert.Equal(t, "GRANT_USED", w.aud.denials[len(w.aud.denials)-1])
+	assert.Equal(t, 1, w.told(alice))
+
+	// the task decided meanwhile: bob's grant is refused with the decision's reason, recorded, and bob is told
+	require.NoError(t, w.act(w.action(bob, gb.ID, "approve"), dingtalk))
+	_, r = w.grantResult(gb.ID)
+	require.NotNil(t, r)
+	assert.Equal(t, "TASK_NOT_PENDING", *r)
+	assert.Equal(t, 1, w.told(bob))
+
+	// expired: clicked after the grant's expiry
+	_, task2 := w.start(oneStep)
+	g2 := w.intents(task2)[0].Actions[alice]
+	require.NoError(t, w.d.Tx(w.ctx, func(ctx context.Context, tx db.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE be_flow_action_grant SET expires_at = now() - interval '2 hours' WHERE id = $1`, g2.ID)
+		return err
+	}))
+	require.NoError(t, w.act(w.action(alice, g2.ID, "approve"), dingtalk))
+	_, r = w.grantResult(g2.ID)
+	require.NotNil(t, r)
+	assert.Equal(t, "expired", *r)
+	assert.Equal(t, "pending", string(w.task(task2).State))
+
+	// a flow whose rejection must say why has only the approve button
+	_, task3 := w.start(commented)
+	assert.Equal(t, []notify.Choice{{Action: "approve", Label: "同意"}}, w.intents(task3)[0].Actions[dave].Actions)
 }

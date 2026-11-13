@@ -64,6 +64,8 @@ type Facts struct {
 	UnknownSince, AcceptedSince *time.Time
 	// UnrecordedUntil: after a full recovery, sends may have gone on until this moment without a record (P13.12).
 	UnrecordedUntil *time.Time
+	// AbandonAt is the local abandon time (P13.14): past it a prepared, retry_wait or unknown command fails as expired.
+	AbandonAt *time.Time
 }
 
 // Event is one thing that happened to a command.
@@ -117,6 +119,9 @@ func Step(f Facts, e Event, c Capabilities, now time.Time) (string, string) {
 	s := f.State
 	if terminal(s) {
 		return s, "a terminal state absorbs every later result"
+	}
+	if f.AbandonAt != nil && now.After(*f.AbandonAt) && (s == Prepared || s == RetryWait || s == Unknown) {
+		return Failed, "past the local abandon time: expired" // P13.14: not sent, queried or awaited any more
 	}
 	past := f.ResendDeadline != nil && now.After(*f.ResendDeadline)
 	switch {

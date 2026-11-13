@@ -1,7 +1,8 @@
 # The standard system methods (be-protocol proto/, read from the pinned module), committed (make gen; make gen-check):
 # the watermark pull, the record reads and the redelivery into internal/sourcepb (the SDK serves and calls them), the sessions into sessionpb (public: the
 # identity member implements it, P8.28), the external reconciliation and the recovery's checks into externalpb and recoverypb (public: the recovery
-# tool calls them, chapters 13 and 14). The plugin versions equal what go.mod locks: google.golang.org/protobuf
+# tool calls them, chapters 13 and 14), the channel members' delivery into channelpb (public: the notification component calls it, channel
+# members implement it, chapter 20). The plugin versions equal what go.mod locks: google.golang.org/protobuf
 # v1.36.12 and grpc-go; the same remote plugins as the contract repositories.
 version: v2
 managed:
@@ -28,6 +29,9 @@ managed:
     - file_option: go_package
       path: be/recovery/v1/check.proto
       value: github.com/brickKit/be-sdk-go/v3/recoverypb
+    - file_option: go_package
+      path: be/channel/v1/channel.proto
+      value: github.com/brickKit/be-sdk-go/v3/channelpb
 plugins:
   - remote: buf.build/protocolbuffers/go:v1.36.12
     out: .
