@@ -167,5 +167,9 @@ func TestErrorClasses(t *testing.T) {
 	require.NoError(t, err)
 	_, err = s.Put(context.Background(), "x", strings.NewReader("x"), 1, "text/plain", false)
 	assert.True(t, errors.Is(err, storage.ErrDenied), "%v", err)
-	assert.NotContains(t, logs.String(), "X-Amz-Signature=0")
+	_, err = s.Head(context.Background(), "x")
+	assert.True(t, errors.Is(err, storage.ErrDenied), "a refused head is denied, not unavailable (P19.9): %v", err)
+	// the redaction of the store's words is storage_test.go's (a fake store that answers with a signature); here the
+	// refusal reached the log
+	assert.Contains(t, logs.String(), "storage_refused")
 }

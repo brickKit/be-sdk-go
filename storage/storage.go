@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -70,9 +71,9 @@ type Store struct {
 	log            *slog.Logger
 	region, access string
 
-	copyOnce sync.Once
-	copyErr  error
-	native   bool // the store copies on its side with If-None-Match (P19.4)
+	copyMu    sync.Mutex
+	copyKnown bool // the probe got a definite answer
+	native    bool // the store copies on its side with If-None-Match (P19.4)
 
 	condMu    sync.Mutex
 	condKnown bool  // the probe got an answer
@@ -213,59 +214,78 @@ func (s *Store) Put(ctx context.Context, key string, body io.Reader, size int64,
 	}
 	sum := sha256.Sum256(data)
 	digest := hex.EncodeToString(sum[:])
+	return digest, s.put(ctx, key, full, bytes.NewReader(data), size, digest, contentType, ifAbsent)
+}
+
+// put sends a write whose digest is known already.
+func (s *Store) put(ctx context.Context, key, full string, body io.Reader, size int64, digest, contentType string,
+	ifAbsent bool) error {
 	extra := map[string]string{"content-type": contentType, "x-amz-meta-sha256": digest}
 	if ifAbsent {
 		if err := s.conditional(ctx); err != nil {
-			return "", err
+			return err
 		}
 		extra["if-none-match"] = "*"
 	}
-	resp, err := s.do(ctx, http.MethodPut, full, "", extra, bytes.NewReader(data), size)
+	resp, err := s.do(ctx, http.MethodPut, full, "", extra, body, size)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if resp.StatusCode/100 != 2 {
-		return "", s.classify("put", key, resp)
+		return s.classify("put", key, resp)
 	}
 	resp.Body.Close()
-	return digest, nil
+	return nil
+}
+
+// probeTimeout bounds a probe; the probe runs on its own context, so a caller's cancelled request does not decide it.
+const probeTimeout = 30 * time.Second
+
+func probeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), probeTimeout)
 }
 
 // conditional finds out once whether the store honours If-None-Match on a put; one that does not gets no conditional
-// write at all (P19.3: never an unconditional one in its place).
+// write at all (P19.3: never an unconditional one in its place). Only a definite answer is kept: the first write
+// accepted and the second refused (honoured) or accepted (not honoured); anything else (unreachable, a 5xx, a refusal
+// of the first write) leaves it unknown, answered as unavailable and probed again next time.
 func (s *Store) conditional(ctx context.Context) error {
 	s.condMu.Lock()
 	defer s.condMu.Unlock()
 	if s.condKnown {
 		return s.condErr
 	}
-	func() { // an unreachable store leaves it unknown: probed again next time
-		key := fmt.Sprintf("be-storage-probe/put-%d", s.now().UnixNano())
-		full, _ := s.full(key)
-		put := func() (*http.Response, error) {
-			return s.do(ctx, http.MethodPut, full, "", map[string]string{"content-type": "text/plain", "if-none-match": "*"},
-				strings.NewReader("probe"), 5)
-		}
-		first, err := put()
+	pctx, cancel := probeContext(ctx)
+	defer cancel()
+	key := fmt.Sprintf("be-storage-probe/put-%d", s.now().UnixNano())
+	full, _ := s.full(key)
+	put := func() (int, error) {
+		resp, err := s.do(pctx, http.MethodPut, full, "", map[string]string{"content-type": "text/plain",
+			"if-none-match": "*"}, strings.NewReader("probe"), 5)
 		if err != nil {
-			return
+			return 0, err
 		}
-		first.Body.Close()
-		second, err := put()
-		if err != nil {
-			return
-		}
-		second.Body.Close()
-		_ = s.Delete(ctx, key)
-		s.condKnown = true
-		if second.StatusCode != http.StatusPreconditionFailed && second.StatusCode != http.StatusConflict {
-			s.condErr = fmt.Errorf("%w: the object store does not honour If-None-Match on a put", ErrUnavailable)
-			s.log.Error("the object store does not honour conditional writes: the storage port refuses them",
-				"event", "storage_no_conditional_write")
-		}
-	}()
-	if !s.condKnown {
+		resp.Body.Close()
+		return resp.StatusCode, nil
+	}
+	first, err := put()
+	if err != nil || first/100 != 2 {
+		return fmt.Errorf("%w: the conditional write could not be probed (%d)", ErrUnavailable, first)
+	}
+	second, err := put()
+	_ = s.Delete(pctx, key)
+	switch {
+	case err != nil:
 		return fmt.Errorf("%w: the conditional write could not be probed", ErrUnavailable)
+	case second == http.StatusPreconditionFailed || second == http.StatusConflict:
+		s.condKnown = true
+	case second/100 == 2:
+		s.condKnown = true
+		s.condErr = fmt.Errorf("%w: the object store does not honour If-None-Match on a put", ErrUnavailable)
+		s.log.Error("the object store does not honour conditional writes: the storage port refuses them",
+			"event", "storage_no_conditional_write")
+	default:
+		return fmt.Errorf("%w: the conditional write could not be probed (%d)", ErrUnavailable, second)
 	}
 	return s.condErr
 }
@@ -282,11 +302,11 @@ func (s *Store) Copy(ctx context.Context, src, dst string) error {
 	if err != nil {
 		return err
 	}
-	s.copyOnce.Do(func() { s.native, s.copyErr = s.probeCopy(ctx) })
-	if s.copyErr != nil {
-		return s.copyErr
+	native, err := s.copyMode(ctx)
+	if err != nil {
+		return err
 	}
-	if s.native {
+	if native {
 		return s.copyNative(ctx, fsrc, fdst, dst)
 	}
 	return s.copyThrough(ctx, src, dst)
@@ -315,35 +335,93 @@ func (s *Store) copyNative(ctx context.Context, fsrc, fdst, dst string) error {
 	return nil
 }
 
+// copyThrough reads the source once into a temporary file, digesting it, and puts that with the condition: the
+// destination holds what was read, whatever happens to the source after (P19.4), and no object is held in memory.
 func (s *Store) copyThrough(ctx context.Context, src, dst string) error {
-	r, meta, err := s.Get(ctx, src)
+	fdst, err := s.full(dst)
+	if err != nil {
+		return err
+	}
+	r, _, err := s.Get(ctx, src)
 	if err != nil {
 		return err
 	}
 	defer r.Close()
-	_, err = s.Put(ctx, dst, r, meta.Size, "application/octet-stream", true)
-	return err
+	tmp, err := os.CreateTemp("", "be-storage-copy-*")
+	if err != nil {
+		return err
+	}
+	defer func() { tmp.Close(); os.Remove(tmp.Name()) }()
+	h := sha256.New()
+	size, err := io.Copy(io.MultiWriter(tmp, h), r)
+	if err != nil {
+		return fmt.Errorf("%w: copy %s: reading the source: %v", ErrUnavailable, dst, err)
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	return s.put(ctx, dst, fdst, tmp, size, hex.EncodeToString(h.Sum(nil)), "application/octet-stream", true)
 }
 
-// probeCopy finds out once whether the store honours If-None-Match on a server-side copy: it copies a probe object
-// onto itself's twin twice; the second must be refused. The answer is logged (P19.4).
-func (s *Store) probeCopy(ctx context.Context) (bool, error) {
+// copyMode finds out whether the store honours If-None-Match on a server-side copy (P19.4): it copies a probe object
+// to a fresh key twice; the second must be refused. Only a definite answer is kept (both copies answered, or the store
+// refusing copies as such); an unreachable store or a 5xx leaves it unknown, answered as unavailable and probed again
+// next time. The answer is logged.
+func (s *Store) copyMode(ctx context.Context) (bool, error) {
+	s.copyMu.Lock()
+	defer s.copyMu.Unlock()
+	if s.copyKnown {
+		return s.native, nil
+	}
+	pctx, cancel := probeContext(ctx)
+	defer cancel()
+	unknown := func(why string) (bool, error) {
+		return false, fmt.Errorf("%w: the server-side copy could not be probed: %s", ErrUnavailable, why)
+	}
 	src, dst := "be-storage-probe/src", fmt.Sprintf("be-storage-probe/dst-%d", s.now().UnixNano())
-	if _, err := s.Put(ctx, src, strings.NewReader("probe"), 5, "text/plain", false); err != nil {
-		return false, err
+	if _, err := s.Put(pctx, src, strings.NewReader("probe"), 5, "text/plain", false); err != nil {
+		return unknown("the probe object: " + err.Error())
 	}
 	fsrc, _ := s.full(src)
 	fdst, _ := s.full(dst)
-	first := s.copyNative(ctx, fsrc, fdst, dst)
-	second := s.copyNative(ctx, fsrc, fdst, dst)
-	_ = s.Delete(ctx, dst)
-	native := first == nil && errors.Is(second, ErrExists)
+	copyOnce := func() (int, error) {
+		extra := map[string]string{"x-amz-copy-source": "/" + s3sig.Escape(s.Bucket, false) + "/" + s3sig.Escape(fsrc, true),
+			"if-none-match": "*", "x-amz-metadata-directive": "REPLACE", "content-type": "application/octet-stream"}
+		resp, err := s.do(pctx, http.MethodPut, fdst, "", extra, nil, 0)
+		if err != nil {
+			return 0, err
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		if resp.StatusCode/100 == 2 && strings.Contains(string(body), "<Error>") {
+			return http.StatusInternalServerError, nil // a copy may fail in a 200's body
+		}
+		return resp.StatusCode, nil
+	}
+	defer func() { _ = s.Delete(pctx, dst) }()
+	first, err := copyOnce()
+	switch {
+	case err != nil || (first >= 500 && first != http.StatusNotImplemented):
+		return unknown(fmt.Sprintf("the first copy (%d)", first))
+	case first/100 != 2: // the store refuses server-side copies as such (400, 405, 501): read and put
+		s.copyKnown, s.native = true, false
+	default:
+		second, err := copyOnce()
+		switch {
+		case err != nil || second >= 500:
+			return unknown(fmt.Sprintf("the second copy (%d)", second))
+		case second == http.StatusPreconditionFailed || second == http.StatusConflict:
+			s.copyKnown, s.native = true, true
+		default:
+			s.copyKnown, s.native = true, false
+		}
+	}
 	mode := "server-side copy with If-None-Match"
-	if !native {
+	if !s.native {
 		mode = "read and conditional put (the store's copy does not honour If-None-Match)"
 	}
 	s.log.Info("the storage port's copy", "event", "storage_copy_mode", "mode", mode)
-	return native, nil
+	return s.native, nil
 }
 
 // Get reads an object as a stream with its metadata (P19.5); ErrNotFound when it is not there.
@@ -372,13 +450,10 @@ func (s *Store) Head(ctx context.Context, key string) (Meta, error) {
 	if err != nil {
 		return Meta{}, err
 	}
-	resp.Body.Close()
-	switch {
-	case resp.StatusCode == http.StatusNotFound:
-		return Meta{}, fmt.Errorf("%w: %s", ErrNotFound, key)
-	case resp.StatusCode/100 != 2:
-		return Meta{}, fmt.Errorf("%w: head %s: %d", ErrUnavailable, key, resp.StatusCode)
+	if resp.StatusCode/100 != 2 {
+		return Meta{}, s.classify("head", key, resp) // P19.9: 404 not found, 403 denied, the rest unavailable
 	}
+	resp.Body.Close()
 	return metaOf(resp), nil
 }
 
